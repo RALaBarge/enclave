@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SBX Console</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1b2430;--mut:#667385;--card:#fff;--bd:#d9dee5;--ac:#2f5d8a;--ok:#2e8b57;--bad:#b3402a;--warn:#a8661d}
+@media (prefers-color-scheme:dark){:root{--bg:#10151b;--fg:#e6eaee;--mut:#93a0ad;--card:#171e26;--bd:#2a333d;--ac:#7aabdb;--ok:#6cc98d;--bad:#ee8a73;--warn:#e5a26a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}
+header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--bd);background:var(--card);position:sticky;top:0;flex-wrap:wrap}
+h1{font-size:16px;margin:0}nav{display:flex;gap:4px}
+nav button{border:0;background:none;color:var(--mut);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+nav button[aria-selected=true]{background:var(--ac);color:#fff}
+main{max-width:980px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:14px;margin-bottom:14px}
+h2{font-size:14px;margin:0 0 10px}table{width:100%;border-collapse:collapse}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);text-align:left;padding:4px 6px}
+td{padding:5px 6px;border-top:1px solid var(--bd);vertical-align:middle;word-break:break-word}
+input,select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--bd);border-radius:5px;padding:5px 7px;min-width:0}
+button.b{font:inherit;border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:5px;padding:5px 10px;cursor:pointer}
+button.p{background:var(--ac);border-color:var(--ac);color:#fff}button.d{color:var(--bad)}
+button:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.mut{color:var(--mut)}.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;border:1px solid var(--bd)}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+#banner{display:none;background:#fff3cd;color:#5c4400;border-bottom:1px solid #e6c96a;padding:10px 16px}
+#toast{position:fixed;bottom:14px;right:14px;max-width:420px;padding:10px 14px;border-radius:8px;background:var(--fg);color:var(--bg);display:none}
+#warn{background:#5a1a12;color:#fff;padding:14px 16px}#warn button{margin-top:8px}
+section{display:none}section.on{display:block}
+</style></head><body>
+<div id="warn" hidden>
+  <b>Run this on a disposable computer.</b> This VM limits the damage a misbehaving agent or tool can do, but it is not a
+  guarantee: a VM escape lands on the host. For full security run it on its own machine with no route to anything you
+  care about, and keep the firewall below in default-deny. Nothing here protects data you give the agent.
+  <div><button class="b" id="ack">I understand</button></div>
+</div>
+<div id="banner"><b>Firewall change is live but NOT saved.</b> It reverts in <span id="count">0</span>s unless you confirm.
+  <button class="b p" id="confirm">Confirm and save</button> <button class="b" id="revert">Revert now</button></div>
+<header><h1>SBX Console</h1>
+  <nav role="tablist"><button data-t="fw" aria-selected="true">Firewall</button><button data-t="tools" aria-selected="false">Tools</button><button data-t="set" aria-selected="false">Settings</button></nav>
+  <span class="mut" id="tok-state"></span><button class="b" id="tok-btn">Token</button></header>
+<main>
+<section id="fw" class="on">
+  <div class="card"><h2>Egress and ingress allowlist <span class="mut">(default: everything denied)</span></h2>
+    <div class="mut" style="margin-bottom:8px">Hostnames are resolved when applied. CDN-backed hosts change IPs, so re-apply if a service stops working.</div>
+    <table><thead><tr><th>Host / IP / CIDR</th><th>Port</th><th>Proto</th><th>Note</th><th></th></tr></thead><tbody id="allow"></tbody></table>
+    <div class="row" style="margin-top:10px"><input id="a-host" placeholder="openrouter.ai" size="22"><input id="a-port" placeholder="443" size="6">
+      <select id="a-proto"><option>tcp</option><option>udp</option></select><input id="a-note" placeholder="note" size="20">
+      <button class="b" id="a-add">Add</button></div></div>
+  <div class="card"><h2>DNS resolvers <span class="mut">(only these may be asked)</span></h2><div id="dns" class="row"></div>
+    <div class="row" style="margin-top:8px"><input id="d-ip" placeholder="1.1.1.1" size="18"><button class="b" id="d-add">Add</button></div></div>
+  <div class="card"><h2>Management access in <span class="mut">(sources allowed to reach this VM)</span></h2>
+    <table><tbody id="mgmt"></tbody></table>
+    <div class="row" style="margin-top:8px"><input id="m-cidr" placeholder="192.168.122.0/24" size="20"><input id="m-port" placeholder="22" size="6">
+      <button class="b" id="m-add">Add</button></div></div>
+  <div class="row" style="margin-bottom:14px"><button class="b p" id="apply">Apply changes</button><span class="mut" id="dirty"></span></div>
+  <div class="card"><h2>Blocked attempts <span class="mut">(newest 500 log lines, grouped)</span></h2>
+    <table><thead><tr><th>Dir</th><th>Peer</th><th>Proto</th><th>Port</th><th>Count</th><th></th></tr></thead><tbody id="drops"></tbody></table>
+    <div class="mut" id="drops-err"></div><button class="b" id="drops-refresh" style="margin-top:8px">Refresh</button></div>
+</section>
+<section id="tools"><div class="card"><h2>Loaded tools</h2>
+  <table><thead><tr><th>On</th><th>Name</th><th>Timeout (s)</th><th>Sandbox tool</th><th>Contract</th><th>Stub sha256 (for agent-desk -pin)</th></tr></thead><tbody id="tl"></tbody></table>
+  <p class="mut">Tools are added by hand (sandbox <span class="mono">run</span>, <span class="mono">tcs.yaml</span>, stub via <span class="mono">sync.py</span>), not from this page.
+  Disabling comments the tool out of tools.list; the broker reads the list per request. In full mode, deploy the same list to the sandbox box.</p></div></section>
+<section id="set"><div class="card"><h2>Settings</h2><div id="settings"></div>
+  <div class="row" style="margin-top:12px"><button class="b p" id="save">Save</button><span class="mut" id="save-note"></span></div></div></section>
+</main><div id="toast"></div>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+{const m=location.hash.match(/[#&]t=([\w-]+)/);if(m){try{sessionStorage.setItem("sbxc",m[1])}catch(e){}history.replaceState(null,"",location.pathname)}}   // http://127.0.0.1:8787/#t=TOKEN
+let token=sessionStorage.getItem("sbxc")||"", policy={dns:[],mgmt:[],allow:[]}, dirty=false, poll=null;
+function el(tag,props,...kids){const e=document.createElement(tag);for(const k in props||{})k in e?e[k]=props[k]:e.setAttribute(k,props[k]);for(const c of kids)e.append(c);return e}
+function toast(m,bad){const t=$("toast");t.textContent=m;t.style.background=bad?"var(--bad)":"";t.style.display="block";clearTimeout(toast.h);toast.h=setTimeout(()=>t.style.display="none",4500)}
+async function api(path,body){
+  const r=await fetch(path,{method:body===undefined?"GET":"POST",headers:{"Authorization":"Bearer "+token,"Content-Type":"application/json"},body:body===undefined?undefined:JSON.stringify(body)});
+  const j=await r.json().catch(()=>({error:"bad response"}));
+  if(!r.ok){if(r.status===401)askToken();throw new Error(j.error||r.status)}
+  return j}
+const act=async(fn)=>{try{return await fn()}catch(e){toast(e.message,true)}};
+function askToken(){const t=prompt("Console token (from /etc/sbxfw/token)");if(t){token=t.trim();sessionStorage.setItem("sbxc",token);load()}}
+$("tok-btn").onclick=askToken;
+
+// ---- firewall
+function markDirty(){dirty=true;$("dirty").textContent="Unsaved edits: not yet applied"}
+function renderPolicy(){
+  const a=$("allow");a.replaceChildren();
+  policy.allow.forEach((r,i)=>a.append(el("tr",{},el("td",{className:"mono"},r.host),el("td",{},r.port),el("td",{},r.proto),el("td",{className:"mut"},r.comment),
+    el("td",{},el("button",{className:"b d",textContent:"Remove",onclick:()=>{policy.allow.splice(i,1);markDirty();renderPolicy()}})))));
+  if(!policy.allow.length)a.append(el("tr",{},el("td",{colSpan:5,className:"mut"},"Nothing allowed: no egress at all.")));
+  const d=$("dns");d.replaceChildren();
+  policy.dns.forEach((ip,i)=>d.append(el("span",{className:"pill mono"},ip+" ",el("a",{href:"#",textContent:"×",onclick:e=>{e.preventDefault();policy.dns.splice(i,1);markDirty();renderPolicy()}}))));
+  if(!policy.dns.length)d.append(el("span",{className:"mut"},"None: name lookups are blocked."));
+  const m=$("mgmt");m.replaceChildren();
+  policy.mgmt.forEach((r,i)=>m.append(el("tr",{},el("td",{className:"mono"},r.cidr),el("td",{},r.proto+"/"+r.port),
+    el("td",{},el("button",{className:"b d",textContent:"Remove",onclick:()=>{policy.mgmt.splice(i,1);markDirty();renderPolicy()}})))));
+  if(!policy.mgmt.length)m.append(el("tr",{},el("td",{className:"mut"},"None: only local use of this VM.")));
+}
+function showPending(s){
+  $("banner").style.display=s.pending?"block":"none";$("count").textContent=s.revert_in_s;
+  clearInterval(poll);
+  if(s.pending){let n=s.revert_in_s;poll=setInterval(async()=>{n--;$("count").textContent=Math.max(n,0);if(n<=0){clearInterval(poll);const st=await act(()=>api("/api/fw"));if(st){policy=st.policy;renderPolicy();showPending(st)}}},1000)}
+}
+async function loadFw(){const s=await act(()=>api("/api/fw"));if(!s)return;if(!dirty){policy=s.pending&&s.pending_policy?s.pending_policy:s.policy;renderPolicy()}showPending(s)}
+async function loadDrops(){
+  const r=await act(()=>api("/api/fw/drops"));if(!r)return;
+  $("drops-err").textContent=r.error||"";const b=$("drops");b.replaceChildren();
+  r.drops.forEach(x=>b.append(el("tr",{},el("td",{},x.dir),el("td",{className:"mono"},x.peer),el("td",{},x.proto),el("td",{},x.dport),el("td",{},x.count),
+    el("td",{},x.dir==="out"?el("button",{className:"b",textContent:"Allow…",onclick:()=>{$("a-host").value=x.peer;$("a-port").value=x.dport;$("a-proto").value=x.proto==="udp"?"udp":"tcp";$("a-host").focus();window.scrollTo(0,0)}}):""))));
+  if(!r.drops.length)b.append(el("tr",{},el("td",{colSpan:6,className:"mut"},"No blocked attempts logged.")));
+}
+$("a-add").onclick=()=>{const h=$("a-host").value.trim(),p=$("a-port").value.trim();if(!h||!p)return toast("host and port needed",true);
+  policy.allow.push({host:h,port:p,proto:$("a-proto").value,comment:$("a-note").value.trim()});["a-host","a-port","a-note"].forEach(i=>$(i).value="");markDirty();renderPolicy()};
+$("d-add").onclick=()=>{const v=$("d-ip").value.trim();if(v){policy.dns.push(v);$("d-ip").value="";markDirty();renderPolicy()}};
+$("m-add").onclick=()=>{const c=$("m-cidr").value.trim(),p=$("m-port").value.trim();if(c&&p){policy.mgmt.push({cidr:c,port:p,proto:"tcp"});$("m-cidr").value=$("m-port").value="";markDirty();renderPolicy()}};
+$("apply").onclick=()=>act(async()=>{const r=await api("/api/fw/apply",{policy});dirty=false;$("dirty").textContent="";
+  toast(r.warnings.length?r.warnings.join("; "):"Applied. Confirm within "+r.revert_in_s+"s or it reverts.",r.warnings.length>0);loadFw()});
+$("confirm").onclick=()=>act(async()=>{await api("/api/fw/confirm",{});toast("Saved. Active at next boot too.");loadFw()});
+$("revert").onclick=()=>act(async()=>{await api("/api/fw/cancel",{});dirty=false;toast("Reverted.");loadFw()});
+$("drops-refresh").onclick=loadDrops;
+
+// ---- tools
+async function loadTools(){
+  const r=await act(()=>api("/api/tools"));if(!r)return;const b=$("tl");b.replaceChildren();
+  r.tools.forEach(t=>{
+    const cb=el("input",{type:"checkbox",checked:t.enabled,onchange:()=>act(async()=>{await api("/api/tools/toggle",{name:t.name,enabled:cb.checked});loadTools()}).catch(()=>{})});
+    const to=el("input",{type:"number",min:1,max:120,value:t.timeout_s,size:4,style:"width:70px",onchange:()=>act(async()=>{await api("/api/tools/timeout",{name:t.name,timeout_s:to.value});toast("Timeout saved")})});
+    const yn=(v,l)=>el("span",{className:v?"ok":"bad"},v?"✓ "+l:"✗ missing");
+    b.append(el("tr",{},el("td",{},cb),el("td",{className:"mono"},t.name),el("td",{},to),el("td",{},yn(t.sbx_run,"present")),el("td",{},yn(t.contract,"present")),
+      el("td",{className:"mono mut"},t.stub_sha256?t.stub_sha256.slice(0,16)+"…":"none")));
+  });
+  if(!r.tools.length)b.append(el("tr",{},el("td",{colSpan:6,className:"mut"},"tools.list is empty.")));
+}
+
+// ---- settings
+const LABELS={SBX_HOST:"Sandbox host",SBX_USER:"Sandbox user",SBX_PORT:"SSH port",SBX_MAX_TIMEOUT:"Max job timeout (s)",SBX_MAX_REQ:"Max request bytes",SBX_MAX_OUT:"Max output bytes",SBX_RESET_CMD:"Reset after every job"};
+let cur=null;
+async function loadSettings(){
+  cur=await act(()=>api("/api/settings"));if(!cur)return;const s=$("settings");s.replaceChildren();
+  const mode=el("select",{id:"s-mode"},el("option",{value:"lite",textContent:"Lite: sandbox in this VM (bwrap)"}),el("option",{value:"full",textContent:"Full: separate sandbox machine"}));mode.value=cur.mode;
+  s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},"Mode"),mode));
+  for(const k in LABELS){
+    let inp;
+    if(k==="SBX_RESET_CMD"){inp=el("select",{id:"s-"+k});for(const v in cur.reset_presets)inp.append(el("option",{value:v,textContent:cur.reset_presets[v]}));inp.value=cur.broker[k]||""}
+    else inp=el("input",{id:"s-"+k,value:cur.broker[k]||"",size:24});
+    s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},LABELS[k]),inp));
+  }
+}
+$("save").onclick=()=>act(async()=>{const broker={};for(const k in LABELS){const v=$("s-"+k).value;if(v!==(cur.broker[k]||""))broker[k]=v}
+  const body={broker};if($("s-mode").value!==cur.mode)body.mode=$("s-mode").value;
+  const r=await api("/api/settings",body);$("save-note").textContent=r.restart_required?"Saved. Run: "+r.hint:"Saved.";loadSettings()});
+
+// ---- shell
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("nav button").forEach(x=>x.setAttribute("aria-selected",x===b));
+  document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===b.dataset.t));
+  if(b.dataset.t==="tools")loadTools();if(b.dataset.t==="set")loadSettings();});
+function load(){loadFw();loadDrops()}
+try{if(!localStorage.getItem("sbxc-ack"))$("warn").hidden=false}catch(e){$("warn").hidden=false}
+$("ack").onclick=()=>{try{localStorage.setItem("sbxc-ack","1")}catch(e){}$("warn").hidden=true};
+$("tok-state").textContent="";
+token?load():askToken();
+</script></body></html>

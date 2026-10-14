@@ -1,0 +1,19 @@
+============================================================
+ SBX SANDBOX VM - READ BEFORE USE
+============================================================
+ A VM limits damage. It is NOT a hardware security boundary.
+ A VM escape lands on the host. Do not treat this as safe.
+
+ For real security: run this on a disposable machine with no
+ route to anything you care about, and keep the firewall in
+ default-deny.
+
+ Lite mode shares one kernel between harness and sandbox.
+ Full mode puts the sandbox on a separate physical box.
+
+ The egress firewall in this VM must ALSO be enforced at the
+ hypervisor/host, or a compromised guest can change it.
+
+ Console:  http://127.0.0.1:8787
+ Token:    sudo cat /etc/sbxfw/token
+============================================================

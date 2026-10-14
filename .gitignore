@@ -1,0 +1,8 @@
+# DeskBox binaries are rebuilt from the commit pinned in image/manifest.env (see image/BUILD-DESKBOX.md)
+image/artifacts/*
+!image/artifacts/.gitkeep
+build/
+__pycache__/
+*.pyc
+*.qcow2
+*.ova

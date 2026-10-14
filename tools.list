@@ -1,0 +1,9 @@
+# The ONE place tool names live.  Format:  name  [timeout_seconds]   (default 30, max 120)
+#
+# Add a tool:
+#   1. add a line here
+#   2. write sbx/tools/<name>/run              (runs on the sandbox box)
+#   3. write harness/tools/<name>-sbx/tcs.yaml (the contract, on the trusted box)
+#   4. python3 sync.py                         (generates the stub, validates everything)
+#   5. deploy: this file -> /etc/sbx/tools.list (harness) and /opt/sbx/tools.list (sbx)
+greet   10

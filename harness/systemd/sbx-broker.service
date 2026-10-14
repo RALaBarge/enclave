@@ -1,0 +1,20 @@
+[Unit]
+Description=sbx-broker (trusted side of the deskbox sandbox bridge)
+After=network-online.target
+
+[Service]
+User=sbxbroker
+EnvironmentFile=/etc/sbx/broker.env
+ExecStart=/usr/bin/python3 /opt/sbx-broker/sbx_broker.py
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+CapabilityBoundingSet=
+# Swap-free + no disk writes: nothing from the sandbox is persisted.
+
+[Install]
+WantedBy=multi-user.target

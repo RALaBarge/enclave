@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""sbx-run: runs on the SANDBOX box as the SSH forced command.
+
+authorized_keys: command="/opt/sbx/sbx-run",restrict ssh-ed25519 AAAA...
+
+Request (stdin, one JSON doc):
+  {"tool": str, "input": any, "timeout_s": int, "files": {name: base64}}
+Runs /opt/sbx/tools/<tool>/run in bubblewrap with the SAME layout the desk uses:
+  /deskbox/in/<name>   input files (read-only)
+  /deskbox/out/        writable output dir
+  /deskbox/tool/       the tool dir (read-only)
+no network, cleared env, tmpfs /tmp, read-only /usr.  `input` goes to the
+tool's stdin as JSON.
+
+Response (stdout, one JSON doc), only on success:
+  {"output": <tool stdout JSON>, "files": {name: base64}}   (every regular file in out/)
+
+Exit codes are the ONLY failure signal (stderr text is never forwarded):
+  2 bad request   3 unknown tool   4 stdout too big   5 tool exited non-zero
+  6 stdout not JSON   7 bwrap itself failed   8 killed by signal
+  9 timeout   10 bad output files
+7 and 8 are the ones worth alarming on (sandbox/escape-adjacent).
+"""
+import base64
+import json
+import os
+import re
+import resource
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+
+sys.path.insert(0, "/opt/sbx")
+import toollist  # noqa: E402
+
+TOOLS = "/opt/sbx/tools"
+TOOLLIST = "/opt/sbx/tools.list"
+MAX_IN = 1 << 20
+MAX_OUT = 1 << 20
+MAX_FILES = 16
+FILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
+TOOL_RE = toollist.TOOL_RE
+
+
+def bwrap_args(tool_dir, in_dir, out_dir):
+    a = ["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
+         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+         "--ro-bind", "/usr", "/usr"]
+    for p in ("/bin", "/sbin", "/lib", "/lib64"):
+        if os.path.islink(p):
+            a += ["--symlink", os.readlink(p), p]
+        elif os.path.exists(p):
+            a += ["--ro-bind", p, p]
+    a += ["--ro-bind", tool_dir, "/deskbox/tool",
+          "--ro-bind", in_dir, "/deskbox/in",
+          "--bind", out_dir, "/deskbox/out",
+          "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
+          "--setenv", "LANG", "C.UTF-8", "--chdir", "/deskbox", "/deskbox/tool/run"]
+    return a
+
+
+def limits(timeout):
+    def f():
+        resource.setrlimit(resource.RLIMIT_CPU, (timeout + 5, timeout + 5))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (64 << 20, 64 << 20))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+    return f
+
+
+def collect_out(out_dir):
+    files, total = {}, 0
+    for name in sorted(os.listdir(out_dir)):
+        path = os.path.join(out_dir, name)
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or not FILE_RE.match(name) or len(files) >= MAX_FILES:
+            raise ValueError
+        total += st.st_size
+        if total > MAX_OUT // 2:
+            raise ValueError
+        with open(path, "rb") as f:
+            files[name] = base64.b64encode(f.read()).decode()
+    return files
+
+
+def main():
+    try:
+        req = json.loads(sys.stdin.buffer.read(MAX_IN + 1)[:MAX_IN])
+        tool = req["tool"]
+        if not isinstance(tool, str) or not TOOL_RE.match(tool):
+            return 2
+        listed = toollist.load(TOOLLIST).get(tool)
+        if listed is None:
+            return 3
+        timeout = max(1, min(int(req.get("timeout_s", 30)), listed["timeout_s"]))
+        payload = json.dumps(req.get("input", {})).encode()
+        in_files = req.get("files", {})
+        if not isinstance(in_files, dict) or len(in_files) > MAX_FILES:
+            return 2
+    except (ValueError, KeyError, TypeError, OSError):
+        return 2
+
+    tool_dir = os.path.join(TOOLS, tool)
+    run = os.path.join(tool_dir, "run")
+    if not (os.path.isfile(run) and os.access(run, os.X_OK)):
+        return 3
+
+    work = tempfile.mkdtemp(prefix="sbx-", dir="/dev/shm" if os.path.isdir("/dev/shm") else None)
+    in_dir, out_dir = os.path.join(work, "in"), os.path.join(work, "out")
+    os.mkdir(in_dir)
+    os.mkdir(out_dir)
+    try:
+        for name, b64 in in_files.items():
+            if not FILE_RE.match(name) or not isinstance(b64, str):
+                return 2
+            with open(os.path.join(in_dir, name), "wb") as f:
+                f.write(base64.b64decode(b64, validate=True))
+        return run_tool(tool_dir, in_dir, out_dir, payload, timeout, work)
+    except (ValueError, OSError):
+        return 2
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def run_tool(tool_dir, in_dir, out_dir, payload, timeout, work):
+    err = open(os.path.join(work, "stderr"), "w+b")  # never forwarded, only classified
+    p = subprocess.Popen(bwrap_args(tool_dir, in_dir, out_dir), stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=err,
+                         start_new_session=True, preexec_fn=limits(timeout))
+    timed_out = threading.Event()
+
+    def kill():
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def on_timeout():
+        timed_out.set()
+        kill()
+
+    timer = threading.Timer(timeout, on_timeout)
+    timer.start()
+    try:
+        try:
+            p.stdin.write(payload)
+            p.stdin.close()
+        except BrokenPipeError:
+            pass
+        out = p.stdout.read(MAX_OUT + 1)
+        if len(out) > MAX_OUT:
+            kill()
+            return 4
+        p.wait()
+    finally:
+        timer.cancel()
+        kill()
+    if timed_out.is_set():
+        return 9
+    # bwrap reports a signalled child as exit 128+signal, not a negative returncode
+    if p.returncode < 0 or 128 < p.returncode <= 128 + 64:
+        return 8
+    if p.returncode != 0:
+        err.seek(0)
+        return 7 if err.read(64).startswith(b"bwrap:") else 5
+    try:
+        files = collect_out(out_dir)
+    except (ValueError, OSError):
+        return 10
+    if not out.strip() and files:
+        doc = None  # desk semantics: a tool with declared output files returns its result there
+    else:
+        try:
+            doc = json.loads(out)
+        except ValueError:
+            return 6
+    sys.stdout.write(json.dumps({"output": doc, "files": files}, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,13 @@
+[Unit]
+Description=sbx first-boot warning banner (runs once)
+ConditionPathExists=!/var/lib/sbx/warning-shown
+After=local-fs.target
+Before=getty.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/firstboot-warning.sh
+
+[Install]
+WantedBy=multi-user.target

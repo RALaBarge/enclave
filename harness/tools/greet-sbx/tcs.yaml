@@ -1,0 +1,34 @@
+name: greet-sbx
+summary: |
+  greet-python, but executed on the sandbox box via sbx-broker. The contract
+  below is the trusted authority: input is validated before it leaves the
+  harness, and the sandbox's output is schema-checked before the agent sees it.
+
+input:
+  type: object
+  additionalProperties: false
+  required: [name]
+  properties:
+    name:    { type: string, minLength: 1, maxLength: 200 }
+    excited: { type: boolean }
+
+output:
+  schema:
+    type: object
+    additionalProperties: false
+    required: [greeting, length]
+    properties:
+      greeting: { type: string, maxLength: 400 }
+      length:   { type: integer }
+
+allowed_side_effects:
+  files: []
+  # The stub only talks to the loopback broker, but deskbox gives a network:true
+  # tool the host netns (no per-address filtering), so this is required. The
+  # stub is a pinned ~20 line file; keep it that way.
+  network: true
+
+execution:
+  mode: queued
+  max_retries: 0      # the sandbox is reset per run; don't auto-retry
+  timeout_ms: 150000
