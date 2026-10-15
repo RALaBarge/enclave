@@ -1,6 +1,6 @@
-# deskbox-sbx: status, tasks, decisions
+# Enclave: status, tasks, decisions
 
-Last updated 2026-10-15. Branch `gateway-firewall` carries the in-progress work; `main` is the last settled state.
+Last updated 2026-10-15. `main` is the last settled state; work happens on short-lived branches.
 
 ## Done
 

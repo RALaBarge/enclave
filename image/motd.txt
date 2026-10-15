@@ -1,5 +1,5 @@
 ============================================================
- SBX SANDBOX VM - READ BEFORE USE
+ ENCLAVE CORE VM - READ BEFORE USE
 ============================================================
  A VM limits damage. It is NOT a hardware security boundary.
  A VM escape lands on the host. Do not treat this as safe.

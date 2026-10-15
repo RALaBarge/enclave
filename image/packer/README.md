@@ -1,4 +1,4 @@
-# sbx VM image (Packer + QEMU)
+# Enclave VM images (Packer + QEMU)
 
 Built and booted on Windows 11 with QEMU 11.1 + WHPX acceleration; the booted image passes `sbx-smoke-test`
 (16/16). Not yet tried: Linux/KVM hosts, the VirtualBox/OVA source, UEFI.

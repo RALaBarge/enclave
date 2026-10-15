@@ -1,5 +1,5 @@
 ============================================================
- SBX SANDBOX BOX - READ BEFORE USE
+ ENCLAVE SANDBOX BOX - READ BEFORE USE
 ============================================================
  This is the SANDBOX half of the strongest setup. It knows
  only the core (10.77.0.1), which is its gateway and decides

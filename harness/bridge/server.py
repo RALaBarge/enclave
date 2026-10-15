@@ -5,6 +5,8 @@ The local API listens on loopback only and has no login. A web page elsewhere ca
 
     GET    /health
     GET    /sessions                      POST /sessions {cwd, name?}          DELETE /sessions/{id}
+           (with --firewall-token-file, creating a session first makes the console switch to its `session`
+            firewall profile; if that fails the session is NOT started. The bridge can tighten, never loosen.)
     POST   /sessions/{id}/command         any Pi RPC command object; returns Pi's response record
     POST   /sessions/{id}/ui-response     fire-and-forget (extension_ui_response)
     GET    /sessions/{id}/events?since=N  SSE, resumable via Last-Event-ID
@@ -26,6 +28,8 @@ import socket
 import sys
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -40,8 +44,32 @@ LOOPBACK = {"127.0.0.1", "localhost", "[::1]"}
 SID = r"([0-9a-f]{12})"
 
 
+class FirewallError(Exception):
+    pass
+
+
+def lockdown(console_url, token_file, timeout=8.0):
+    """Ask the console to make sure the `session` profile is active. Uses the tighten-only token: it can call this and nothing else."""
+    try:
+        token = open(token_file, encoding="utf-8").read().strip()
+        req = urllib.request.Request(console_url.rstrip("/") + "/api/fw/lockdown", data=b"{}", method="POST",
+                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = json.loads(e.read() or b"{}").get("error", "")
+        except ValueError:
+            pass
+        raise FirewallError("console answered %d%s" % (e.code, ": " + detail if detail else ""))
+    except (OSError, ValueError) as e:
+        raise FirewallError("%s: %s" % (type(e).__name__, e))
+
+
 class App:
-    def __init__(self, pi_cmd, peer_port=None, state_dir=None, name="bridge"):
+    def __init__(self, pi_cmd, peer_port=None, state_dir=None, name="bridge", firewall=None):
+        self.firewall = firewall          # (console_url, tighten_token_file) or None
         self.reg = Registry(pi_cmd)
         self.peer_port = peer_port
         self.state_dir = state_dir or tempfile.mkdtemp(prefix="pi-bridge-")
@@ -139,7 +167,16 @@ def make_handler(app: App):
                     b = self._body()
                     if not b.get("cwd") or not os.path.isdir(b["cwd"]):
                         raise ValueError("cwd must be an existing directory")
-                    return self._json(201, app.reg.create(b["cwd"], b.get("name")).info())
+                    fw = None
+                    if app.firewall:
+                        try:
+                            fw = lockdown(*app.firewall)
+                        except FirewallError as e:
+                            return self._json(503, {"error": "firewall lockdown failed, session not started: %s" % e})
+                    info = app.reg.create(b["cwd"], b.get("name")).info()
+                    if fw is not None:
+                        info["firewall"] = fw
+                    return self._json(201, info)
             mm = re.fullmatch(r"/sessions/" + SID, p)
             if mm and m == "DELETE":
                 return self._json(200, {"removed": app.reg.remove(mm.group(1))})
@@ -225,6 +262,9 @@ def main(argv=None) -> int:
     ap.add_argument("--pi-bin", default=os.environ.get("PI_BIN", "pi"))
     ap.add_argument("--pi-arg", action="append", default=[], help="extra argument for pi (repeatable)")
     ap.add_argument("--state-dir", default="~/.pi-bridge", help="identity and paired-peer keys")
+    ap.add_argument("--firewall-token-file", default=None,
+                    help="tighten-only token for the console; each new session first switches the firewall to its session profile")
+    ap.add_argument("--console-url", default="http://127.0.0.1:8787")
     ap.add_argument("--peers", action="store_true", help="enable tailnet peer messaging")
     ap.add_argument("--peer-port", type=int, default=P.DEFAULT_PEER_PORT)
     args = ap.parse_args(argv)
@@ -245,7 +285,8 @@ def main(argv=None) -> int:
             return 2
     name = st["self"]["name"] if st else socket.gethostname().split(".")[0]
     app = App([args.pi_bin, "--mode", "rpc", *args.pi_arg], args.peer_port if args.peers else None,
-              os.path.abspath(os.path.expanduser(args.state_dir)), name)
+              os.path.abspath(os.path.expanduser(args.state_dir)), name,
+              (args.console_url, args.firewall_token_file) if args.firewall_token_file else None)
     servers = [ThreadingHTTPServer((host, int(port)), make_handler(app))]
     if args.peers:
         ip = next(i for i in st["self"]["ips"] if "." in i)

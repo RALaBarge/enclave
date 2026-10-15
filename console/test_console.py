@@ -335,6 +335,38 @@ class Http(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)["tools"][0]["name"], "greet")
 
+    def test_tighten_token_can_only_lock_down(self):
+        open(os.path.join(c.ETC, "tighten-token"), "w").write("tight9\n")
+        c.Handler.tighten_token = c.load_token("tighten-token")
+        T = {"Authorization": "Bearer tight9", "Content-Type": "application/json"}
+        # it opens nothing else: every other route still needs the main token
+        for path in ("/api/fw", "/api/tools"):
+            self.assertEqual(self.req("GET", path, headers=T)[0], 401)
+        for path in ("/api/fw/apply", "/api/fw/profile", "/api/fw/confirm"):
+            self.assertEqual(self.req("POST", path, body="{}", headers=T)[0], 401)
+        self.assertEqual(self.req("POST", c.LOCKDOWN_PATH, body="{}", headers={**T, "Authorization": "Bearer nope"})[0], 401)
+        old = (c._nft, c.ETC)
+        c.ETC = tempfile.mkdtemp()
+        c._nft = lambda args, stdin=None: (0, "")
+        c._pending.update(timer=None, prev=None, text=None, deadline=0, policy=None)
+        try:
+            base = c.validate_policy({"sbx_ifaces": ["eth1"], "profiles": {"build": {"allow": [{"host": "10.1.2.3", "port": 443}]}}})
+            c._save(c.render_ruleset(base)[0], base)
+            code, body = self.req("POST", c.LOCKDOWN_PATH, body="{}", headers=T)
+            self.assertEqual((code, json.loads(body)), (200, {"profile": "session", "changed": False}))   # already tight
+            c.fw_set_profile("build", 600)
+            code, body = self.req("POST", c.LOCKDOWN_PATH, body="{}", headers=T)
+            self.assertEqual((code, json.loads(body)), (200, {"profile": "session", "changed": True, "was": "build"}))
+            self.assertEqual(c.load_policy()["active"], "session")
+            c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]})            # a confirm is pending
+            self.assertEqual(self.req("POST", c.LOCKDOWN_PATH, body="{}", headers=T)[0], 409)
+        finally:
+            c._nft, c.ETC = old
+            if c._pending["timer"]:
+                c._pending["timer"].cancel()
+            c._pending.update(timer=None, prev=None, text=None, deadline=0, policy=None)
+            c.Handler.tighten_token = None
+
     def test_post_needs_json_type_and_size_cap(self):
         a = {"Authorization": "Bearer tok123"}
         self.assertEqual(self.req("POST", "/api/settings", "{}", {**a, "Content-Type": "text/plain"})[0], 415)
@@ -344,7 +376,7 @@ class Http(unittest.TestCase):
     def test_ui_served_without_token(self):
         code, body = self.req("GET", "/")
         self.assertEqual(code, 200)
-        self.assertIn(b"SBX Console", body)
+        self.assertIn(b"Enclave Console", body)
 
     def test_no_tool_install_routes(self):
         self.assertEqual(self.req("POST", "/api/tools/stage", "{}", {"Authorization": "Bearer tok123", "Content-Type": "application/json"})[0], 404)

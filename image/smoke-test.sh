@@ -118,6 +118,31 @@ check_loom_http() {
   esac
 }
 
+# A new bridge session must put the firewall on its session profile first. Opens a short build window to prove it,
+# so it only runs when the session profile is active (it never touches a build window you opened on purpose).
+check_lockdown() {
+  local tok=/etc/sbxfw/token con=http://127.0.0.1:8787 br=http://127.0.0.1:9760 T cur out sid after
+  [ -r "$tok" ] || { skip session-lockdown "console token not readable"; return; }
+  T=$(cat "$tok")
+  active() { curl -fsS --max-time 8 -H "Authorization: Bearer $T" "$con/api/fw" 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["policy"]["active"])' 2>/dev/null; }
+  cur=$(active)
+  [ -n "$cur" ] || { fail session-lockdown "console not answering on $con"; return; }
+  [ "$cur" = session ] || { skip session-lockdown "a build window is open; not touching it"; return; }
+  curl -fsS --max-time 8 -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"active":"build","for_s":60}' \
+      "$con/api/fw/profile" >/dev/null 2>&1 || { fail session-lockdown "could not open the test build window"; return; }
+  out=$(curl -sS --max-time 20 -H 'Content-Type: application/json' -d '{"cwd":"/var/lib/pi-bridge/work","name":"lockdown"}' "$br/sessions" 2>&1)
+  sid=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
+  after=$(active)
+  [ -n "$sid" ] && curl -s --max-time 10 -X DELETE "$br/sessions/$sid" >/dev/null 2>&1
+  if [ "$after" = session ] && printf '%s' "$out" | grep -q '"changed": true'; then
+    pass session-lockdown "a new session closed an open build window"
+  else
+    curl -s --max-time 8 -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"active":"session"}' "$con/api/fw/profile" >/dev/null 2>&1
+    fail session-lockdown "profile after session start: ${after:-?}; response: $(printf '%s' "$out" | head -c 160)"
+  fi
+}
+
 check_pi() {
   if [ ! -x /usr/local/bin/pi ]; then fail pi "/usr/local/bin/pi missing"; return; fi
   local out rc
@@ -193,6 +218,7 @@ check_ollama_model
 check_loom_http
 check_pi
 check_bridge
+check_lockdown
 check_deskbox
 check_bwrap
 check_greet_e2e

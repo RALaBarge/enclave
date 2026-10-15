@@ -1,4 +1,4 @@
-# sbx VM: setup and use
+# Enclave: setup and use
 
 > **WARNING: this VM is not a security boundary.**
 > A VM limits what a misbehaving agent or tool can do. It does not make it safe. A hypervisor or VM escape

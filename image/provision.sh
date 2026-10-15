@@ -138,6 +138,10 @@ install -m 755 "$HERE/sbx-mode.sh" /usr/local/sbin/sbx-mode
 install -m 755 "$HERE/sbx-regen-hostkeys.sh" /usr/local/sbin/sbx-regen-hostkeys
 [ -f /etc/sbx/broker.env ] || install -m 640 "$ROOT/harness/broker/broker.env.example" /etc/sbx/broker.env
 runuser -u sbxconsole -- env SBXC_ETC=/etc/sbxfw SBX_COMMON=/opt/sbx-console/common python3 /opt/sbx-console/sbx_console.py --init
+# The pi-bridge may read ONLY the tighten-only token (POST /api/fw/lockdown): a new agent session always starts on the
+# session firewall profile. It cannot read the console's main token, so it can never loosen the firewall.
+chgrp pibridge /etc/sbxfw/tighten-token
+chmod 640 /etc/sbxfw/tighten-token
 systemctl daemon-reload
 systemctl enable nftables sbx-console loom ollama pi-bridge
 
