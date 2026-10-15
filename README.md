@@ -50,4 +50,4 @@ bash console/test_netns.sh                          # 28 checks, real nftables, 
 A VM is not a hardware boundary: the strongest setup runs the sandbox on its own device. Lite mode (one VM) shares a kernel between
 core and sandbox. Nothing here protects data you hand the agent. See `image/SETUP.md` and `TODO.md` for status and open work.
 
-Licence: Apache-2.0 (`LICENSE`). The bundled DeskBox binaries carry the licence of the `ralabarge/deskbox` commit they were built from.
+Licence: MIT (`LICENSE`). The bundled DeskBox binaries carry the licence of the `ralabarge/deskbox` commit they were built from.
