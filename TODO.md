@@ -9,6 +9,7 @@ Last updated 2026-10-15. Branch `gateway-firewall` carries the in-progress work;
 - Loom, Ollama + `nomic-embed-text`, DeskBox, Pi 1.2.0 (release tarball, pinned baseline Bun) baked in; everything pinned in `image/manifest.env`.
 - `harness/bridge` (pi-bridge): HTTP/SSE API over Pi RPC, no local login, loopback only; tailnet peer messaging with open discovery,
   X25519 first-contact pairing and signed requests. Verified between this PC and devbox.
+- Console firewall (merged): session and build profiles, allow and block lists (block wins), instant apply, build timer that falls back to session, UI. Verified in a real browser and on two VMs (instant apply, block beats allow, build profile with timer, switch back).
 - Apache-2.0 licence for this repo. First-install warnings now describe the strongest setup (sandbox on its own device behind the core).
 
 ## Tasks left, roughly in order
