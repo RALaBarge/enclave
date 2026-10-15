@@ -6,3 +6,4 @@ __pycache__/
 *.pyc
 *.qcow2
 *.ova
+image/packer/sbx.auto.pkrvars.hcl

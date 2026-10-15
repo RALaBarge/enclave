@@ -125,6 +125,10 @@ install -m 644 "$ROOT/tools.list" /etc/sbx/tools.list           # harness side (
 install -m 644 "$ROOT/tools.list" /opt/sbx/tools.list            # sandbox side (sbx-run hardcodes this path)
 install -m 755 "$ROOT/sbx/sbx-run" /opt/sbx/sbx-run
 cp -r "$ROOT/sbx/tools/." /opt/sbx/tools/
+# Uploads from a Windows build host lose Unix modes; tool entry points must be executable for sbx-run.
+chmod 755 /opt/sbx/sbx-run /opt/sbx/tools/*/run
+install -m 755 "$HERE/smoke-test.sh" /usr/local/sbin/sbx-smoke-test
+install -m 755 "$HERE/sbx-regen-hostkeys.sh" /usr/local/sbin/sbx-regen-hostkeys
 [ -f /etc/sbx/broker.env ] || install -m 640 "$ROOT/harness/broker/broker.env.example" /etc/sbx/broker.env
 runuser -u sbxconsole -- env SBXC_ETC=/etc/sbxfw SBX_COMMON=/opt/sbx-console/common python3 /opt/sbx-console/sbx_console.py --init
 systemctl daemon-reload

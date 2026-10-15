@@ -84,8 +84,9 @@ fi
 
 # ---- Install ----
 install -m 755 "$OUT_BIN" "$PI_INSTALL"
-if "$PI_INSTALL" --version >/dev/null 2>&1; then
-  "$PI_INSTALL" --version
+# Time-boxed: on a CPU model without the instructions the binary wants, this hung for an hour and stalled the build.
+if ver=$(timeout 30 "$PI_INSTALL" --version 2>&1); then
+  echo "pi $ver"
 else
-  echo "pi installed at $PI_INSTALL (no --version support detected)"
+  echo "WARN: pi --version did not finish cleanly (rc=$?); installed at $PI_INSTALL" >&2
 fi

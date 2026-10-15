@@ -13,9 +13,10 @@
 ## Boot and log in
 
 1. Boot the VM. Services start on their own: `ollama`, `loom`, `sbx-console`, `sbx-broker`, `nftables`, `ssh`.
-2. Log in on the VM console. Everything listens on loopback (127.0.0.1 / ::1) only, so use the VM's own
-   desktop or console session, not another machine on your network.
-3. Check that the services came up: `sudo bash /path/to/smoke-test.sh` (see Verify below).
+2. Log in on the VM console as `sbxadmin` with the initial password `sbx-change-me`. You are forced to set a new
+   password immediately. Nothing on the network can use the initial password: sshd listens on 127.0.0.1 only and
+   admits only the `sbx` forced-command user. Everything else listens on loopback (127.0.0.1 / ::1) only too.
+3. Check that everything came up: `sudo sbx-smoke-test` (see Verify below).
 
 ## Console (firewall, tools, settings)
 
@@ -86,8 +87,8 @@ Full mode moves the sbx role off this VM, so an agent that escapes the sandbox s
 ## Verify
 
 ```sh
-sudo bash image/smoke-test.sh          # full check, including the greet call through the broker
-sudo bash image/smoke-test.sh --quick  # skips the egress probe and the greet call
+sudo sbx-smoke-test                # full check, including the greet call through the broker
+sudo sbx-smoke-test --quick  # skips the egress probe and the greet call
 ```
 
 Each check prints PASS, FAIL or SKIP with a reason. The script exits 1 if anything FAILs. Run it after install,

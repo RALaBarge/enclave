@@ -1,5 +1,5 @@
 # sbx VM image: Debian 13 (trixie, amd64) built with Packer.
-# STATUS: UNTESTED. Written without running Packer. Run `packer validate` and a real build before trusting it.
+# STATUS: built and booted on Windows (QEMU+WHPX), smoke test 16/16. See README.md for the two-stage flow.
 #
 # Run from image/packer. See README.md.
 # Secrets come from the environment, never from this file:
@@ -29,7 +29,7 @@ variable "iso_url" {
   description = "Debian 13 netinst ISO URL. Set from DEBIAN_ISO_URL in image/manifest.env via a var-file."
   validation {
     condition     = length(var.iso_url) > 0
-    error_message = "iso_url is required (DEBIAN_ISO_URL in image/manifest.env)."
+    error_message = "Iso_url is required (DEBIAN_ISO_URL in image/manifest.env)."
   }
 }
 
@@ -39,7 +39,7 @@ variable "iso_checksum" {
   description = "sha256:<hex> of the ISO. Set from DEBIAN_ISO_SHA256 in image/manifest.env."
   validation {
     condition     = can(regex("^sha256:[0-9a-f]{64}$", var.iso_checksum))
-    error_message = "iso_checksum must be sha256:<64 lowercase hex chars>."
+    error_message = "Iso_checksum must be sha256:<64 lowercase hex chars>."
   }
 }
 
@@ -49,7 +49,7 @@ variable "build_password" {
   description = "Build-time password for sbxadmin (used for ssh and sudo during the build). Locked in cleanup."
   validation {
     condition     = can(regex("^[A-Za-z0-9]{12,64}$", var.build_password))
-    error_message = "build_password must be 12-64 letters/digits (it is typed as keystrokes at the boot prompt)."
+    error_message = "Build_password must be 12-64 letters/digits (it is typed as keystrokes at the boot prompt)."
   }
 }
 
@@ -59,8 +59,14 @@ variable "ssh_authorized_key" {
   description = "Public key installed for sbxadmin. Required: the shipped image has password login disabled."
   validation {
     condition     = can(regex("^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) ", var.ssh_authorized_key))
-    error_message = "ssh_authorized_key must be a single OpenSSH public key line."
+    error_message = "Ssh_authorized_key must be a single OpenSSH public key line."
   }
+}
+
+variable "base_image" {
+  type        = string
+  default     = ""
+  description = "Path to the installed-Debian qcow2 made by the 'base' build. The sbx-vm build provisions on top of it."
 }
 
 variable "accelerator" {
@@ -69,7 +75,7 @@ variable "accelerator" {
   description = "qemu accelerator: kvm (Linux host), whpx (Windows host), or tcg (software, slow)."
   validation {
     condition     = contains(["kvm", "whpx", "tcg"], var.accelerator)
-    error_message = "accelerator must be one of: kvm, whpx, tcg."
+    error_message = "Accelerator must be one of: kvm, whpx, tcg."
   }
 }
 
@@ -112,6 +118,9 @@ locals {
     "passwd/user-password=${var.build_password} ",
     "passwd/user-password-again=${var.build_password} ",
     "locale=en_US.UTF-8 keymap=us ",
+    # Stable NIC name (eth0) on every machine type: stage 1 installs on q35, stage 2 boots on pc, and the
+    # predictable names differ between them, which left the installed system with no network config.
+    "net.ifnames=0 biosdevname=0 ",
   ]
 
   # Build steps run as root via sudo, password on stdin. {{ .Vars }} passes environment_vars through.
@@ -120,6 +129,39 @@ locals {
 
 # ---------------------------------------------------------------- sources
 
+# Stage 1: unattended Debian install only. The installer powers the VM off when done, so no SSH is needed.
+# q35 + kernel-irqchip=off is what the WHPX installer tolerates; the installed system boots fine under pc (stage 2).
+source "qemu" "install" {
+  vm_name          = "base.qcow2"
+  output_directory = "${local.out_dir}/base"
+  format           = "qcow2"
+  disk_size        = "${var.disk_size_gb}G"
+  disk_interface   = "virtio"
+  net_device       = "virtio-net"
+  memory           = var.memory_mb
+  cpus             = var.cpus
+  accelerator      = var.accelerator
+  headless         = true
+  qemuargs = var.accelerator == "whpx" ? [
+    ["-machine", "type=q35,accel=whpx,kernel-irqchip=off"],
+    ["-cpu", "qemu64"],
+    ["-smp", "2"],
+  ] : []
+
+  iso_url      = var.iso_url
+  iso_checksum = var.iso_checksum
+
+  http_directory = local.http_dir
+  boot_wait      = "10s"
+  boot_command   = concat(local.boot_base, ["<enter>"])
+
+  communicator     = "none"
+  shutdown_timeout = "90m"
+}
+
+# Stage 2: boot the installed base disk, provision over SSH, clean up. No installer, no ISO.
+# WHPX (Windows): the defaults (4 vCPUs, host-ish CPU) triple-faulted ("Unexpected VP exit code 4").
+# Verified: pc + qemu64 + 2 vCPUs boots the installed Debian 13 to a login prompt.
 source "qemu" "sbx" {
   vm_name          = "sbx-vm.qcow2"
   output_directory = "${local.out_dir}/qemu"
@@ -132,18 +174,22 @@ source "qemu" "sbx" {
   cpus             = var.cpus
   accelerator      = var.accelerator
   headless         = true
+  qemuargs = var.accelerator == "whpx" ? [
+    ["-machine", "type=pc,accel=whpx"],
+    ["-cpu", "Nehalem"],
+    ["-smp", "2"],
+  ] : []
 
-  iso_url      = var.iso_url
-  iso_checksum = var.iso_checksum
-
-  http_directory = local.http_dir
-  boot_wait      = "10s"
-  boot_command   = concat(local.boot_base, ["<enter>"])
+  disk_image       = true
+  use_backing_file = false
+  iso_url          = var.base_image
+  iso_checksum     = "none"
+  boot_wait        = "5s"
 
   communicator             = "ssh"
   ssh_username             = local.ssh_user
   ssh_password             = var.build_password
-  ssh_timeout              = "60m"
+  ssh_timeout              = "30m"
   ssh_file_transfer_method = "sftp"
   # Cleanup schedules the poweroff 20 s after it returns, so this is a no-op and Packer waits for the VM to exit.
   shutdown_command = "true"
@@ -184,6 +230,11 @@ source "virtualbox-iso" "sbx_ova" {
 # ---------------------------------------------------------------- build
 
 build {
+  name    = "base"
+  sources = ["source.qemu.install"]
+}
+
+build {
   name    = "sbx-vm"
   sources = ["source.qemu.sbx", "source.virtualbox-iso.sbx_ova"]
 
@@ -194,22 +245,22 @@ build {
 
   provisioner "file" {
     source      = "${local.repo}/console"
-    destination = "/tmp/repo/console"
+    destination = "/tmp/repo/" # directory source without trailing slash lands INSIDE destination
   }
 
   provisioner "file" {
     source      = "${local.repo}/harness"
-    destination = "/tmp/repo/harness"
+    destination = "/tmp/repo/" # directory source without trailing slash lands INSIDE destination
   }
 
   provisioner "file" {
     source      = "${local.repo}/sbx"
-    destination = "/tmp/repo/sbx"
+    destination = "/tmp/repo/" # directory source without trailing slash lands INSIDE destination
   }
 
   provisioner "file" {
     source      = "${local.repo}/common"
-    destination = "/tmp/repo/common"
+    destination = "/tmp/repo/" # directory source without trailing slash lands INSIDE destination
   }
 
   provisioner "file" {
@@ -224,7 +275,7 @@ build {
 
   provisioner "file" {
     source      = "${local.repo}/image"
-    destination = "/tmp/repo/image"
+    destination = "/tmp/repo/" # directory source without trailing slash lands INSIDE destination
   }
 
   # Base system, Ollama, Loom, DeskBox, Pi (build-pi.sh), sbx bridge and lite-mode SSH (setup-lite.sh), all via provision.sh.
@@ -281,7 +332,7 @@ build {
 
       [Service]
       Type=oneshot
-      ExecStart=/usr/bin/ssh-keygen -A
+      ExecStart=/usr/local/sbin/sbx-regen-hostkeys
       RemainAfterExit=yes
 
       [Install]
@@ -302,8 +353,10 @@ build {
       # 5) Optional: zero free space (slow; off by default).
       if [ "$SBX_ZERO" = 1 ]; then dd if=/dev/zero of=/zero.fill bs=1M status=none || true; rm -f /zero.fill; fi
 
-      # 6) Lock the build password. After this, sbxadmin can only log in with its key, and cannot sudo with a password.
-      passwd -l sbxadmin
+      # 6) Replace the random build password with a documented one that MUST be changed at first console login
+      #    (expired). Nothing on the network can use it: sshd only listens on 127.0.0.1 and only admits user `sbx`.
+      echo 'sbxadmin:sbx-change-me' | chpasswd
+      passwd -e sbxadmin
       sync
 
       # 7) Power off 20 s from now, after this provisioner has returned to Packer.
@@ -315,6 +368,6 @@ build {
   # SHA-256 manifest for each produced artifact (qcow2 and, if built, the OVA).
   post-processor "checksum" {
     checksum_types = ["sha256"]
-    output         = "${local.out_dir}/{{.BuildName}}-{{.BuildType}}.{{.ChecksumType}}"
+    output         = "${local.out_dir}/{{.BuildName}}-{{.BuilderType}}.{{.ChecksumType}}"
   }
 }
