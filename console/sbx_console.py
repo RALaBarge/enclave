@@ -408,11 +408,17 @@ def fw_check_expiry():
 
 
 def fw_lockdown():
-    """Tighten only: make sure the session profile is active. Never loosens anything."""
+    """Tighten only: make sure the session profile is active. Never loosens anything.
+
+    A pending (unconfirmed) apply is rolled back first, exactly as if its timer had run out: the live rules go back to
+    the last confirmed policy, which is then switched to the session profile. A forgotten confirm must never stop a
+    new agent session from starting, and an unconfirmed change must never decide what the new session runs under.
+    """
     with _fw_lock:
-        busy = bool(_pending["timer"])
-    if busy:
-        raise Conflict("a confirmed apply is pending: confirm or cancel it first")
+        t = _pending["timer"]
+    if t:
+        t.cancel()
+        _revert()
     was = load_policy()["active"]
     if was == "session":
         return {"profile": "session", "changed": False}

@@ -15,6 +15,7 @@ import uuid
 EVENT_RING = 5000          # events kept per session for reconnect/replay
 STDERR_RING = 200
 MAX_LINE = 64 * 1024 * 1024  # long-session get_messages replies are big (piface hit hangs below this)
+CALL_PREFIX = "br-"  # ids the bridge mints for its own request/response matching
 
 
 class RpcError(Exception):
@@ -53,10 +54,11 @@ class Session:
             except ValueError:
                 self.stderr.append("non-JSON on stdout: " + raw[:200].decode("utf-8", "replace"))
                 continue
-            if msg.get("type") == "response" and msg.get("id") in self._pending:
+            if msg.get("type") == "response" and str(msg.get("id", "")).startswith(CALL_PREFIX):
                 with self._pending_cv:
-                    self._pending[msg["id"]] = msg
-                    self._pending_cv.notify_all()
+                    if msg["id"] in self._pending:      # a late reply to a call that already timed out is dropped
+                        self._pending[msg["id"]] = msg
+                        self._pending_cv.notify_all()
                 continue
             self.publish(msg)
         self.exited = self.proc.wait()
@@ -87,8 +89,13 @@ class Session:
                 raise RpcError("write to pi failed: %s" % e)
 
     def call(self, cmd: dict, timeout: float = 30.0) -> dict:
-        """Send a command and wait for its response record (matched by id)."""
-        cid = cmd.get("id") or uuid.uuid4().hex
+        """Send a command and wait for its response record.
+
+        Correlation uses an id minted here, never the caller's: two callers sharing an id must not share a slot.
+        The caller's own id, if any, is put back on the response.
+        """
+        client_id = cmd.get("id")
+        cid = CALL_PREFIX + uuid.uuid4().hex
         cmd = {**cmd, "id": cid}
         with self._pending_cv:
             self._pending[cid] = {}
@@ -103,7 +110,10 @@ class Session:
                     if self.exited is not None and not self._pending[cid]:
                         raise RpcError("session process exited")
                     self._pending_cv.wait(left)
-                return self._pending[cid]
+                resp = dict(self._pending[cid])
+            if client_id is not None:
+                resp["id"] = client_id
+            return resp
         finally:
             with self._pending_cv:
                 self._pending.pop(cid, None)

@@ -206,15 +206,17 @@ check_bridge() {
   else fail pi-bridge "get_state failed: $(printf '%s' "$out" | head -c 200)"; fi
 }
 
-# Bitwarden: the CLI is installed and the wrapper runs a command. Without a token file it must just run the command;
-# a configured token is reported (it is not exercised here, that would need the network).
+# Bitwarden: the CLI is installed, the token is unreadable to the service user, and the fetch step works. Without a token
+# file the fetch step must succeed with an empty env file; a configured token is reported (live fetch needs the network).
 check_secrets() {
   if ! bws --version >/dev/null 2>&1; then fail secrets "bws is not installed"; return; fi
+  if runuser -u pibridge -- test -r /etc/sbx/bws-token 2>/dev/null; then
+    fail secrets "the pibridge user can read /etc/sbx/bws-token"; return; fi
   if [ -s /etc/sbx/bws-token ]; then
-    pass secrets "bws $(bws --version | awk '{print $2}'); token file present (live fetch not tested here)"
-  elif sbx-with-secrets true; then
-    pass secrets "bws $(bws --version | awk '{print $2}'); no token yet, wrapper passes the command through"
-  else fail secrets "sbx-with-secrets true failed"; fi
+    pass secrets "bws $(bws --version | awk '{print $2}'); token present and unreadable to pibridge (live fetch not tested here)"
+  elif sbx-fetch-secrets; then
+    pass secrets "bws $(bws --version | awk '{print $2}'); no token yet, fetch step succeeds with an empty env file"
+  else fail secrets "sbx-fetch-secrets failed"; fi
 }
 
 echo "sbx VM smoke test  $(date -Is)  quick=$QUICK"

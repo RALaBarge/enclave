@@ -12,7 +12,7 @@ Last updated 2026-10-15. `main` is the last settled state; work happens on short
 - Console firewall (merged): session and build profiles, allow and block lists (block wins), instant apply, build timer that falls back to session, UI. Verified in a real browser and on two VMs (instant apply, block beats allow, build profile with timer, switch back).
 - Session lockdown (merged): the bridge makes the console switch to the `session` firewall profile before any session starts, with a tighten-only token (it can never loosen, and fails closed). A build window stays a human action. Verified on the VMs (core smoke 21/21).
 - Project renamed Enclave (README, banners, console title; code identifiers keep `sbx`).
-- Apache-2.0 licence for this repo. First-install warnings now describe the strongest setup (sandbox on its own device behind the core).
+- MIT licence for this repo (was Apache-2.0 until Oct 15). First-install warnings now describe the strongest setup (sandbox on its own device behind the core).
 
 ## Tasks left, roughly in order
 
@@ -40,7 +40,7 @@ Last updated 2026-10-15. `main` is the last settled state; work happens on short
 3. **Web UI.** Thin client over the bridge endpoints, including a hierarchical directory manager (expand/collapse, new/rename/delete,
    pick a session's working directory). Needs bridge endpoints for listing and managing paths, confined to allowed roots (no `..`, no symlink escapes).
 4. **rsync tool for Pi** (where it lives is a decision, below).
-5. **Secrets** via Bitwarden Secrets Manager (`bws run`). DONE for the core VM (Oct 15): `bws` 2.1.0 pinned, `image/sbx-with-secrets.sh` wraps pi-bridge, token placed by hand (SETUP.md). Image not yet rebuilt with it; PC and devbox not wired.
+5. **Secrets** via Bitwarden Secrets Manager (`bws run`). DONE for the core VM (Oct 15): `bws` 2.1.0 pinned, `image/sbx-fetch-secrets.sh` runs as root before pi-bridge and writes the keys to a RAM-only env file, token (root-only) placed by hand (SETUP.md). Image not yet rebuilt with it; PC and devbox not wired.
 6. **Tailscale in the image** so bridge peers work from the core (the core is allowed egress under the new design).
 7. **Bridge polish:** session persistence across restarts, file uploads.
 8. **Reset hooks:** per-run reset (`SBX_RESET_CMD`), and the full-mode ones (`sbx-vm-revert`, `sbx-reboot-and-wait`) are not shipped.
@@ -67,7 +67,7 @@ Made (2026-10-15):
 | Secrets | Bitwarden Secrets Manager (`bws run`); the core has egress so allowlist Bitwarden there |
 | Peers | Keep, off by default (stdlib, ~350 lines); drop only if Tailscale goes away |
 | Lite mode | Tabled |
-| DeskBox licence | Apache-2.0 (this repo already is) |
+| DeskBox licence | MIT (decided Oct 15; DeskBox relicensed in `e6fd82f`, pin updated) |
 | NAS sync | `robocopy /MIR`; no rsync install |
 | Request inspector re-run | Through Pi: fork the session at the step and run the edited request in the fork |
 
@@ -76,3 +76,16 @@ Still open:
 | # | Decision | My recommendation |
 |---|---|---|
 | 10 | **GitHub repo:** public or private, and what name? | Private until the DeskBox licence and secrets handling are settled |
+
+## From the 2026-10-15 independent review (see repos\REVIEW-2026-10-15.md; report was in OneDrive\Documents\deepseek-harness)
+
+Fixed: F-01 lockdown now rolls back a pending confirm instead of blocking every session; F-05 the Bitwarden token is root-only and a root
+ExecStartPre (`image/sbx-fetch-secrets.sh`) writes the keys to a RAM-only env file; F-06 bridge mints its own RPC ids; F-09 IPv6 Host parsing;
+F-10 oversized sandbox requests get their own code; F-12 DeskBox pinned to the MIT commit and binaries rebuilt; Loom pinned to the commit with
+`message_id` provenance; licence residue in other repos.
+Declined: F-07 (require `Origin` on POST/DELETE): any local process can send any `Origin`, so it adds nothing against local clients, and browsers are
+already refused by the existing mismatch check.
+Added: `harness/redact/output_redactor.py` (stdlib secret/PII redactor with a Bitwarden-token pattern, from the old ai-stack). Not wired in yet: it is
+the redaction step for the Loom events/blobs logging task.
+Still to do: rebuild the images with all of the above and run the VM smoke tests (the Bitwarden fetch has never run against a real account); run the
+kernel lab (`console/test_netns.sh`) again after the lockdown change (the reviewer could not run it).

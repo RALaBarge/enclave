@@ -147,8 +147,10 @@ On the core VM, as root:
 ```bash
 echo 'BWS_PROJECT_ID=<project uuid>' > /etc/sbx/bws.env
 read -rs T && printf '%s' "$T" > /etc/sbx/bws-token; unset T      # paste the token, it is not echoed
-chown root:pibridge /etc/sbx/bws.env /etc/sbx/bws-token; chmod 640 /etc/sbx/bws.env /etc/sbx/bws-token
+chown root:root /etc/sbx/bws.env /etc/sbx/bws-token; chmod 600 /etc/sbx/bws.env /etc/sbx/bws-token
 systemctl restart pi-bridge && sbx-smoke-test
 ```
 
-`image/sbx-with-secrets.sh` wraps the bridge: no token file means the bridge starts without keys; a token that Bitwarden rejects, or no network, stops the service from starting. The token is removed from the environment Pi sees, but the fetched keys are in Pi's environment, so anything that can read Pi's environment can read them. Revoke the machine-account token in the vault to cut access.
+How it works: `pi-bridge.service` runs `sbx-fetch-secrets` as root (`ExecStartPre=+`) before the service user's process exists. It reads the token, asks Bitwarden for the project's secrets, and writes them to `/run/sbx/secrets.env` (tmpfs, `root:pibridge 0640`); the service loads that file with `EnvironmentFile=`. No token file means an empty env file and the bridge starts without keys. A token Bitwarden rejects, a secret name that is not a valid variable name, or no network stops the service from starting.
+
+What Pi can reach: the fetched keys (they are in its environment and in `/run/sbx/secrets.env`). It cannot read the access token (`/etc/sbx/bws-token` is `root:root 0600`), so a compromised agent can leak those keys but cannot go on to read other secrets in the project, and cutting access is: remove the key in the vault, then `systemctl restart pi-bridge`. Keep the project to the keys the core needs.

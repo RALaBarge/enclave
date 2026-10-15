@@ -131,7 +131,7 @@ chmod 755 /opt/sbx/sbx-run /opt/sbx/tools/*/run
 tmpz=$(mktemp); curl -fsSL -o "$tmpz" "https://github.com/bitwarden/sdk-sm/releases/download/bws-v${BWS_VERSION}/bws-x86_64-unknown-linux-gnu-${BWS_VERSION}.zip"
 [ "${ALLOW_UNPINNED:-0}" = 1 ] || echo "${BWS_SHA256}  $tmpz" | sha256sum -c -
 unzip -o -q "$tmpz" bws -d /usr/local/bin; chmod 755 /usr/local/bin/bws; rm -f "$tmpz"
-install -m 755 "$HERE/sbx-with-secrets.sh" /usr/local/bin/sbx-with-secrets
+install -m 755 "$HERE/sbx-fetch-secrets.sh" /usr/local/bin/sbx-fetch-secrets
 install -d -m 755 /etc/sbx
 # ---- pi-bridge: local HTTP/SSE API over Pi's RPC mode (loopback; peer messaging stays off, no Tailscale in the image) ----
 id pibridge &>/dev/null || useradd --system --home /var/lib/pi-bridge --create-home --shell /usr/sbin/nologin pibridge
@@ -146,8 +146,8 @@ install -m 755 "$HERE/sbx-regen-hostkeys.sh" /usr/local/sbin/sbx-regen-hostkeys
 runuser -u sbxconsole -- env SBXC_ETC=/etc/sbxfw SBX_COMMON=/opt/sbx-console/common python3 /opt/sbx-console/sbx_console.py --init
 # The pi-bridge may read ONLY the tighten-only token (POST /api/fw/lockdown): a new agent session always starts on the
 # session firewall profile. It cannot read the console's main token, so it can never loosen the firewall.
-# Bitwarden token and project id (created by the operator; the bridge's service wrapper reads them).
-touch /etc/sbx/bws-token /etc/sbx/bws.env; chown root:pibridge /etc/sbx/bws-token /etc/sbx/bws.env; chmod 640 /etc/sbx/bws-token /etc/sbx/bws.env
+# Bitwarden token and project id (created by the operator; sbx-fetch-secrets reads them as root before pi-bridge starts).
+touch /etc/sbx/bws-token /etc/sbx/bws.env; chown root:root /etc/sbx/bws-token /etc/sbx/bws.env; chmod 600 /etc/sbx/bws-token /etc/sbx/bws.env   # root only: Pi's user never reads the token
 chgrp pibridge /etc/sbxfw/tighten-token
 chmod 640 /etc/sbxfw/tighten-token
 systemctl daemon-reload

@@ -10,6 +10,5 @@ for b in agent-desk tcs-shim tcs-verify; do
 done
 ```
 
-Licence: this repo (deskbox-sbx) is Apache-2.0. The DeskBox binaries baked into the image carry the licence of the
-`ralabarge/deskbox` repo at the pinned commit, which was PolyForm Noncommercial 1.0.0 when the image was built. Relicensing
-that repo does not change commits already released; rebuild from a commit that carries the new licence before handing the image out.
+Licence: this repo and DeskBox are both MIT. The binaries are built from the pinned `DESKBOX_COMMIT` (`e6fd82f`, the commit that relicensed
+DeskBox to MIT; its code is identical to the earlier `7526699` the first image used).

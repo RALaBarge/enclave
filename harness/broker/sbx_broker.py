@@ -45,7 +45,7 @@ FILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 # sbx-run exit code -> reason (sandbox stderr text is never trusted or kept)
 REASONS = {2: "bad_request", 3: "unknown_tool", 4: "stdout_too_big", 5: "tool_failed",
            6: "stdout_not_json", 7: "bwrap_failed", 8: "killed_by_signal",
-           9: "sandbox_timeout", 10: "bad_output_files", 255: "ssh_failed"}
+           9: "sandbox_timeout", 10: "bad_output_files", 11: "request_too_big", 255: "ssh_failed"}
 # Worth a human looking at: the sandbox layer itself misbehaved, or the tool died on a signal.
 ALERT = {"bwrap_failed", "killed_by_signal", "ssh_failed", "bad_envelope"}
 _lock = threading.Lock()  # one job at a time

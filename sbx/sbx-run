@@ -88,7 +88,10 @@ def collect_out(out_dir):
 
 def main():
     try:
-        req = json.loads(sys.stdin.buffer.read(MAX_IN + 1)[:MAX_IN])
+        raw = sys.stdin.buffer.read(MAX_IN + 1)
+        if len(raw) > MAX_IN:
+            return 11                                   # request too big: not the same as malformed
+        req = json.loads(raw)
         tool = req["tool"]
         if not isinstance(tool, str) or not TOOL_RE.match(tool):
             return 2

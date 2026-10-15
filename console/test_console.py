@@ -359,7 +359,12 @@ class Http(unittest.TestCase):
             self.assertEqual((code, json.loads(body)), (200, {"profile": "session", "changed": True, "was": "build"}))
             self.assertEqual(c.load_policy()["active"], "session")
             c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]})            # a confirm is pending
-            self.assertEqual(self.req("POST", c.LOCKDOWN_PATH, body="{}", headers=T)[0], 409)
+            self.assertTrue(c._pending["timer"])
+            code, body = self.req("POST", c.LOCKDOWN_PATH, body="{}", headers=T)  # rolls the unconfirmed change back
+            self.assertEqual(code, 200)
+            self.assertFalse(c._pending["timer"])
+            self.assertEqual(c.load_policy()["mgmt"], base["mgmt"])                # the unconfirmed mgmt rule never landed
+            self.assertEqual(c.load_policy()["active"], "session")
         finally:
             c._nft, c.ETC = old
             if c._pending["timer"]:

@@ -69,6 +69,33 @@ class Local(unittest.TestCase):
         host = self.base.split("//")[1]
         self.assertEqual(req(self.base, "/health", headers={"Origin": "http://" + host})[0], 200)
 
+    def test_host_header_forms(self):
+        self.assertEqual(S.host_only("[::1]:9760"), "::1")
+        self.assertEqual(S.host_only("[::1]"), "::1")
+        self.assertEqual(S.host_only("127.0.0.1:9760"), "127.0.0.1")
+        self.assertEqual(S.host_only("localhost"), "localhost")
+        self.assertNotIn(S.host_only("evil.example:80"), S.LOOPBACK)
+        self.assertNotIn(S.host_only("127.0.0.1.evil.example"), S.LOOPBACK)
+
+    def test_concurrent_calls_with_the_same_id_do_not_collide(self):
+        c, s = req(self.base, "/sessions", "POST", {"cwd": tempfile.gettempdir(), "name": "t"})
+        sess = self.n.app.reg.get(s["id"]) if hasattr(self.n.app.reg, "get") else None
+        self.assertIsNotNone(sess)
+        results, errors = [], []
+
+        def go():
+            try:
+                results.append(sess.call({"type": "get_state", "id": "COLLIDE"}))
+            except Exception as e:  # pragma: no cover
+                errors.append(e)
+
+        ts = [threading.Thread(target=go) for _ in range(4)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 4)
+        self.assertTrue(all(r.get("id") == "COLLIDE" for r in results))   # the caller's id is handed back
+
     def test_session_prompt_events_and_replay(self):
         c, s = req(self.base, "/sessions", "POST", {"cwd": tempfile.gettempdir(), "name": "t"})
         self.assertEqual(c, 201)

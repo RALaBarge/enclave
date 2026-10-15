@@ -40,7 +40,15 @@ import peers as P  # noqa: E402
 from pibridge import Registry, RpcError  # noqa: E402
 
 MAX_BODY = 1024 * 1024
-LOOPBACK = {"127.0.0.1", "localhost", "[::1]"}
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+def host_only(hostport: str) -> str:
+    """Host part of a Host header or listen spec: handles "[::1]:9760", "::1", "127.0.0.1:9760", "localhost"."""
+    h = hostport.strip()
+    if h.startswith("["):
+        return h[1:h.find("]")] if "]" in h else h
+    return h.rsplit(":", 1)[0] if h.count(":") == 1 else h
 SID = r"([0-9a-f]{12})"
 
 
@@ -107,7 +115,7 @@ def make_handler(app: App):
 
         def _guard(self) -> bool:
             host = self.headers.get("Host", "")
-            if host.rsplit(":", 1)[0] not in LOOPBACK:
+            if host_only(host) not in LOOPBACK:
                 self._json(403, {"error": "bad Host header"})
                 return False
             origin = self.headers.get("Origin")
@@ -270,6 +278,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     host, _, port = args.listen.rpartition(":")
+    host = host_only(host) if host.startswith("[") else host
     if host not in ("127.0.0.1", "localhost", "::1"):
         print("refusing to bind the local API to %s: loopback only (use an SSH tunnel)" % host, file=sys.stderr)
         return 2
