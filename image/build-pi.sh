@@ -46,12 +46,12 @@ node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(
 BUN_DIR=/opt/bun-build
 if ! { [ -x "$BUN_DIR/bun" ] && [ "$("$BUN_DIR/bun" --version)" = "$BUN_VERSION" ]; }; then
   tmpb="$(mktemp -d)"
-  curl -fsSL -o "$tmpb/bun.zip" "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip"
+  curl -fsSL -o "$tmpb/bun.zip" "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64-baseline.zip"
   printf '%s  %s
 ' "$BUN_SHA256" "$tmpb/bun.zip" | sha256sum -c -
   unzip -q -o "$tmpb/bun.zip" -d "$tmpb"
   rm -rf "$BUN_DIR"; install -d "$BUN_DIR"
-  install -m 755 "$tmpb"/bun-linux-x64/bun "$BUN_DIR/bun"
+  install -m 755 "$tmpb"/bun-linux-x64-baseline/bun "$BUN_DIR/bun"
   rm -rf "$tmpb"
 fi
 export PATH="$BUN_DIR:$PATH"
@@ -76,6 +76,10 @@ if [ ! -x "$OUT_BIN" ] || [ "$(cat "$STAMP" 2>/dev/null || true)" != "$PI_SOURCE
   cd "$PI_SRC"
   npm install --ignore-scripts
   npm run build:offline
+  # Pi's script passes --target=bun-linux-x64-baseline, which makes bun download a runtime blob at build time.
+  # Our pinned Bun already IS the baseline build, so drop --target and it embeds itself: nothing unpinned is fetched.
+  sed -i 's/ --target="\$bun_target"//' scripts/build-binaries.sh
+  grep -q -- '--target' scripts/build-binaries.sh && { echo "ERROR: --target still present in build-binaries.sh" >&2; exit 1; }
   ./scripts/build-binaries.sh --offline-model-data --platform linux-x64 --out "$PI_SRC/out"
   [ -x "$OUT_BIN" ] || { echo "ERROR: expected binary not produced: $OUT_BIN" >&2; exit 1; }
   echo "$PI_SOURCE_SHA256" > "$STAMP"
