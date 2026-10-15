@@ -87,5 +87,5 @@ Declined: F-07 (require `Origin` on POST/DELETE): any local process can send any
 already refused by the existing mismatch check.
 Added: `harness/redact/output_redactor.py` (stdlib secret/PII redactor with a Bitwarden-token pattern, from the old ai-stack). Not wired in yet: it is
 the redaction step for the Loom events/blobs logging task.
-Still to do: rebuild the images with all of the above and run the VM smoke tests (the Bitwarden fetch has never run against a real account); run the
-kernel lab (`console/test_netns.sh`) again after the lockdown change (the reviewer could not run it).
+Verified after the fixes (Oct 15): both images rebuilt; core smoke test 22/22, sandbox node test 16/16, kernel lab 28/28. NAS snapshot refreshed (hashes match).
+Still to do: put the Bitwarden token on the core and confirm a real fetch (it has only run against a fake `bws`).
