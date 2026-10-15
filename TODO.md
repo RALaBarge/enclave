@@ -33,8 +33,9 @@ Last updated 2026-10-15. `main` is the last settled state; work happens on short
      Match each request to its reply by order and a per-turn id. Redact `Authorization` and other secret headers in anything the UI
      sees; the real key stays server-side and is added when a request is replayed.
    - *Fork:* Pi RPC already has `fork {entryId}`, `clone`, `get_fork_messages` and `get_tree`, so the branch itself is cheap.
-   - *Re-run:* two options, see the decision list: replay the edited raw request straight to the provider (exact, cheap, no tools
-     run), or write the edit into the forked session and run it through Pi (tool calls execute again in the sandbox).
+   - *Re-run:* **through Pi** (decided 2026-10-15). Fork the session at that entry with Pi's `fork`, apply the edit to the forked
+     context, and run it through Pi, so tool calls execute again in the sandbox and the new branch is a real session you can keep
+     working in. The raw-request recorder stays useful for the inspector view and for Loom.
    - Conversation tree view already planned for the UI doubles as the place to browse forks.
 3. **Web UI.** Thin client over the bridge endpoints, including a hierarchical directory manager (expand/collapse, new/rename/delete,
    pick a session's working directory). Needs bridge endpoints for listing and managing paths, confined to allowed roots (no `..`, no symlink escapes).
@@ -45,6 +46,9 @@ Last updated 2026-10-15. `main` is the last settled state; work happens on short
 8. **Reset hooks:** per-run reset (`SBX_RESET_CMD`), and the full-mode ones (`sbx-vm-revert`, `sbx-reboot-and-wait`) are not shipped.
 9. **DeskBox licence** in `ralabarge/deskbox`, then rebuild the image from a commit that carries it.
 10. **Push to GitHub** (Git Credential Manager over HTTPS; one browser approval). Nothing is pushed yet.
+10a. **memgate** (spec: `Downloads\MEMGATE_SPEC.md`, written in a web session): a two-stage memory gate on TypeSafe Jev whose Part A changes Loom
+    (ordered append-only messages with `seq`, curated memories with history, `/health` features). Not started. It touches the same Loom schema
+    as the planned `events`/`blobs` extension, so plan both together before changing Loom.
 11. Cross-check `ralabarge/beigebox` for tools and features worth porting.
 12. Not tried yet: Linux/KVM host build, VirtualBox/OVA, UEFI boot. `pi --version` prints `0.0.0`.
 13. Housekeeping: large temp files in the session scratchpad (ISO cache, packer logs, installed.qcow2).
@@ -65,10 +69,10 @@ Made (2026-10-15):
 | Lite mode | Tabled |
 | DeskBox licence | Apache-2.0 (this repo already is) |
 | NAS sync | `robocopy /MIR`; no rsync install |
+| Request inspector re-run | Through Pi: fork the session at the step and run the edited request in the fork |
 
 Still open:
 
 | # | Decision | My recommendation |
 |---|---|---|
 | 10 | **GitHub repo:** public or private, and what name? | Private until the DeskBox licence and secrets handling are settled |
-| 12 | **Request inspector re-run:** replay the edited raw request straight to the provider, or run it through Pi in a forked session? | Both behind the same Fork button: raw replay by default (fast, exact, safe), "run in Pi" when tool calls should happen |
