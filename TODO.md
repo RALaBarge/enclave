@@ -9,6 +9,7 @@ Last updated 2026-10-15. Branch `gateway-firewall` carries the in-progress work;
 - Loom, Ollama + `nomic-embed-text`, DeskBox, Pi 1.2.0 (release tarball, pinned baseline Bun) baked in; everything pinned in `image/manifest.env`.
 - `harness/bridge` (pi-bridge): HTTP/SSE API over Pi RPC, no local login, loopback only; tailnet peer messaging with open discovery,
   X25519 first-contact pairing and signed requests. Verified between this PC and devbox.
+- Console firewall (merged): session and build profiles, allow and block lists (block wins), instant apply, build timer that falls back to session, UI. Verified in a real browser and on two VMs (instant apply, block beats allow, build profile with timer, switch back).
 - Apache-2.0 licence for this repo. First-install warnings now describe the strongest setup (sandbox on its own device behind the core).
 
 ## Tasks left, roughly in order
@@ -19,6 +20,8 @@ Last updated 2026-10-15. Branch `gateway-firewall` carries the in-progress work;
      would let a tool use the gateway path. Touches `toollist.py` (3 copies), `sbx-run`, the contract and the console Tools tab.
    - Run the two-VM layout on Proxmox later (isolated bridge for the sandbox VM). For now: this PC, QEMU.
    - Independent security review of the gateway design (a larger model or a human).
+1a. **Bridge switches firewall profiles** automatically: starting a Pi session activates `session`; a build/install task asks the console for a
+   timed `build` window and drops back when done. (The console endpoint `POST /api/fw/profile` already exists.)
 2. **Log everything to Loom from the bridge.** Loom keeps only the last user message and first assistant reply per `/log` call, so tool
    calls and thinking never get in. The bridge sees every Pi event and can post after each `agent_settled`.
 3a. **Request inspector + fork ("shadow agent") in the UI.** Under each assistant reply bubble, a control that opens the exact HTTP request

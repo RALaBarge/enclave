@@ -14,6 +14,10 @@ The strongest setup puts the **sandbox on its own device that knows only the cor
 device's gateway and decides what its traffic may reach. Lite mode (one VM, one kernel) is the convenient option, not
 the locked-down one. Keep the firewall in default-deny. The UI shows this warning on first launch.
 
+Rules live in two profiles (`session`, `build`), each with an allow list and a block list (blocks win). Rule edits and profile switches apply
+instantly and are saved at once; only management-access changes keep the 60 s confirm. A build profile can carry a timer after which the console
+switches back to session.
+
 Status: implemented and verified. The allowlist applies to the forward chain for the sandbox interface (`sbx_ifaces`, default `eth1`),
 DNS from the sandbox is redirected to the first resolver you list, sandbox traffic is masqueraded, and the core's own output is open.
 `console/test_netns.sh` proves the rules on a real kernel in throwaway namespaces; `image/smoke-test*.sh` prove them on two VMs.

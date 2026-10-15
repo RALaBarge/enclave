@@ -12,9 +12,13 @@ Firewall: this host is the sandbox's gateway. Traffic arriving on a sandbox inte
 DNS, which is redirected to the first named resolver so the sandbox only needs to know this
 host's address) and is masqueraded out. Everything else from the sandbox is dropped and
 logged. This host's own output is open; its input is default-deny except management sources.
-Applying a ruleset is two-phase: it goes live, then reverts after REVERT_S seconds unless
-confirmed. Only a confirmed ruleset is written to $SBXC_ETC/ruleset.nft, which Debian's
-nftables.service loads at boot. (Needs net.ipv4.ip_forward=1, set by the image.)
+Rules live in two profiles, "session" (what the agent may reach while it works) and "build" (wider, for
+installing things). Exactly one is active. Each has an allow list and a block list; blocks are checked first.
+A build profile can carry a timer after which the console switches back to session on its own.
+Changing sandbox rules or the active profile is INSTANT: it cannot lock anyone out, because it only affects traffic
+the sandbox sends through this host. Changing management access or the sandbox interface is two-phase: it goes
+live, then reverts after REVERT_S seconds unless confirmed. Everything applied is saved to $SBXC_ETC/ruleset.nft,
+which Debian's nftables.service loads at boot. (Needs net.ipv4.ip_forward=1, set by the image.)
 """
 import hashlib
 import hmac
@@ -65,8 +69,13 @@ IFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 SBX_MARK = "0x5b50"      # tags sandbox traffic in prerouting so postrouting can masquerade it
 
 
+PROFILES = ("session", "build")
+MAX_RULES = 500
+
+
 def default_policy():
-    return {"dns": [], "mgmt": [], "allow": [], "sbx_ifaces": []}
+    return {"dns": [], "mgmt": [], "sbx_ifaces": [], "active": "session", "active_until": 0,
+            "profiles": {n: {"allow": [], "block": []} for n in PROFILES}}
 
 
 def _port(v):
@@ -91,11 +100,38 @@ def _addr(v, allow_name):
     raise Bad(f"bad host (IP, CIDR or hostname): {s!r}")
 
 
+def _rules(items, block):
+    """Validated allow or block rules. Block rules may omit the port (any port) or use proto "any" (any protocol)."""
+    out = []
+    for r in items or []:
+        if not isinstance(r, dict):
+            raise Bad("rule must be an object")
+        net, name = _addr(r.get("host"), True)
+        proto = r.get("proto", "tcp")
+        if proto not in (("tcp", "udp", "any") if block else ("tcp", "udp")):
+            raise Bad("proto must be " + ("tcp, udp or any" if block else "tcp or udp"))
+        raw = str(r.get("port", "")).strip()
+        if block and (proto == "any" or raw in ("", "*", "any")):
+            port = "*"
+            if proto == "any" and raw not in ("", "*", "any"):
+                raise Bad("proto any blocks every port; leave the port empty")
+        else:
+            port = _port(raw)
+        c = str(r.get("comment", ""))
+        if not COMMENT_RE.match(c):
+            raise Bad("comment: letters, digits, space and ._:/- only (max 80)")
+        out.append({"host": name or str(net), "port": port, "proto": proto, "comment": c})
+    if len(out) > MAX_RULES:
+        raise Bad("too many rules")
+    return out
+
+
 def validate_policy(p):
-    """Returns a normalized copy or raises Bad. Only validated values reach the ruleset text."""
+    """Returns a normalized copy or raises Bad. Only validated values reach the ruleset text.
+    Accepts the current shape (profiles) and the old one (top-level allow, which becomes the session profile)."""
     if not isinstance(p, dict):
         raise Bad("policy must be an object")
-    out = {"dns": [], "mgmt": [], "allow": [], "sbx_ifaces": []}
+    out = default_policy()
     for i in p.get("sbx_ifaces", []):
         if not isinstance(i, str) or not IFACE_RE.match(i):
             raise Bad(f"bad interface name: {i!r}")
@@ -113,18 +149,26 @@ def validate_policy(p):
         if proto not in ("tcp", "udp"):
             raise Bad("proto must be tcp or udp")
         out["mgmt"].append({"cidr": str(net), "port": _port(r.get("port")), "proto": proto})
-    for r in p.get("allow", []):
-        net, name = _addr(r.get("host"), True)
-        proto = r.get("proto", "tcp")
-        if proto not in ("tcp", "udp"):
-            raise Bad("proto must be tcp or udp")
-        c = str(r.get("comment", ""))
-        if not COMMENT_RE.match(c):
-            raise Bad("comment: letters, digits, space and ._:/- only (max 80)")
-        out["allow"].append({"host": name or str(net), "port": _port(r.get("port")),
-                             "proto": proto, "comment": c})
-    if len(out["allow"]) > 500 or len(out["mgmt"]) > 50 or len(out["dns"]) > 8:
+    if len(out["mgmt"]) > 50 or len(out["dns"]) > 8:
         raise Bad("too many rules")
+    if "profiles" in p:
+        if "allow" in p or "block" in p:
+            raise Bad("give either profiles or top-level allow/block, not both")
+        if not isinstance(p["profiles"], dict) or set(p["profiles"]) - set(PROFILES):
+            raise Bad("profiles must be session and/or build")
+        for n in PROFILES:
+            pr = p["profiles"].get(n, {})
+            out["profiles"][n] = {"allow": _rules(pr.get("allow"), False), "block": _rules(pr.get("block"), True)}
+    else:
+        out["profiles"]["session"] = {"allow": _rules(p.get("allow"), False), "block": _rules(p.get("block"), True)}
+    active = p.get("active", "session")
+    if active not in PROFILES:
+        raise Bad("active must be session or build")
+    out["active"] = active
+    until = p.get("active_until", 0)
+    if not isinstance(until, int) or isinstance(until, bool) or until < 0:
+        raise Bad("active_until must be a non-negative integer (epoch seconds)")
+    out["active_until"] = until if active == "build" else 0
     return out
 
 
@@ -160,6 +204,21 @@ def _daddr_rules(addrs, proto, port, comment, direction="daddr"):
     return lines
 
 
+def _block_rules(addrs, proto, port, comment):
+    """Drop rules for a block entry, preceded by a rate-limited log rule so the Blocked attempts table shows them.
+    (The log is its own rule: a limit inside the drop rule would let over-rate packets fall through to the allow rules.)"""
+    v4, v6 = _split(addrs)
+    sel = "" if proto == "any" else (f" meta l4proto {proto}" if port == "*" else f" {proto} dport {port}")
+    c = f' comment "{comment}"' if comment else ""
+    lines = []
+    for fam, a in (("ip", v4), ("ip6", v6)):
+        if a:
+            m = f"{fam} daddr {{ {', '.join(a)} }}{sel}"
+            lines.append(f'{m} limit rate 10/second log prefix "sbxfw-drop: "')
+            lines.append(f"{m} drop{c}")
+    return lines
+
+
 def _ifset(ifs):
     return "{ " + ", ".join(f'"{i}"' for i in ifs) + " }"
 
@@ -168,14 +227,21 @@ def render_ruleset(policy, resolver=resolve):
     """policy (validated) -> (nft text, warnings). Deterministic for a given resolution."""
     warns, fwd, in_rules, dnat = [], [], [], []
     ifs = policy.get("sbx_ifaces", [])
+    prof = policy["profiles"][policy["active"]]
     sb = f"iifname {_ifset(ifs)} " if ifs else ""
     if not ifs:
         warns.append("no sandbox interface set: nothing is forwarded, so DNS and allow rules have no effect")
     else:
+        for r in prof["block"]:                  # blocks first: they win over any allow
+            v4, v6 = resolver(r["host"])
+            if not v4 and not v6:
+                warns.append(f"block {r['host']}: did not resolve, rule skipped")
+                continue
+            fwd += [sb + ln for ln in _block_rules(v4 + v6, r["proto"], r["port"], r["comment"])]
         for ip in policy["dns"]:
             for proto in ("udp", "tcp"):
                 fwd += [sb + ln for ln in _daddr_rules([ip], proto, 53, "dns")]
-        for r in policy["allow"]:
+        for r in prof["allow"]:
             v4, v6 = resolver(r["host"])
             if not v4 and not v6:
                 warns.append(f"{r['host']}: did not resolve, rule skipped")
@@ -204,7 +270,7 @@ def render_ruleset(policy, resolver=resolve):
     type nat hook postrouting priority srcnat; policy accept;
     meta mark {SBX_MARK} oifname != {_ifset(ifs)} masquerade
   }}"""
-    text = f"""# Generated by sbx-console. Do not edit; changes are overwritten.
+    text = f"""# Generated by sbx-console. Do not edit; changes are overwritten. Active profile: {policy["active"]}
 table inet sbxfw
 delete table inet sbxfw
 table inet sbxfw {{
@@ -259,16 +325,40 @@ def _atomic_write(path, data, mode=0o644):
         raise
 
 
-def fw_apply(policy):
-    """Validate, check, make live, start the revert timer. Returns status dict."""
+def _current_policy():
+    """The policy the host is running right now (a pending, unconfirmed one wins)."""
+    return _pending["policy"] if _pending["timer"] and _pending.get("policy") else load_policy()
+
+
+def _save(text, policy):
+    os.makedirs(ETC, exist_ok=True)
+    _atomic_write(os.path.join(ETC, "ruleset.nft"), text)
+    _atomic_write(os.path.join(ETC, "policy.json"), json.dumps(policy, indent=2) + "\n")
+
+
+def fw_apply(policy, instant=False):
+    """Validate, check, make live. Two-phase by default (revert timer); instant=True applies and saves at once, allowed only
+    when the change cannot affect access to this host (no change to management sources or the sandbox interface)."""
+    with _fw_lock:
+        base = _current_policy()
     if isinstance(policy, dict) and "sbx_ifaces" not in policy:
-        policy = {**policy, "sbx_ifaces": (_pending.get("policy") or load_policy())["sbx_ifaces"]}
+        policy = {**policy, "sbx_ifaces": base["sbx_ifaces"]}
     policy = validate_policy(policy)
     text, warns = render_ruleset(policy)
     with _fw_lock:
         rc, msg = _nft(["-c", "-f", "-"], text)
         if rc:
             raise Bad(f"nft rejected the ruleset: {msg}")
+        if instant:
+            if _pending["timer"]:
+                raise Bad("a confirmed apply is pending: confirm or cancel it first")
+            if policy["mgmt"] != base["mgmt"] or policy["sbx_ifaces"] != base["sbx_ifaces"]:
+                raise Bad("this change touches management access or the sandbox interface: use the confirmed apply")
+            rc, msg = _nft(["-f", "-"], text)
+            if rc:
+                raise Bad(f"nft failed to apply: {msg}")
+            _save(text, policy)
+            return {"applied": True, "pending": False, "warnings": warns}
         if _pending["timer"]:                       # re-apply keeps the original rollback point
             _pending["timer"].cancel()
         else:
@@ -284,6 +374,39 @@ def fw_apply(policy):
         _pending["timer"] = t
         t.start()
     return {"pending": True, "revert_in_s": REVERT_S, "warnings": warns}
+
+
+BUILD_MIN_S, BUILD_MAX_S = 60, 24 * 3600
+
+
+def fw_set_profile(active, for_s=0):
+    """Switch the active profile instantly. Build may carry a timer (seconds); session never does."""
+    if active not in PROFILES:
+        raise Bad("active must be session or build")
+    for_s = int(for_s or 0)
+    if active == "build" and for_s and not (BUILD_MIN_S <= for_s <= BUILD_MAX_S):
+        raise Bad(f"build time limit must be {BUILD_MIN_S}..{BUILD_MAX_S} seconds, or 0 for none")
+    new = {**_current_policy(), "active": active,
+           "active_until": int(time.time()) + for_s if (active == "build" and for_s) else 0}
+    return fw_apply(new, instant=True)
+
+
+def fw_check_expiry():
+    """If the build profile's time is up, fall back to session. Returns True if it switched."""
+    p = load_policy()
+    if p["active"] == "build" and p["active_until"] and time.time() >= p["active_until"] and not _pending["timer"]:
+        fw_set_profile("session")
+        return True
+    return False
+
+
+def _expiry_loop():
+    while True:
+        time.sleep(5)
+        try:
+            fw_check_expiry()
+        except Exception as e:                      # keep watching; an nft hiccup must not end the loop
+            print(f"expiry check failed: {e}", file=sys.stderr, flush=True)
 
 
 def _revert():
@@ -304,9 +427,7 @@ def fw_confirm():
         if not _pending["timer"]:
             raise Bad("nothing pending")
         _pending["timer"].cancel()
-        os.makedirs(ETC, exist_ok=True)
-        _atomic_write(os.path.join(ETC, "ruleset.nft"), _pending["text"])
-        _atomic_write(os.path.join(ETC, "policy.json"), json.dumps(_pending["policy"], indent=2) + "\n")
+        _save(_pending["text"], _pending["policy"])
         _pending.update(timer=None, prev=None, text=None, deadline=0)
     return {"saved": True}
 
@@ -321,8 +442,11 @@ def fw_cancel():
 def fw_status():
     rc, live = _nft(["list", "table", "inet", "sbxfw"])
     left = max(0, int(_pending["deadline"] - time.time())) if _pending["timer"] else 0
-    return {"policy": load_policy(), "live": rc == 0, "pending": bool(_pending["timer"]),
-            "revert_in_s": left, "pending_policy": _pending.get("policy") if _pending["timer"] else None}
+    pol = load_policy()
+    until = pol["active_until"]
+    return {"policy": pol, "live": rc == 0, "pending": bool(_pending["timer"]),
+            "revert_in_s": left, "pending_policy": _pending.get("policy") if _pending["timer"] else None,
+            "build_left_s": max(0, int(until - time.time())) if until else 0}
 
 
 DROP_RE = re.compile(r"sbxfw-drop: .*?OUT=(\S*) .*?SRC=(\S+) DST=(\S+).*?PROTO=(\S+)(?: SPT=\d+ DPT=(\d+))?")
@@ -565,7 +689,8 @@ def settings_set(body):
 ROUTES = {
     ("GET", "/api/fw"): lambda b: fw_status(),
     ("GET", "/api/fw/drops"): lambda b: fw_drops(),
-    ("POST", "/api/fw/apply"): lambda b: fw_apply(b.get("policy")),
+    ("POST", "/api/fw/apply"): lambda b: fw_apply(b.get("policy"), instant=bool(b.get("instant"))),
+    ("POST", "/api/fw/profile"): lambda b: fw_set_profile(b.get("active"), b.get("for_s", 0)),
     ("POST", "/api/fw/confirm"): lambda b: fw_confirm(),
     ("POST", "/api/fw/cancel"): lambda b: fw_cancel(),
     ("GET", "/api/tools"): lambda b: tools_list(),
@@ -666,6 +791,11 @@ def init():
 def main():
     if "--init" in sys.argv:
         return init()
+    threading.Thread(target=_expiry_loop, daemon=True).start()
+    try:
+        fw_check_expiry()                            # a build window that ran out while the console was down
+    except Exception as e:
+        print(f"expiry check failed: {e}", file=sys.stderr, flush=True)
     Handler.token = load_token()
     if not Handler.token:
         sys.exit(f"no token at {os.path.join(ETC, 'token')}; run: sbx_console.py --init")
