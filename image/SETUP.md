@@ -135,3 +135,20 @@ after every firewall change, and after any tool change.
   `/etc/sbx/tools.list`, but `sbx-run` reads `/opt/sbx/tools.list`, which it does not install. It also does not
   create the `sbx` SSH user, does not enable `sbx-broker`, and does not write the forced-command key or set
   `SBX_HOST` (both are manual steps it lists). Until these are fixed, the greet check will FAIL.
+
+## Secrets (Bitwarden Secrets Manager)
+
+The core fetches its LLM keys (`OPENROUTER_API_KEY`, `REQUESTY_API_KEY`) from Bitwarden when `pi-bridge` starts. Nothing secret is in the image or the repo.
+
+In the web vault (free tier is enough): enable Secrets Manager for the org, make a project `enclave`, add the secrets there with `UPPER_SNAKE_CASE` names, make a machine account with **read-only** access to that project, and create an access token for it.
+
+On the core VM, as root:
+
+```bash
+echo 'BWS_PROJECT_ID=<project uuid>' > /etc/sbx/bws.env
+read -rs T && printf '%s' "$T" > /etc/sbx/bws-token; unset T      # paste the token, it is not echoed
+chown root:pibridge /etc/sbx/bws.env /etc/sbx/bws-token; chmod 640 /etc/sbx/bws.env /etc/sbx/bws-token
+systemctl restart pi-bridge && sbx-smoke-test
+```
+
+`image/sbx-with-secrets.sh` wraps the bridge: no token file means the bridge starts without keys; a token that Bitwarden rejects, or no network, stops the service from starting. The token is removed from the environment Pi sees, but the fetched keys are in Pi's environment, so anything that can read Pi's environment can read them. Revoke the machine-account token in the vault to cut access.

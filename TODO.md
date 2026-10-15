@@ -40,7 +40,7 @@ Last updated 2026-10-15. `main` is the last settled state; work happens on short
 3. **Web UI.** Thin client over the bridge endpoints, including a hierarchical directory manager (expand/collapse, new/rename/delete,
    pick a session's working directory). Needs bridge endpoints for listing and managing paths, confined to allowed roots (no `..`, no symlink escapes).
 4. **rsync tool for Pi** (where it lives is a decision, below).
-5. **Secrets** via Bitwarden Secrets Manager (`bws run`) on the PC and devbox; in the core VM, either allowlist Bitwarden or inject at boot as systemd credentials.
+5. **Secrets** via Bitwarden Secrets Manager (`bws run`). DONE for the core VM (Oct 15): `bws` 2.1.0 pinned, `image/sbx-with-secrets.sh` wraps pi-bridge, token placed by hand (SETUP.md). Image not yet rebuilt with it; PC and devbox not wired.
 6. **Tailscale in the image** so bridge peers work from the core (the core is allowed egress under the new design).
 7. **Bridge polish:** session persistence across restarts, file uploads.
 8. **Reset hooks:** per-run reset (`SBX_RESET_CMD`), and the full-mode ones (`sbx-vm-revert`, `sbx-reboot-and-wait`) are not shipped.
