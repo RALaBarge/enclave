@@ -2,7 +2,8 @@
 # smoke-test.sh: verify a finished sbx VM. Run as root inside the VM:
 #   sudo bash smoke-test.sh [--quick]
 # Prints PASS / FAIL / SKIP per check. Exits 1 if any check FAILs, 0 otherwise.
-# --quick skips the outbound-egress probe and the end-to-end greet call.
+# --quick skips the core-egress probe and the end-to-end greet call.
+# Works in both modes: lite (sandbox inside this VM) and box (separate sandbox VM at 10.77.0.2; see `sbx-mode`).
 set -uo pipefail
 
 QUICK=0
@@ -28,13 +29,22 @@ check_root() {
   else fail root "must run as root (sudo bash smoke-test.sh)"; exit 1; fi
 }
 
+MODE=$(/usr/local/sbin/sbx-mode 2>/dev/null || echo lite)
+
+check_mode() { pass mode "$MODE (sandbox ${MODE/lite/in this VM})"; }
+
 check_units() {
   local u state
-  for u in ollama loom sbx-console sbx-broker pi-bridge nftables ssh; do
+  for u in ollama loom sbx-console sbx-broker pi-bridge nftables; do
     state=$(systemctl is-active "$u" 2>/dev/null)
     if [ "$state" = active ]; then pass "unit:$u" "active"
     else fail "unit:$u" "state=${state:-unknown}"; fi
   done
+  state=$(systemctl is-active ssh 2>/dev/null)
+  if [ "$MODE" = box ]; then   # the sandbox is another machine: nothing here should accept SSH
+    if [ "$state" = active ]; then fail "unit:ssh" "active in box mode (should be off)"; else pass "unit:ssh" "off in box mode"; fi
+  elif [ "$state" = active ]; then pass "unit:ssh" "active"
+  else fail "unit:ssh" "state=${state:-unknown}"; fi
 }
 
 # Every TCP listener must be bound to loopback (127.0.0.0/8 or ::1).
@@ -56,24 +66,38 @@ check_listeners() {
   else pass listeners "$count TCP listeners, all loopback"; fi
 }
 
-# nftables must carry a default-drop policy on both input and output.
+# This host is the sandbox's gateway: input and forward default-drop, masquerade for sandbox traffic, own output open.
 check_nft_policy() {
   if ! have nft; then fail nft-policy "nft not installed"; return; fi
   local rs missing="" h
   rs=$(nft list ruleset 2>&1) || { fail nft-policy "nft list ruleset failed: $(printf '%s' "$rs" | head -c 200)"; return; }
-  for h in input output; do
+  for h in input forward; do
     printf '%s\n' "$rs" | grep -Eq "hook $h[^;]*;[[:space:]]*policy drop;" || missing="$missing $h"
   done
-  if [ -z "$missing" ]; then pass nft-policy "input and output default drop"
-  else fail nft-policy "no default-drop policy on:$missing"; fi
+  printf '%s\n' "$rs" | grep -Eq "hook output[^;]*;[[:space:]]*policy accept;" || missing="$missing output(open)"
+  if [ -z "$missing" ]; then pass nft-policy "input and forward default drop; core output open by design"
+  else fail nft-policy "unexpected policy on:$missing"; fi
 }
 
+check_gateway() {
+  local rs fwd
+  rs=$(nft list ruleset 2>&1)
+  fwd=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)
+  if [ "$fwd" != 1 ]; then fail gateway "net.ipv4.ip_forward=$fwd (want 1)"; return; fi
+  if ! printf '%s\n' "$rs" | grep -Eq 'oifname != (\{ )?"eth1"( \})? masquerade'; then fail gateway "no masquerade rule for the sandbox link (eth1)"; return; fi
+  # Forwarding must be allowlist-only: every accept in the forward chain is tied to the sandbox interface or to established flows.
+  local loose
+  loose=$(printf '%s\n' "$rs" | awk '/chain forward/{f=1} f&&/}/{f=0} f&&/accept/' | grep -v -E 'iifname|ct state established' || true)
+  if [ -n "$loose" ]; then fail gateway "forward chain has accepts not tied to the sandbox interface: $(printf '%s' "$loose" | head -c 160)"; return; fi
+  pass gateway "forwarding on, sandbox traffic masqueraded, forward chain is allowlist-only"
+}
+
+# The core is not locked down (by design). Informational: pass if it can reach out, skip if the host has no upstream.
 check_outbound() {
-  if [ "$QUICK" = 1 ]; then skip outbound "--quick"; return; fi
-  if ! have curl; then fail outbound "curl not installed"; return; fi
-  if curl -sS --max-time 3 -o /dev/null https://example.com 2>/dev/null; then
-    fail outbound "https://example.com reachable: egress is NOT blocked"
-  else pass outbound "https://example.com blocked"; fi
+  if [ "$QUICK" = 1 ]; then skip core-egress "--quick"; return; fi
+  if ! have curl; then fail core-egress "curl not installed"; return; fi
+  if curl -sS --max-time 4 -o /dev/null https://example.com 2>/dev/null; then pass core-egress "core can reach the internet (open by design)"
+  else skip core-egress "no upstream network from this VM"; fi
 }
 
 check_ollama_model() {
@@ -159,9 +183,11 @@ check_bridge() {
 
 echo "sbx VM smoke test  $(date -Is)  quick=$QUICK"
 check_root
+check_mode
 check_units
 check_listeners
 check_nft_policy
+check_gateway
 check_outbound
 check_ollama_model
 check_loom_http

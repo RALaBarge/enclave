@@ -134,11 +134,22 @@ install -d /opt/pi-bridge
 for f in pairing peers pibridge server; do install -m 644 "$ROOT/harness/bridge/$f.py" /opt/pi-bridge/; done
 install -m 644 "$ROOT/harness/systemd/pi-bridge.service" /etc/systemd/system/
 install -m 755 "$HERE/smoke-test.sh" /usr/local/sbin/sbx-smoke-test
+install -m 755 "$HERE/sbx-mode.sh" /usr/local/sbin/sbx-mode
 install -m 755 "$HERE/sbx-regen-hostkeys.sh" /usr/local/sbin/sbx-regen-hostkeys
 [ -f /etc/sbx/broker.env ] || install -m 640 "$ROOT/harness/broker/broker.env.example" /etc/sbx/broker.env
 runuser -u sbxconsole -- env SBXC_ETC=/etc/sbxfw SBX_COMMON=/opt/sbx-console/common python3 /opt/sbx-console/sbx_console.py --init
 systemctl daemon-reload
 systemctl enable nftables sbx-console loom ollama pi-bridge
+
+# ---- gateway for the separate sandbox box: private link on eth1 (10.77.0.1), forwarding on. The firewall forwards
+# nothing until the console allowlist says so. A one-NIC VM simply never brings eth1 up.
+grep -q "interfaces.d" /etc/network/interfaces || echo "source /etc/network/interfaces.d/*" >> /etc/network/interfaces
+cat >/etc/network/interfaces.d/sbx-link <<'EOF'
+allow-hotplug eth1
+iface eth1 inet static
+    address 10.77.0.1/24
+EOF
+echo "net.ipv4.ip_forward=1" >/etc/sysctl.d/90-sbx-gateway.conf
 
 bash "$HERE/setup-lite.sh"      # sbx user + forced-command key + loopback sshd + broker env + first-boot banner
 echo "Provisioned. Run: bash image/smoke-test.sh"
