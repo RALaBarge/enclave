@@ -15,6 +15,8 @@ logged. This host's own output is open; its input is default-deny except managem
 Rules live in two profiles, "session" (what the agent may reach while it works) and "build" (wider, for
 installing things). Exactly one is active. Each has an allow list and a block list; blocks are checked first.
 A build profile can carry a timer after which the console switches back to session on its own.
+A second, narrow credential (`tighten-token`) may call only POST /api/fw/lockdown, which makes sure the session
+profile is active and can never loosen anything. The pi-bridge holds it, so an agent session always starts tight.
 Changing sandbox rules or the active profile is INSTANT: it cannot lock anyone out, because it only affects traffic
 the sandbox sends through this host. Changing management access or the sandbox interface is two-phase: it goes
 live, then reverts after REVERT_S seconds unless confirmed. Everything applied is saved to $SBXC_ETC/ruleset.nft,
@@ -63,8 +65,13 @@ class Bad(Exception):
     """User-visible validation error (HTTP 400)."""
 
 
+class Conflict(Exception):
+    """The firewall is busy (HTTP 409)."""
+
+
 # ------------------------------------------------------------------ firewall
 
+LOCKDOWN_PATH = "/api/fw/lockdown"
 IFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 SBX_MARK = "0x5b50"      # tags sandbox traffic in prerouting so postrouting can masquerade it
 
@@ -400,6 +407,19 @@ def fw_check_expiry():
     return False
 
 
+def fw_lockdown():
+    """Tighten only: make sure the session profile is active. Never loosens anything."""
+    with _fw_lock:
+        busy = bool(_pending["timer"])
+    if busy:
+        raise Conflict("a confirmed apply is pending: confirm or cancel it first")
+    was = load_policy()["active"]
+    if was == "session":
+        return {"profile": "session", "changed": False}
+    fw_set_profile("session")
+    return {"profile": "session", "changed": True, "was": was}
+
+
 def _expiry_loop():
     while True:
         time.sleep(5)
@@ -691,6 +711,7 @@ ROUTES = {
     ("GET", "/api/fw/drops"): lambda b: fw_drops(),
     ("POST", "/api/fw/apply"): lambda b: fw_apply(b.get("policy"), instant=bool(b.get("instant"))),
     ("POST", "/api/fw/profile"): lambda b: fw_set_profile(b.get("active"), b.get("for_s", 0)),
+    ("POST", LOCKDOWN_PATH): lambda b: fw_lockdown(),
     ("POST", "/api/fw/confirm"): lambda b: fw_confirm(),
     ("POST", "/api/fw/cancel"): lambda b: fw_cancel(),
     ("GET", "/api/tools"): lambda b: tools_list(),
@@ -701,8 +722,8 @@ ROUTES = {
 }
 
 
-def load_token():
-    p = os.path.join(ETC, "token")
+def load_token(name="token"):
+    p = os.path.join(ETC, name)
     try:
         with open(p, encoding="utf-8") as f:
             return f.read().strip()
@@ -713,6 +734,7 @@ def load_token():
 class Handler(BaseHTTPRequestHandler):
     server_version = "sbx-console"
     token = None
+    tighten_token = None      # may call LOCKDOWN_PATH only
 
     def log_message(self, fmt, *a):          # no request bodies / paths with data in logs
         print(time.strftime("%H:%M:%S"), self.command, self.path.split("?")[0], file=sys.stderr, flush=True)
@@ -743,7 +765,10 @@ class Handler(BaseHTTPRequestHandler):
         if not route:
             return self._send(404, {"error": "not found"})
         auth = self.headers.get("Authorization", "")
-        if not self.token or not hmac.compare_digest(auth, f"Bearer {self.token}"):
+        ok = bool(self.token) and hmac.compare_digest(auth, f"Bearer {self.token}")
+        if not ok and path == LOCKDOWN_PATH and self.tighten_token:
+            ok = hmac.compare_digest(auth, f"Bearer {self.tighten_token}")
+        if not ok:
             return self._send(401, {"error": "bad or missing token"})
         body = {}
         if method == "POST":
@@ -761,6 +786,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, route(body))
         except Bad as e:
             return self._send(400, {"error": str(e)})
+        except Conflict as e:
+            return self._send(409, {"error": str(e)})
         except Exception as e:               # never leak internals/paths
             print("ERROR", type(e).__name__, e, file=sys.stderr, flush=True)
             return self._send(500, {"error": "internal error"})
@@ -779,6 +806,9 @@ def init():
     tp = os.path.join(ETC, "token")
     if not os.path.exists(tp):
         _atomic_write(tp, secrets.token_urlsafe(24) + "\n", 0o640)
+    tt = os.path.join(ETC, "tighten-token")
+    if not os.path.exists(tt):
+        _atomic_write(tt, secrets.token_urlsafe(24) + "\n", 0o640)   # the image gives it to the pi-bridge's group
     rp = os.path.join(ETC, "ruleset.nft")
     if not os.path.exists(rp):
         # eth1 is the private link to the sandbox box in the two-VM layout; on a one-NIC host it simply never matches.
@@ -797,6 +827,7 @@ def main():
     except Exception as e:
         print(f"expiry check failed: {e}", file=sys.stderr, flush=True)
     Handler.token = load_token()
+    Handler.tighten_token = load_token("tighten-token")
     if not Handler.token:
         sys.exit(f"no token at {os.path.join(ETC, 'token')}; run: sbx_console.py --init")
     print(f"sbx-console on http://{LISTEN}:{PORT}", file=sys.stderr, flush=True)

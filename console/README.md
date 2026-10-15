@@ -1,6 +1,6 @@
-# sbx-console
+# sbx-console (Enclave console)
 
-Local control panel for the deskbox sandbox bridge: **Firewall** (nftables gateway for the sandbox's traffic),
+Local control panel for Enclave's sandbox gateway: **Firewall** (nftables gateway for the sandbox's traffic),
 **Tools** (health of what's in `tools.list`, enable/disable, timeouts) and **Settings** (broker env, lite/full mode).
 Stdlib Python, one static page, no framework. Binds `127.0.0.1:8787`; every API call needs the bearer token.
 

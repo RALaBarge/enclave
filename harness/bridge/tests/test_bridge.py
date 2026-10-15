@@ -7,7 +7,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -108,6 +108,75 @@ class Local(unittest.TestCase):
         c, r = req(base, "/peers")
         self.assertEqual(c, 400)
         self.assertIn("disabled", r["error"])
+
+
+class FakeConsole:
+    """Stands in for the sbx-console: records lockdown calls and answers with a canned status."""
+
+    def __init__(self, tc, status=200, body=None):
+        outer = self
+        self.calls, self.status = [], status
+        self.body = body or {"profile": "session", "changed": True, "was": "build"}
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                outer.calls.append((self.path, self.headers.get("Authorization"), self.headers.get("Host")))
+                raw = json.dumps(outer.body).encode()
+                self.send_response(outer.status)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.srv.daemon_threads = True
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        tc.addCleanup(self.srv.shutdown)
+        self.url = "http://127.0.0.1:%d" % self.srv.server_address[1]
+
+
+class FirewallLockdown(unittest.TestCase):
+    def make(self, console):
+        tok = os.path.join(tempfile.mkdtemp(), "tighten-token")
+        open(tok, "w").write("t-secret\n")
+        app = S.App(FAKE, state_dir=tempfile.mkdtemp(), firewall=(console.url, tok))
+        self.addCleanup(app.reg.stop_all)
+        return app, serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app)))
+
+    def test_session_start_tightens_first_and_reports_it(self):
+        con = FakeConsole(self)
+        app, base = self.make(con)
+        c, s = req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})
+        self.assertEqual(c, 201)
+        self.assertEqual(s["firewall"], {"profile": "session", "changed": True, "was": "build"})
+        path, auth, host = con.calls[0]
+        self.assertEqual((path, auth), ("/api/fw/lockdown", "Bearer t-secret"))
+        self.assertTrue(host.startswith("127.0.0.1:"))
+
+    def test_failed_lockdown_means_no_session(self):
+        for status in (409, 401, 500):
+            con = FakeConsole(self, status=status, body={"error": "nope"})
+            app, base = self.make(con)
+            c, r = req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})
+            self.assertEqual(c, 503, status)
+            self.assertIn("session not started", r["error"])
+            self.assertEqual(app.reg.list(), [])
+        app = S.App(FAKE, state_dir=tempfile.mkdtemp(), firewall=("http://127.0.0.1:1", os.path.join(tempfile.mkdtemp(), "missing")))
+        self.addCleanup(app.reg.stop_all)
+        base = serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app)))
+        c, r = req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})
+        self.assertEqual(c, 503)                                  # token file missing / console unreachable: fail closed
+        self.assertEqual(app.reg.list(), [])
+
+    def test_not_configured_means_no_call(self):
+        app = S.App(FAKE, state_dir=tempfile.mkdtemp())
+        self.addCleanup(app.reg.stop_all)
+        base = serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app)))
+        c, s = req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})
+        self.assertEqual(c, 201)
+        self.assertNotIn("firewall", s)
 
 
 class Peering(unittest.TestCase):
