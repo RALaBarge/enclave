@@ -1,6 +1,6 @@
 # sbx-console
 
-Local control panel for the deskbox sandbox bridge: **Firewall** (nftables, default-deny in and out),
+Local control panel for the deskbox sandbox bridge: **Firewall** (nftables gateway for the sandbox's traffic),
 **Tools** (health of what's in `tools.list`, enable/disable, timeouts) and **Settings** (broker env, lite/full mode).
 Stdlib Python, one static page, no framework. Binds `127.0.0.1:8787`; every API call needs the bearer token.
 
@@ -14,9 +14,9 @@ The strongest setup puts the **sandbox on its own device that knows only the cor
 device's gateway and decides what its traffic may reach. Lite mode (one VM, one kernel) is the convenient option, not
 the locked-down one. Keep the firewall in default-deny. The UI shows this warning on first launch.
 
-Status: today this console manages the *core's own* ruleset (default-deny in, out and forward). Moving the allowlist to
-"traffic from the sandbox's interface, in the forward chain" is planned (see `TODO.md`); the core itself is not meant to
-stay locked down.
+Status: implemented and verified. The allowlist applies to the forward chain for the sandbox interface (`sbx_ifaces`, default `eth1`),
+DNS from the sandbox is redirected to the first resolver you list, sandbox traffic is masqueraded, and the core's own output is open.
+`console/test_netns.sh` proves the rules on a real kernel in throwaway namespaces; `image/smoke-test*.sh` prove them on two VMs.
 
 ## Modes
 

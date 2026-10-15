@@ -31,6 +31,19 @@ packer build -force -only='sbx-vm.qemu.sbx' -var "base_image=$((Resolve-Path ..\
 
 `tcg` (software) works but is roughly 50x slower; the install alone takes over an hour.
 
+## The sandbox box (second image, for the two-VM layout)
+
+`bash image/gen-keys.sh` once, then build it from the same base disk. It takes under two minutes and comes out around 700 MB, with no Loom,
+Ollama, Pi, DeskBox, broker key or console in it:
+
+```powershell
+packer build -force -only='sbx-node.qemu.sbxnode' -var "base_image=<path to base.qcow2>" .
+# -> build/packer-out/sbxnode/sbx-node.qcow2
+```
+
+Run both with `image\run-two-vm.ps1` (see `image/SETUP.md`, Full mode). The core build needs `build/keys/core` and this one needs
+`build/keys/sbx`, both made by `gen-keys.sh`.
+
 ## First boot
 
 Console login `sbxadmin` / `sbx-change-me`, forced to change on first login. sshd listens on 127.0.0.1 only and

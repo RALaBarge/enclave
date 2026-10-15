@@ -30,14 +30,16 @@
   sudo cat /etc/sbxfw/token
   ```
 
-## Firewall allowlist
+## Firewall allowlist (what the sandbox may reach)
 
-The fresh install allows **no egress at all**. Add only what the agent needs, for example:
+This VM is the sandbox's **gateway**. The allowlist applies to traffic the sandbox sends *through* this VM (arriving on `eth1`,
+the private link). The fresh install forwards **nothing**. This VM's own traffic is not restricted by it. Add only what the
+sandbox needs, for example:
 
 | Destination        | Port | Why                         |
 |--------------------|------|-----------------------------|
 | your LLM API host  | 443  | model calls (e.g. `openrouter.ai`) |
-| your DNS resolver  | 53   | name lookup (UDP and TCP)   |
+| your DNS resolver  | 53   | the sandbox asks this VM for DNS; this VM's chosen resolver answers (first one listed) |
 
 Then:
 
@@ -73,30 +75,42 @@ Tools are not installable from the console. Add one by hand:
 
 The broker re-reads `/etc/sbx/tools.list` on each request, so list edits apply without a restart.
 
-## Full mode (sandbox on a separate physical box)
+## Full mode: the sandbox on its own device (the strongest setup)
 
-Full mode moves the sbx role off this VM, so an agent that escapes the sandbox still does not reach the broker's host.
+The sandbox is a second machine that knows only this core (`10.77.0.1`). The core is its gateway: it forwards the sandbox's traffic
+only as far as the allowlist says, and masquerades it out. The sandbox holds none of the core's software or secrets.
 
-1. On the sandbox box: install `/opt/sbx/sbx-run` (`sbx/sbx-run`), `/opt/sbx/tools/` and `/opt/sbx/tools.list`.
-   Create an unprivileged `sbx` user. In its `authorized_keys`, force the command:
-   `command="/opt/sbx/sbx-run",restrict ssh-ed25519 AAAA...`
-2. Network layout: the sandbox box has one link, to the core, and no other address or route. The core has a second NIC for the
-   real network. The core is the sandbox's default gateway and applies the egress allowlist in its **forward** chain to
-   traffic from the sandbox's interface. On the sandbox box, allow output only to the core's address and keep
-   default-deny (the core's rules stay authoritative; a compromised sandbox can change its own). **Not shipped yet:**
-   the console currently manages the core's own in/out rules, not the forward chain for sandbox traffic (see `TODO.md`).
-3. On this VM, set `SBX_HOST=<sandbox box address>` in `/etc/sbx/broker.env` and put the broker's private key at
-   `SBX_KEY`. Pin the sandbox host key in `/etc/sbx/known_hosts`.
-4. Copy tools and `tools.list` to the sandbox box by hand. The broker's key is locked to `sbx-run`.
-5. Set `SBX_RESET_CMD` to a reset that restores the sandbox after each job. **The reset hooks
-   (`sbx-vm-revert`, `sbx-reboot-and-wait`) are not shipped.** Write them yourself before using full mode.
-6. `sudo systemctl restart sbx-broker`, then run the smoke test.
+**Layout:** core `eth0` = the real network, core `eth1` = `10.77.0.1/24` (private link), sandbox `eth0` = `10.77.0.2/24`
+(the private link and nothing else). The sandbox's DNS is `10.77.0.1`; the core redirects it to the resolver you list.
+
+**On the Windows PC (verified):** QEMU runs both VMs and joins them with a socket network, so the sandbox has no other path.
+
+```powershell
+bash image/gen-keys.sh                                  # once: broker key + sandbox host key (build/keys, gitignored)
+# build both images (see image/packer/README.md): -only='sbx-vm.qemu.sbx' and -only='sbx-node.qemu.sbxnode'
+powershell -File image\run-two-vm.ps1                   # boots both; consoles on VNC 5907 (core) and 5908 (sandbox)
+powershell -File image\run-two-vm.ps1 -Stop             # stops both, removes the overlays
+```
+
+**On the core:** `sudo sbx-mode box` points the broker at `10.77.0.2` and turns this VM's own sshd off. `sudo sbx-mode lite` goes back.
+Then allow what the sandbox needs in the console's Firewall tab (resolver first, then host:port rules).
+
+**On the sandbox:** `sudo sbx-node-test` checks it (default expects every outbound request to be blocked; after allowing a host on
+the core, `sudo sbx-node-test --expect open <host>`). `sudo sbx-smoke-test` on the core checks the other half, including the
+greet tool running through the broker into the sandbox.
+
+On a physical sandbox box the same layout applies with a real second NIC pair or a crossover cable; set the core's `SBXC_SBX_IFACES`
+(default `eth1`) to the NIC that faces it. Per-run reset: set `SBX_RESET_CMD` in `/etc/sbx/broker.env` to a reset that restores
+the sandbox after each job. **The reset hooks (`sbx-vm-revert`, `sbx-reboot-and-wait`) are not shipped.**
+
+Notes: the sandbox's `/etc/resolv.conf` is immutable (`chattr -i` before changing it). Tools in the sandbox still run in `bwrap`
+with no network of their own; a tool that needs the gateway path would need a per-tool network flag (see `TODO.md`).
 
 ## Verify
 
 ```sh
 sudo sbx-smoke-test                # full check, including the greet call through the broker
-sudo sbx-smoke-test --quick  # skips the egress probe and the greet call
+sudo sbx-smoke-test --quick  # skips the core-egress probe and the greet call
 ```
 
 Each check prints PASS, FAIL or SKIP with a reason. The script exits 1 if anything FAILs. Run it after install,

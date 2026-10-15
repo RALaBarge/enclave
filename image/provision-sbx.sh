@@ -73,7 +73,8 @@ EOF
 printf 'nameserver 10.77.0.1\n' >/usr/local/share/sbx-node/resolv.conf     # the core redirects this to its chosen resolver
 cat >/etc/nftables.conf <<'EOF'
 #!/usr/sbin/nft -f
-# Sandbox box firewall: it may talk to the core and to nothing else. The core's own rules decide what is forwarded.
+# Sandbox box firewall. Everything it sends goes out the one link to the core (a packet for a remote host is addressed to that
+# host and only ROUTED via the core, so the rule is by interface, not by address). The core's forward rules decide what gets through.
 flush ruleset
 table inet sbxnode {
   chain input {
@@ -92,7 +93,7 @@ table inet sbxnode {
     type filter hook output priority 0; policy drop;
     oif lo accept
     ct state established,related accept
-    ip daddr 10.77.0.1 accept
+    oifname "eth0" accept
     limit rate 10/second log prefix "sbxnode-drop: " drop
   }
 }

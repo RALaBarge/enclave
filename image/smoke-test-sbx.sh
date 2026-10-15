@@ -43,7 +43,7 @@ else pass listeners "$n listeners, all on $ME or loopback"; fi
 rs=$(nft list ruleset 2>&1); miss=""
 for h in input forward output; do printf '%s\n' "$rs" | grep -Eq "hook $h[^;]*;[[:space:]]*policy drop;" || miss="$miss $h"; done
 [ -z "$miss" ] && pass nft-policy "input, forward and output default drop" || fail nft-policy "no default drop on:$miss"
-printf '%s\n' "$rs" | grep -Eq "ip daddr $CORE accept" && pass nft-output "output allowed to the core only" || fail nft-output "no rule allowing the core"
+printf '%s\n' "$rs" | grep -Eq 'oifname "eth0" accept' && pass nft-output "output only out the link to the core (eth0)" || fail nft-output "no rule for the link to the core"
 
 # Addressing: one NIC, one address, the core is the gateway and the resolver.
 addrs=$(ip -4 -o addr show scope global | awk '{print $4}' | tr '\n' ' ')
