@@ -7,11 +7,16 @@ Stdlib Python, one static page, no framework. Binds `127.0.0.1:8787`; every API 
 Tools are deliberately **not** installable from the UI. Adding one means writing sandbox code, a contract and a
 pinned stub by hand (`sync.py`), then re-pinning in agent-desk. The Tools tab shows the stub hash to pin.
 
-## Run it on a disposable computer
+## The strongest setup
 
 A VM limits the damage a misbehaving agent or tool can do. It does not make it safe: a VM escape lands on the host.
-For full security run the whole thing on its own machine with no route to anything you care about, and keep the
-firewall in default-deny. The UI shows this warning on first launch.
+The strongest setup puts the **sandbox on its own device that knows only the core's address**. The core is that
+device's gateway and decides what its traffic may reach. Lite mode (one VM, one kernel) is the convenient option, not
+the locked-down one. Keep the firewall in default-deny. The UI shows this warning on first launch.
+
+Status: today this console manages the *core's own* ruleset (default-deny in, out and forward). Moving the allowlist to
+"traffic from the sandbox's interface, in the forward chain" is planned (see `TODO.md`); the core itself is not meant to
+stay locked down.
 
 ## Modes
 

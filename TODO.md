@@ -7,6 +7,10 @@
     so it needs an allowlist of hosts and paths, and `--dry-run` first.
 - [ ] Cross-check `ralabarge/beigebox` for tools/features worth porting (why it came up: unknown, see notes).
 - [ ] Choose the DeskBox licence in `ralabarge/deskbox` (this repo is Apache-2.0) and rebuild the image from a commit that carries it.
+- [ ] **Gateway firewall for sandbox traffic.** Core is the sandbox's gateway: allowlist applies to the forward chain for the
+  sandbox interface (host:port + DNS, reuse the console), masquerade out; core's own output open. Sandbox side: output only to the
+  core address. Two-VM QEMU layout (private net between them, second NIC on the core). Update the smoke test: "sandbox traffic
+  blocked unless allowlisted" instead of "core outbound blocked". Lite mode keeps no network per tool unless a tool needs more.
 - [ ] Tailscale in the VM image for bridge peer messaging (needs firewall openings and a login; bridge peers are off for now).
 - [ ] **Log everything to Loom from the bridge.** Loom is passive: it stores only what a harness POSTs to `/log`, and each call
   keeps just the last user message and the first assistant reply (plus token usage), so tool calls and thinking never get in.

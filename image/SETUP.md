@@ -7,8 +7,12 @@
 > Keep the firewall in default-deny. Also enforce egress at the hypervisor or network edge, so the VM cannot
 > reach out even if its own firewall is misconfigured.
 >
-> - **Lite mode (default):** the sandbox runs inside this VM. Each tool runs in its own `bwrap` with no network.
-> - **Full mode:** the sandbox runs on a separate physical box, which is the stronger option. See below.
+> **The strongest setup:** the sandbox on its own device that knows only this core's address, with the core as its
+> gateway deciding what its traffic may reach. Set it up exactly that way (Full mode, below).
+>
+> - **Lite mode (default):** the sandbox runs inside this VM, sharing one kernel with the core. Each tool runs in its own
+>   `bwrap` with no network. Convenient, not the locked-down option.
+> - **Full mode:** the sandbox runs on its own device, as above. See below.
 
 ## Boot and log in
 
@@ -76,7 +80,11 @@ Full mode moves the sbx role off this VM, so an agent that escapes the sandbox s
 1. On the sandbox box: install `/opt/sbx/sbx-run` (`sbx/sbx-run`), `/opt/sbx/tools/` and `/opt/sbx/tools.list`.
    Create an unprivileged `sbx` user. In its `authorized_keys`, force the command:
    `command="/opt/sbx/sbx-run",restrict ssh-ed25519 AAAA...`
-2. Apply the two-NIC rules from the design notes on both boxes. Keep default-deny on each.
+2. Network layout: the sandbox box has one link, to the core, and no other address or route. The core has a second NIC for the
+   real network. The core is the sandbox's default gateway and applies the egress allowlist in its **forward** chain to
+   traffic from the sandbox's interface. On the sandbox box, allow output only to the core's address and keep
+   default-deny (the core's rules stay authoritative; a compromised sandbox can change its own). **Not shipped yet:**
+   the console currently manages the core's own in/out rules, not the forward chain for sandbox traffic (see `TODO.md`).
 3. On this VM, set `SBX_HOST=<sandbox box address>` in `/etc/sbx/broker.env` and put the broker's private key at
    `SBX_KEY`. Pin the sandbox host key in `/etc/sbx/known_hosts`.
 4. Copy tools and `tools.list` to the sandbox box by hand. The broker's key is locked to `sbx-run`.

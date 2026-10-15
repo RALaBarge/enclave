@@ -27,9 +27,10 @@ button:disabled{opacity:.5;cursor:default}
 section{display:none}section.on{display:block}
 </style></head><body>
 <div id="warn" hidden>
-  <b>Run this on a disposable computer.</b> This VM limits the damage a misbehaving agent or tool can do, but it is not a
-  guarantee: a VM escape lands on the host. For full security run it on its own machine with no route to anything you
-  care about, and keep the firewall below in default-deny. Nothing here protects data you give the agent.
+  <b>Lite mode is the convenient option, not the locked-down one.</b> This VM limits the damage a misbehaving agent or tool
+  can do, but a VM escape lands on the host. The strongest setup puts the sandbox on its own device that knows only the
+  core's address; the core is its gateway and decides what the sandbox's traffic may reach (see SETUP.md, Full mode).
+  Keep the firewall below in default-deny. Nothing here protects data you give the agent.
   <div><button class="b" id="ack">I understand</button></div>
 </div>
 <div id="banner"><b>Firewall change is live but NOT saved.</b> It reverts in <span id="count">0</span>s unless you confirm.
