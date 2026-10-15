@@ -30,7 +30,7 @@ check_root() {
 
 check_units() {
   local u state
-  for u in ollama loom sbx-console sbx-broker nftables ssh; do
+  for u in ollama loom sbx-console sbx-broker pi-bridge nftables ssh; do
     state=$(systemctl is-active "$u" 2>/dev/null)
     if [ "$state" = active ]; then pass "unit:$u" "active"
     else fail "unit:$u" "state=${state:-unknown}"; fi
@@ -141,6 +141,22 @@ check_greet_e2e() {
   else fail greet-e2e "unexpected response: $(printf '%s' "$body" | head -c 200)"; fi
 }
 
+# pi-bridge against the REAL pi binary: create a session, ask pi for its state over RPC, delete it. No model call.
+check_bridge() {
+  local api=http://127.0.0.1:9760 sid out
+  if ! curl -fsS --max-time 5 "$api/health" 2>/dev/null | grep -q '"app": "pi-bridge"'; then
+    fail pi-bridge "GET /health failed on $api"; return
+  fi
+  sid=$(curl -fsS --max-time 10 -H 'Content-Type: application/json' -d '{"cwd":"/var/lib/pi-bridge/work","name":"smoke"}' \
+          "$api/sessions" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
+  if [ -z "$sid" ]; then fail pi-bridge "could not create a session"; return; fi
+  out=$(curl -sS --max-time 40 -H 'Content-Type: application/json' -d '{"type":"get_state"}' "$api/sessions/$sid/command" 2>&1)
+  curl -s --max-time 10 -X DELETE "$api/sessions/$sid" >/dev/null 2>&1
+  if printf '%s' "$out" | python3 -c 'import json,sys; assert json.load(sys.stdin)["success"] is True' 2>/dev/null; then
+    pass pi-bridge "session -> real pi get_state OK"
+  else fail pi-bridge "get_state failed: $(printf '%s' "$out" | head -c 200)"; fi
+}
+
 echo "sbx VM smoke test  $(date -Is)  quick=$QUICK"
 check_root
 check_units
@@ -150,6 +166,7 @@ check_outbound
 check_ollama_model
 check_loom_http
 check_pi
+check_bridge
 check_deskbox
 check_bwrap
 check_greet_e2e

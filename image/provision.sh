@@ -127,12 +127,18 @@ install -m 755 "$ROOT/sbx/sbx-run" /opt/sbx/sbx-run
 cp -r "$ROOT/sbx/tools/." /opt/sbx/tools/
 # Uploads from a Windows build host lose Unix modes; tool entry points must be executable for sbx-run.
 chmod 755 /opt/sbx/sbx-run /opt/sbx/tools/*/run
+# ---- pi-bridge: local HTTP/SSE API over Pi's RPC mode (loopback; peer messaging stays off, no Tailscale in the image) ----
+id pibridge &>/dev/null || useradd --system --home /var/lib/pi-bridge --create-home --shell /usr/sbin/nologin pibridge
+install -d -o pibridge -g pibridge /var/lib/pi-bridge/work /var/lib/pi-bridge/state
+install -d /opt/pi-bridge
+for f in pairing peers pibridge server; do install -m 644 "$ROOT/harness/bridge/$f.py" /opt/pi-bridge/; done
+install -m 644 "$ROOT/harness/systemd/pi-bridge.service" /etc/systemd/system/
 install -m 755 "$HERE/smoke-test.sh" /usr/local/sbin/sbx-smoke-test
 install -m 755 "$HERE/sbx-regen-hostkeys.sh" /usr/local/sbin/sbx-regen-hostkeys
 [ -f /etc/sbx/broker.env ] || install -m 640 "$ROOT/harness/broker/broker.env.example" /etc/sbx/broker.env
 runuser -u sbxconsole -- env SBXC_ETC=/etc/sbxfw SBX_COMMON=/opt/sbx-console/common python3 /opt/sbx-console/sbx_console.py --init
 systemctl daemon-reload
-systemctl enable nftables sbx-console loom ollama
+systemctl enable nftables sbx-console loom ollama pi-bridge
 
 bash "$HERE/setup-lite.sh"      # sbx user + forced-command key + loopback sshd + broker env + first-boot banner
 echo "Provisioned. Run: bash image/smoke-test.sh"

@@ -1,0 +1,21 @@
+[Unit]
+Description=pi-bridge (HTTP/SSE API over Pi's RPC mode; loopback only, peers off)
+After=network.target sbx-broker.service
+
+[Service]
+User=pibridge
+WorkingDirectory=/var/lib/pi-bridge/work
+Environment=HOME=/var/lib/pi-bridge PI_OFFLINE=1 PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1
+ExecStart=/usr/bin/python3 -B /opt/pi-bridge/server.py --pi-bin /usr/local/bin/pi --listen 127.0.0.1:9760 --state-dir /var/lib/pi-bridge/state
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/pi-bridge
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
