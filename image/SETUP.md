@@ -30,25 +30,31 @@
   sudo cat /etc/sbxfw/token
   ```
 
-## Firewall allowlist (what the sandbox may reach)
+## Firewall: what the sandbox may reach
 
-This VM is the sandbox's **gateway**. The allowlist applies to traffic the sandbox sends *through* this VM (arriving on `eth1`,
-the private link). The fresh install forwards **nothing**. This VM's own traffic is not restricted by it. Add only what the
-sandbox needs, for example:
+This VM is the sandbox's **gateway**. The rules apply to traffic the sandbox sends *through* this VM (arriving on `eth1`, the private
+link). The fresh install forwards **nothing**. This VM's own traffic is not restricted by them.
 
-| Destination        | Port | Why                         |
-|--------------------|------|-----------------------------|
-| your LLM API host  | 443  | model calls (e.g. `openrouter.ai`) |
-| your DNS resolver  | 53   | the sandbox asks this VM for DNS; this VM's chosen resolver answers (first one listed) |
+**Two profiles, one active at a time.** `session` is what the agent may reach while it works (for example your LLM API host).
+`build` is wider, for installing things (package registries, git hosts). Each profile has an **allow list** and a **block list**; a block
+always wins over an allow, so you can allow a whole range and carve out one host (say the cloud metadata address). In the **Firewall** tab:
 
-Then:
+1. Pick *Session rules* or *Build rules* to edit, add allow and block entries, and click **Apply**.
+2. **Apply is instant** and saved at once. Allow and block edits and profile switches cannot lock you out, because they only affect the
+   sandbox's traffic. Only a change to *management access* (who may reach this VM) keeps the 60-second confirm: it goes live, then
+   **reverts after 60 seconds unless you confirm**.
+3. **Switch to build** takes a time limit (30 minutes, 2 hours, or none). When it runs out the console switches back to session by itself,
+   so a build window cannot be left open. From the shell: `POST /api/fw/profile {"active":"build","for_s":1800}`.
 
-1. In the **Firewall** tab, add the entries and click **Apply**.
-2. The change goes live immediately and **reverts after 60 seconds unless you confirm**. Confirm in the page
-   while the rules still work. A bad rule cannot lock you out.
-3. Only confirmed rules are saved to `/etc/sbxfw/ruleset.nft`, which loads at boot.
+| Example allow        | Port | Why                         |
+|----------------------|------|-----------------------------|
+| your LLM API host    | 443  | model calls (session profile) |
+| `pypi.org`, `github.com` | 443 | installing packages (build profile) |
+| your DNS resolver    | 53   | the sandbox asks this VM for DNS; the first resolver listed answers (shared by both profiles) |
 
-Hostnames resolve when you click Apply. CDN hosts rotate IPs, so re-apply if a service stops working.
+Hostnames resolve when you click Apply. CDN hosts rotate IPs, so re-apply if a service stops working. Blocks are logged to the Blocked
+attempts table like any other drop. If the console is down when a build window ends, it switches back to session as soon as it starts;
+until then the build rules stay in force.
 
 ## Pi, Loom, DeskBox
 

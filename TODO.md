@@ -19,6 +19,8 @@ Last updated 2026-10-15. Branch `gateway-firewall` carries the in-progress work;
      would let a tool use the gateway path. Touches `toollist.py` (3 copies), `sbx-run`, the contract and the console Tools tab.
    - Run the two-VM layout on Proxmox later (isolated bridge for the sandbox VM). For now: this PC, QEMU.
    - Independent security review of the gateway design (a larger model or a human).
+1a. **Bridge switches firewall profiles** automatically: starting a Pi session activates `session`; a build/install task asks the console for a
+   timed `build` window and drops back when done. (The console endpoint `POST /api/fw/profile` already exists.)
 2. **Log everything to Loom from the bridge.** Loom keeps only the last user message and first assistant reply per `/log` call, so tool
    calls and thinking never get in. The bridge sees every Pi event and can post after each `agent_settled`.
 3a. **Request inspector + fork ("shadow agent") in the UI.** Under each assistant reply bubble, a control that opens the exact HTTP request

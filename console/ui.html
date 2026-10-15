@@ -40,19 +40,32 @@ section{display:none}section.on{display:block}
   <span class="mut" id="tok-state"></span><button class="b" id="tok-btn">Token</button></header>
 <main>
 <section id="fw" class="on">
-  <div class="card"><h2>What the sandbox may reach <span class="mut">(default: nothing)</span></h2>
-    <div class="mut" style="margin-bottom:8px">This VM is the sandbox's gateway. Traffic arriving on <b id="ifaces" class="mono">?</b> is forwarded only if it matches a rule here. This VM's own traffic is not restricted. Hostnames are resolved when applied. CDN-backed hosts change IPs, so re-apply if a service stops working.</div>
+  <div class="card"><h2>Profile <span class="mut">(session: what the agent may reach while it works. build: wider, for installing things)</span></h2>
+    <div class="row"><span id="prof-active" class="pill mono">?</span>
+      <button class="b" id="prof-session">Switch to session</button>
+      <select id="prof-for"><option value="1800">30 minutes</option><option value="7200">2 hours</option><option value="0">no time limit</option></select>
+      <button class="b" id="prof-build">Switch to build</button></div>
+    <div class="row" style="margin-top:10px"><span class="mut">Editing:</span>
+      <button class="b" id="view-session">Session rules</button><button class="b" id="view-build">Build rules</button>
+      <span class="mut">Switching and rule edits apply instantly. Build falls back to session when its time is up.</span></div></div>
+  <div class="card"><h2>Allow <span class="mut" id="allow-for">(session)</span></h2>
+    <div class="mut" style="margin-bottom:8px">This VM is the sandbox's gateway. Traffic arriving on <b id="ifaces" class="mono">?</b> is forwarded only if it matches an allow rule and no block rule. This VM's own traffic is not restricted. Hostnames are resolved when applied. CDN-backed hosts change IPs, so re-apply if a service stops working.</div>
     <table><thead><tr><th>Host / IP / CIDR</th><th>Port</th><th>Proto</th><th>Note</th><th></th></tr></thead><tbody id="allow"></tbody></table>
     <div class="row" style="margin-top:10px"><input id="a-host" placeholder="openrouter.ai" size="22"><input id="a-port" placeholder="443" size="6">
       <select id="a-proto"><option>tcp</option><option>udp</option></select><input id="a-note" placeholder="note" size="20">
       <button class="b" id="a-add">Add</button></div></div>
+  <div class="card"><h2>Block <span class="mut" id="block-for">(session)</span> <span class="mut">(checked first: wins over any allow)</span></h2>
+    <table><thead><tr><th>Host / IP / CIDR</th><th>Port</th><th>Proto</th><th>Note</th><th></th></tr></thead><tbody id="block"></tbody></table>
+    <div class="row" style="margin-top:10px"><input id="b-host" placeholder="169.254.169.254" size="22"><input id="b-port" placeholder="any port" size="8">
+      <select id="b-proto"><option>any</option><option>tcp</option><option>udp</option></select><input id="b-note" placeholder="note" size="20">
+      <button class="b" id="b-add">Add</button></div></div>
   <div class="card"><h2>DNS resolvers <span class="mut">(the sandbox asks this VM; the first one answers)</span></h2><div id="dns" class="row"></div>
     <div class="row" style="margin-top:8px"><input id="d-ip" placeholder="1.1.1.1" size="18"><button class="b" id="d-add">Add</button></div></div>
   <div class="card"><h2>Management access in <span class="mut">(sources allowed to reach this VM)</span></h2>
     <table><tbody id="mgmt"></tbody></table>
     <div class="row" style="margin-top:8px"><input id="m-cidr" placeholder="192.168.122.0/24" size="20"><input id="m-port" placeholder="22" size="6">
       <button class="b" id="m-add">Add</button></div></div>
-  <div class="row" style="margin-bottom:14px"><button class="b p" id="apply">Apply changes</button><span class="mut" id="dirty"></span></div>
+  <div class="row" style="margin-bottom:14px"><button class="b p" id="apply">Apply</button><span class="mut" id="dirty"></span><span class="mut">Instant for rules and profiles; a 60 s confirm only if management access changed.</span></div>
   <div class="card"><h2>Blocked attempts <span class="mut">(newest 500 log lines, grouped)</span></h2>
     <table><thead><tr><th>Dir</th><th>Peer</th><th>Proto</th><th>Port</th><th>Count</th><th></th></tr></thead><tbody id="drops"></tbody></table>
     <div class="mut" id="drops-err"></div><button class="b" id="drops-refresh" style="margin-top:8px">Refresh</button></div>
@@ -68,7 +81,9 @@ section{display:none}section.on{display:block}
 "use strict";
 const $=id=>document.getElementById(id);
 {const m=location.hash.match(/[#&]t=([\w-]+)/);if(m){try{sessionStorage.setItem("sbxc",m[1])}catch(e){}history.replaceState(null,"",location.pathname)}}   // http://127.0.0.1:8787/#t=TOKEN
-let token=sessionStorage.getItem("sbxc")||"", policy={dns:[],mgmt:[],allow:[],sbx_ifaces:[]}, dirty=false, poll=null;
+let token=sessionStorage.getItem("sbxc")||"", policy=emptyPolicy(), saved=emptyPolicy(), view="session", buildLeft=0, dirty=false, poll=null;
+function emptyPolicy(){return{dns:[],mgmt:[],sbx_ifaces:[],active:"session",active_until:0,profiles:{session:{allow:[],block:[]},build:{allow:[],block:[]}}}}
+const P=()=>policy.profiles[view];
 function el(tag,props,...kids){const e=document.createElement(tag);for(const k in props||{})k in e?e[k]=props[k]:e.setAttribute(k,props[k]);for(const c of kids)e.append(c);return e}
 function toast(m,bad){const t=$("toast");t.textContent=m;t.style.background=bad?"var(--bad)":"";t.style.display="block";clearTimeout(toast.h);toast.h=setTimeout(()=>t.style.display="none",4500)}
 async function api(path,body){
@@ -84,10 +99,18 @@ $("tok-btn").onclick=askToken;
 function markDirty(){dirty=true;$("dirty").textContent="Unsaved edits: not yet applied"}
 function renderPolicy(){
   $("ifaces").textContent=(policy.sbx_ifaces||[]).join(", ")||"no interface set (nothing is forwarded)";
-  const a=$("allow");a.replaceChildren();
-  policy.allow.forEach((r,i)=>a.append(el("tr",{},el("td",{className:"mono"},r.host),el("td",{},r.port),el("td",{},r.proto),el("td",{className:"mut"},r.comment),
-    el("td",{},el("button",{className:"b d",textContent:"Remove",onclick:()=>{policy.allow.splice(i,1);markDirty();renderPolicy()}})))));
-  if(!policy.allow.length)a.append(el("tr",{},el("td",{colSpan:5,className:"mut"},"Nothing allowed: the sandbox cannot reach anything.")));
+  const left=buildLeft>0?" ("+(buildLeft>=3600?Math.round(buildLeft/360)/10+" h":Math.ceil(buildLeft/60)+" min")+" left)":"";
+  $("prof-active").textContent="Active: "+policy.active+(policy.active==="build"?(policy.active_until?left:" (no time limit)"):"");
+  $("prof-active").className="pill mono"+(policy.active==="build"?" bad":"");
+  $("prof-session").disabled=policy.active==="session";
+  $("view-session").className="b"+(view==="session"?" p":"");$("view-build").className="b"+(view==="build"?" p":"");
+  $("allow-for").textContent="("+view+")";$("block-for").textContent="("+view+")";
+  const ruleRows=(list,body,empty)=>{body.replaceChildren();
+    list.forEach((r,i)=>body.append(el("tr",{},el("td",{className:"mono"},r.host),el("td",{},r.port==="*"?"any":r.port),el("td",{},r.proto),el("td",{className:"mut"},r.comment),
+      el("td",{},el("button",{className:"b d",textContent:"Remove",onclick:()=>{list.splice(i,1);markDirty();renderPolicy()}})))));
+    if(!list.length)body.append(el("tr",{},el("td",{colSpan:5,className:"mut"},empty)))};
+  ruleRows(P().allow,$("allow"),"Nothing allowed: the sandbox cannot reach anything.");
+  ruleRows(P().block,$("block"),"Nothing blocked.");
   const d=$("dns");d.replaceChildren();
   policy.dns.forEach((ip,i)=>d.append(el("span",{className:"pill mono"},ip+" ",el("a",{href:"#",textContent:"×",onclick:e=>{e.preventDefault();policy.dns.splice(i,1);markDirty();renderPolicy()}}))));
   if(!policy.dns.length)d.append(el("span",{className:"mut"},"None: the sandbox has no name lookups."));
@@ -101,7 +124,8 @@ function showPending(s){
   clearInterval(poll);
   if(s.pending){let n=s.revert_in_s;poll=setInterval(async()=>{n--;$("count").textContent=Math.max(n,0);if(n<=0){clearInterval(poll);const st=await act(()=>api("/api/fw"));if(st){policy=st.policy;renderPolicy();showPending(st)}}},1000)}
 }
-async function loadFw(){const s=await act(()=>api("/api/fw"));if(!s)return;if(!dirty){policy=s.pending&&s.pending_policy?s.pending_policy:s.policy;renderPolicy()}showPending(s)}
+async function loadFw(){const s=await act(()=>api("/api/fw"));if(!s)return;saved=JSON.parse(JSON.stringify(s.policy));buildLeft=s.build_left_s||0;
+  if(!dirty){policy=s.pending&&s.pending_policy?s.pending_policy:s.policy;renderPolicy()}else{policy.active=s.policy.active;policy.active_until=s.policy.active_until;renderPolicy()}showPending(s)}
 async function loadDrops(){
   const r=await act(()=>api("/api/fw/drops"));if(!r)return;
   $("drops-err").textContent=r.error||"";const b=$("drops");b.replaceChildren();
@@ -110,11 +134,23 @@ async function loadDrops(){
   if(!r.drops.length)b.append(el("tr",{},el("td",{colSpan:6,className:"mut"},"No blocked attempts logged.")));
 }
 $("a-add").onclick=()=>{const h=$("a-host").value.trim(),p=$("a-port").value.trim();if(!h||!p)return toast("host and port needed",true);
-  policy.allow.push({host:h,port:p,proto:$("a-proto").value,comment:$("a-note").value.trim()});["a-host","a-port","a-note"].forEach(i=>$(i).value="");markDirty();renderPolicy()};
+  P().allow.push({host:h,port:p,proto:$("a-proto").value,comment:$("a-note").value.trim()});["a-host","a-port","a-note"].forEach(i=>$(i).value="");markDirty();renderPolicy()};
+$("b-add").onclick=()=>{const h=$("b-host").value.trim();if(!h)return toast("host needed",true);
+  const pr=$("b-proto").value,po=$("b-port").value.trim();
+  P().block.push({host:h,port:pr==="any"?"*":(po||"*"),proto:pr,comment:$("b-note").value.trim()});["b-host","b-port","b-note"].forEach(i=>$(i).value="");markDirty();renderPolicy()};
+$("view-session").onclick=()=>{view="session";renderPolicy()};
+$("view-build").onclick=()=>{view="build";renderPolicy()};
+const setProfile=(active,for_s)=>act(async()=>{await api("/api/fw/profile",{active,for_s});toast(active==="build"?"Build profile is active now":"Session profile is active now");await loadFw()});
+$("prof-session").onclick=()=>setProfile("session",0);
+$("prof-build").onclick=()=>{if(dirty)return toast("Apply or discard your edits first",true);setProfile("build",+$("prof-for").value)};
 $("d-add").onclick=()=>{const v=$("d-ip").value.trim();if(v){policy.dns.push(v);$("d-ip").value="";markDirty();renderPolicy()}};
 $("m-add").onclick=()=>{const c=$("m-cidr").value.trim(),p=$("m-port").value.trim();if(c&&p){policy.mgmt.push({cidr:c,port:p,proto:"tcp"});$("m-cidr").value=$("m-port").value="";markDirty();renderPolicy()}};
-$("apply").onclick=()=>act(async()=>{const r=await api("/api/fw/apply",{policy});dirty=false;$("dirty").textContent="";
-  toast(r.warnings.length?r.warnings.join("; "):"Applied. Confirm within "+r.revert_in_s+"s or it reverts.",r.warnings.length>0);loadFw()});
+$("apply").onclick=()=>act(async()=>{
+  // Rule and profile edits cannot lock anyone out, so they apply instantly. Only a change to management access is confirmed.
+  const instant=JSON.stringify(policy.mgmt)===JSON.stringify(saved.mgmt)&&JSON.stringify(policy.sbx_ifaces)===JSON.stringify(saved.sbx_ifaces);
+  const r=await api("/api/fw/apply",{policy,instant});dirty=false;$("dirty").textContent="";
+  toast(r.warnings.length?r.warnings.join("; "):(r.applied?"Applied and saved.":"Applied. Confirm within "+r.revert_in_s+"s or it reverts."),r.warnings.length>0);loadFw()});
+setInterval(()=>{if(!dirty&&document.getElementById("fw").classList.contains("on"))loadFw()},15000);
 $("confirm").onclick=()=>act(async()=>{await api("/api/fw/confirm",{});toast("Saved. Active at next boot too.");loadFw()});
 $("revert").onclick=()=>act(async()=>{await api("/api/fw/cancel",{});dirty=false;toast("Reverted.");loadFw()});
 $("drops-refresh").onclick=loadDrops;

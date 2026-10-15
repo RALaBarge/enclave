@@ -83,6 +83,120 @@ class Firewall(unittest.TestCase):
         self.assertIn("ip6 daddr { 2606:4700::6812:273 } tcp dport 443 accept", text)
         self.assertEqual(w, [])
 
+    # ---- profiles, block list, instant apply ------------------------------------------------------------
+    def test_block_rules_come_first_and_win(self):
+        p = c.validate_policy({"sbx_ifaces": ["eth1"], "dns": [], "profiles": {"session": {
+            "allow": [{"host": "10.0.0.0/8", "port": 443}],
+            "block": [{"host": "10.0.0.5", "proto": "any", "comment": "no way"}, {"host": "10.9.9.9", "proto": "tcp", "port": "22"},
+                      {"host": "10.8.8.8", "proto": "udp"}]}}})
+        text, w = c.render_ruleset(p, fake_resolve)
+        fwd = text.split("chain forward")[1].split("chain output")[0]
+        self.assertLess(fwd.index("10.0.0.5/32"), fwd.index("tcp dport 443 accept"))      # block before allow
+        self.assertIn('ip daddr { 10.0.0.5/32 } drop comment "no way"', fwd)                 # any protocol, any port
+        self.assertIn("ip daddr { 10.9.9.9/32 } tcp dport 22 drop", fwd)
+        self.assertIn("ip daddr { 10.8.8.8/32 } meta l4proto udp drop", fwd)                 # whole protocol
+        # every drop has its own rate-limited log rule before it, so over-rate packets still hit the drop
+        self.assertEqual(fwd.count('limit rate 10/second log prefix "sbxfw-drop: "\n'), 3)
+        self.assertEqual(w, [])
+
+    def test_only_the_active_profile_is_rendered(self):
+        pol = {"sbx_ifaces": ["eth1"], "profiles": {"session": {"allow": [{"host": "openrouter.ai", "port": 443}]},
+                                                    "build": {"allow": [{"host": "10.1.2.3", "port": 443}]}}}
+        sess, _ = c.render_ruleset(c.validate_policy(pol), fake_resolve)
+        self.assertIn("104.18.2.115", sess)
+        self.assertNotIn("10.1.2.3", sess)
+        build, _ = c.render_ruleset(c.validate_policy({**pol, "active": "build"}), fake_resolve)
+        self.assertIn("10.1.2.3", build)
+        self.assertNotIn("104.18.2.115", build)
+        self.assertIn("Active profile: build", build)
+
+    def test_old_policy_shape_migrates_to_the_session_profile(self):
+        p = c.validate_policy({"dns": ["1.1.1.1"], "allow": [{"host": "openrouter.ai", "port": 443}]})
+        self.assertEqual(p["profiles"]["session"]["allow"][0]["host"], "openrouter.ai")
+        self.assertEqual((p["active"], p["profiles"]["build"]), ("session", {"allow": [], "block": []}))
+
+    def test_profile_and_block_validation(self):
+        bad = [
+            {"profiles": {"staging": {}}},
+            {"profiles": {"session": {}}, "allow": []},
+            {"active": "root"},
+            {"active_until": -5},
+            {"active_until": True},
+            {"block": [{"host": "evil.example.com; drop", "proto": "any"}]},
+            {"block": [{"host": "10.0.0.1", "proto": "icmp"}]},
+            {"block": [{"host": "10.0.0.1", "proto": "any", "port": 80}]},
+            {"allow": [{"host": "10.0.0.1", "proto": "any", "port": 80}]},          # allow rules never take proto any
+            {"allow": [{"host": "10.0.0.1"}]},                                       # allow rules need a port
+            {"block": [{"host": "10.0.0.1", "comment": 'x" drop #'}]},
+        ]
+        for p in bad:
+            with self.assertRaises(c.Bad, msg=str(p)):
+                c.validate_policy(p)
+        self.assertEqual(c.validate_policy({"active": "session", "active_until": 99})["active_until"], 0)   # only build expires
+
+    def _with_fake_nft(self, fn):
+        old = (c._nft, c.ETC)
+        c.ETC = tempfile.mkdtemp()
+        calls = []
+        c._nft = lambda args, stdin=None: (calls.append((args, stdin)) or (0, ""))
+        c._pending.update(timer=None, prev=None, text=None, deadline=0, policy=None)
+        try:
+            return fn(calls)
+        finally:
+            c._nft, c.ETC = old
+            if c._pending["timer"]:
+                c._pending["timer"].cancel()
+            c._pending.update(timer=None, prev=None, text=None, deadline=0, policy=None)
+
+    def test_instant_apply_saves_at_once_and_starts_no_timer(self):
+        def run(calls):
+            base = c.validate_policy({"sbx_ifaces": ["eth1"]})
+            c._save(c.render_ruleset(base)[0], base)
+            r = c.fw_apply({"profiles": {"session": {"allow": [{"host": "1.2.3.4", "port": 443}]}}}, instant=True)
+            self.assertEqual((r["applied"], r["pending"]), (True, False))
+            self.assertIsNone(c._pending["timer"])
+            self.assertEqual(c.load_policy()["profiles"]["session"]["allow"][0]["host"], "1.2.3.4/32")
+            self.assertIn("1.2.3.4", open(os.path.join(c.ETC, "ruleset.nft")).read())
+        self._with_fake_nft(run)
+
+    def test_instant_refuses_anything_that_could_lock_you_out(self):
+        def run(calls):
+            base = c.validate_policy({"sbx_ifaces": ["eth1"]})
+            c._save(c.render_ruleset(base)[0], base)
+            with self.assertRaises(c.Bad):                                 # management access changed
+                c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]}, instant=True)
+            with self.assertRaises(c.Bad):                                 # sandbox interface changed
+                c.fw_apply({"sbx_ifaces": ["eth2"]}, instant=True)
+            c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]})     # the confirmed path still works
+            with self.assertRaises(c.Bad):                                 # and blocks instant edits while it is pending
+                c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]}, instant=True)
+        self._with_fake_nft(run)
+
+    def test_profile_switch_is_instant_and_build_expires(self):
+        def run(calls):
+            base = c.validate_policy({"sbx_ifaces": ["eth1"], "profiles": {"build": {"allow": [{"host": "1.2.3.4", "port": 443}]}}})
+            c._save(c.render_ruleset(base)[0], base)
+            c.fw_set_profile("build", 600)
+            p = c.load_policy()
+            self.assertEqual(p["active"], "build")
+            self.assertAlmostEqual(p["active_until"], __import__("time").time() + 600, delta=5)
+            self.assertIn("1.2.3.4", open(os.path.join(c.ETC, "ruleset.nft")).read())
+            self.assertFalse(c.fw_check_expiry())                          # not yet
+            p["active_until"] = 1                                          # the window ran out
+            c._save(c.render_ruleset(p)[0], p)
+            self.assertTrue(c.fw_check_expiry())
+            back = c.load_policy()
+            self.assertEqual((back["active"], back["active_until"]), ("session", 0))
+            self.assertNotIn("1.2.3.4", open(os.path.join(c.ETC, "ruleset.nft")).read())
+            with self.assertRaises(c.Bad):
+                c.fw_set_profile("build", 5)                               # under the minimum
+            with self.assertRaises(c.Bad):
+                c.fw_set_profile("nonsense")
+            c.fw_set_profile("build", 0)                                   # no time limit
+            self.assertEqual(c.load_policy()["active_until"], 0)
+            self.assertFalse(c.fw_check_expiry())
+        self._with_fake_nft(run)
+
     def test_unresolvable_host_is_skipped_with_warning(self):
         p = c.validate_policy({"sbx_ifaces": ["eth1"], "allow": [{"host": "nope.example.com", "port": 443}]})
         text, w = c.render_ruleset(p, fake_resolve)

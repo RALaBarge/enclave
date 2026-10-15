@@ -23,6 +23,7 @@ ip addr add 203.0.113.1/24 dev c-wan && ip link set c-wan up
 ip -n sbx addr add 10.77.0.2/24 dev s0 && ip -n sbx link set s0 up && ip -n sbx link set lo up
 ip -n sbx route add default via 10.77.0.1
 ip -n world addr add 203.0.113.2/24 dev w0 && ip -n world addr add 203.0.113.53/24 dev w0
+ip -n world addr add 203.0.113.99/24 dev w0
 ip -n world link set w0 up && ip -n world link set lo up
 sysctl -qw net.ipv4.ip_forward=1
 
@@ -99,6 +100,26 @@ echo "== allowlist emptied =="
 apply '{"sbx_ifaces":["c-sbx"],"dns":["203.0.113.53"],"allow":[]}'
 expect "sbx -> formerly allowed host:443"            "TIMEOUT"                   "$(from_sbx tcp 203.0.113.2 443)"
 expect "sbx DNS still answered"                      "dns-ok"                    "$(from_sbx udp 10.77.0.1 53)"
+
+echo "== block list wins over a broader allow =="
+apply '{"sbx_ifaces":["c-sbx"],"dns":["203.0.113.53"],"profiles":{"session":{"allow":[{"host":"203.0.113.0/24","port":443}],"block":[{"host":"203.0.113.99","proto":"any","comment":"deny"}]}}}'
+expect "allowed range: host .2:443"                  "tcp443 client=203.0.113.1" "$(from_sbx tcp 203.0.113.2 443)"
+expect "blocked host inside that range: .99:443"     "TIMEOUT"                   "$(from_sbx tcp 203.0.113.99 443)"
+expect "range allows only the listed port"           "TIMEOUT"                   "$(from_sbx tcp 203.0.113.2 8080)"
+apply '{"sbx_ifaces":["c-sbx"],"dns":["203.0.113.53"],"profiles":{"session":{"allow":[{"host":"203.0.113.0/24","port":443}],"block":[{"host":"203.0.113.0/24","proto":"tcp","port":"443","comment":"deny"}]}}}'
+expect "block on the same range and port wins"       "TIMEOUT"                   "$(from_sbx tcp 203.0.113.2 443)"
+
+echo "== session and build profiles =="
+PROFILES='"profiles":{"session":{"allow":[{"host":"203.0.113.2","port":443}]},"build":{"allow":[{"host":"203.0.113.2","port":8080}]}}'
+apply "{\"sbx_ifaces\":[\"c-sbx\"],\"dns\":[],$PROFILES,\"active\":\"session\"}"
+expect "session active: 443 allowed"                 "tcp443"                    "$(from_sbx tcp 203.0.113.2 443)"
+expect "session active: build's 8080 blocked"        "TIMEOUT"                   "$(from_sbx tcp 203.0.113.2 8080)"
+apply "{\"sbx_ifaces\":[\"c-sbx\"],\"dns\":[],$PROFILES,\"active\":\"build\",\"active_until\":4102444800}"
+expect "build active: 8080 allowed"                  "tcp8080"                   "$(from_sbx tcp 203.0.113.2 8080)"
+expect "build active: session's 443 blocked"         "TIMEOUT"                   "$(from_sbx tcp 203.0.113.2 443)"
+apply "{\"sbx_ifaces\":[\"c-sbx\"],\"dns\":[],$PROFILES,\"active\":\"session\"}"
+expect "back to session: 443 allowed again"          "tcp443"                    "$(from_sbx tcp 203.0.113.2 443)"
+expect "back to session: 8080 blocked again"         "TIMEOUT"                   "$(from_sbx tcp 203.0.113.2 8080)"
 
 echo "== no sandbox interface configured =="
 apply '{"dns":["203.0.113.53"],"allow":[{"host":"203.0.113.2","port":443}]}' 2>"$TMP/warn.txt"
