@@ -7,10 +7,14 @@ contract and a pinned stub by hand (see sync.py).
 Stdlib only. Binds 127.0.0.1; every /api call needs the bearer token in
 $SBXC_ETC/token. Runs as an unprivileged user with CAP_NET_ADMIN (see the unit).
 
-Firewall: default-deny in AND out. Only the allowlist, DNS to named resolvers and
-management sources get through. Applying a ruleset is two-phase: it goes live,
-then reverts after REVERT_S seconds unless confirmed. Only a confirmed ruleset is
-written to $SBXC_ETC/ruleset.nft, which Debian's nftables.service loads at boot.
+Firewall: this host is the sandbox's gateway. Traffic arriving on a sandbox interface
+(policy "sbx_ifaces") is forwarded only if it matches the allowlist (host:port rules, plus
+DNS, which is redirected to the first named resolver so the sandbox only needs to know this
+host's address) and is masqueraded out. Everything else from the sandbox is dropped and
+logged. This host's own output is open; its input is default-deny except management sources.
+Applying a ruleset is two-phase: it goes live, then reverts after REVERT_S seconds unless
+confirmed. Only a confirmed ruleset is written to $SBXC_ETC/ruleset.nft, which Debian's
+nftables.service loads at boot. (Needs net.ipv4.ip_forward=1, set by the image.)
 """
 import hashlib
 import hmac
@@ -57,8 +61,12 @@ class Bad(Exception):
 
 # ------------------------------------------------------------------ firewall
 
+IFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+SBX_MARK = "0x5b50"      # tags sandbox traffic in prerouting so postrouting can masquerade it
+
+
 def default_policy():
-    return {"dns": [], "mgmt": [], "allow": []}
+    return {"dns": [], "mgmt": [], "allow": [], "sbx_ifaces": []}
 
 
 def _port(v):
@@ -87,7 +95,13 @@ def validate_policy(p):
     """Returns a normalized copy or raises Bad. Only validated values reach the ruleset text."""
     if not isinstance(p, dict):
         raise Bad("policy must be an object")
-    out = {"dns": [], "mgmt": [], "allow": []}
+    out = {"dns": [], "mgmt": [], "allow": [], "sbx_ifaces": []}
+    for i in p.get("sbx_ifaces", []):
+        if not isinstance(i, str) or not IFACE_RE.match(i):
+            raise Bad(f"bad interface name: {i!r}")
+        out["sbx_ifaces"].append(i)
+    if len(out["sbx_ifaces"]) > 4:
+        raise Bad("too many sandbox interfaces")
     for r in p.get("dns", []):
         net, _ = _addr(r, False)
         if net.num_addresses != 1:
@@ -146,21 +160,50 @@ def _daddr_rules(addrs, proto, port, comment, direction="daddr"):
     return lines
 
 
+def _ifset(ifs):
+    return "{ " + ", ".join(f'"{i}"' for i in ifs) + " }"
+
+
 def render_ruleset(policy, resolver=resolve):
     """policy (validated) -> (nft text, warnings). Deterministic for a given resolution."""
-    warns, out_rules, in_rules = [], [], []
-    for ip in policy["dns"]:
-        for proto in ("udp", "tcp"):
-            out_rules += _daddr_rules([ip], proto, 53, "dns")
-    for r in policy["allow"]:
-        v4, v6 = resolver(r["host"])
-        if not v4 and not v6:
-            warns.append(f"{r['host']}: did not resolve, rule skipped")
-            continue
-        out_rules += _daddr_rules(v4 + v6, r["proto"], r["port"], r["comment"])
+    warns, fwd, in_rules, dnat = [], [], [], []
+    ifs = policy.get("sbx_ifaces", [])
+    sb = f"iifname {_ifset(ifs)} " if ifs else ""
+    if not ifs:
+        warns.append("no sandbox interface set: nothing is forwarded, so DNS and allow rules have no effect")
+    else:
+        for ip in policy["dns"]:
+            for proto in ("udp", "tcp"):
+                fwd += [sb + ln for ln in _daddr_rules([ip], proto, 53, "dns")]
+        for r in policy["allow"]:
+            v4, v6 = resolver(r["host"])
+            if not v4 and not v6:
+                warns.append(f"{r['host']}: did not resolve, rule skipped")
+                continue
+            fwd += [sb + ln for ln in _daddr_rules(v4 + v6, r["proto"], r["port"], r["comment"])]
+        # The sandbox asks this host for DNS; redirect to the first resolver of each family.
+        v4, v6 = _split(policy["dns"])
+        for fam, addrs in (("ip", v4), ("ip6", v6)):
+            if addrs:
+                for proto in ("udp", "tcp"):
+                    dnat.append(f"{sb}fib daddr type local {proto} dport 53 dnat {fam} to {addrs[0]}")
+        if len(policy["dns"]) > 1:
+            warns.append(f"DNS: only the first resolver per address family is used for the sandbox ({policy['dns'][0]})")
     for r in policy["mgmt"]:
         in_rules += _daddr_rules([r["cidr"]], r["proto"], r["port"], "mgmt", direction="saddr")
     ind = "\n    "
+    nat = ""
+    if ifs:
+        nat = f"""
+  chain prerouting {{
+    type nat hook prerouting priority dstnat; policy accept;
+    {sb}meta mark set {SBX_MARK}
+    {ind.join(dnat) if dnat else '# no resolver set: the sandbox has no name lookups'}
+  }}
+  chain postrouting {{
+    type nat hook postrouting priority srcnat; policy accept;
+    meta mark {SBX_MARK} oifname != {_ifset(ifs)} masquerade
+  }}"""
     text = f"""# Generated by sbx-console. Do not edit; changes are overwritten.
 table inet sbxfw
 delete table inet sbxfw
@@ -170,20 +213,20 @@ table inet sbxfw {{
     iif lo accept
     ct state established,related accept
     ct state invalid drop
+    {(sb + 'icmp type echo-request accept') if ifs else '# no sandbox interface'}
     {ind.join(in_rules) if in_rules else '# no management sources allowed'}
     limit rate 10/second log prefix "sbxfw-drop: " drop
   }}
   chain forward {{
     type filter hook forward priority 0; policy drop;
-  }}
-  chain output {{
-    type filter hook output priority 0; policy drop;
-    oif lo accept
     ct state established,related accept
     ct state invalid drop
-    {ind.join(out_rules) if out_rules else '# no egress allowed'}
+    {ind.join(fwd) if fwd else '# nothing from the sandbox is forwarded'}
     limit rate 10/second log prefix "sbxfw-drop: " drop
   }}
+  chain output {{
+    type filter hook output priority 0; policy accept;
+  }}{nat}
 }}
 """
     return text, warns
@@ -218,6 +261,8 @@ def _atomic_write(path, data, mode=0o644):
 
 def fw_apply(policy):
     """Validate, check, make live, start the revert timer. Returns status dict."""
+    if isinstance(policy, dict) and "sbx_ifaces" not in policy:
+        policy = {**policy, "sbx_ifaces": (_pending.get("policy") or load_policy())["sbx_ifaces"]}
     policy = validate_policy(policy)
     text, warns = render_ruleset(policy)
     with _fw_lock:
@@ -603,7 +648,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def init():
-    """First-run setup: token + a default-deny ruleset that nftables.service loads at boot."""
+    """First-run setup: token + the gateway ruleset (nothing from the sandbox forwarded) that nftables.service loads at boot."""
     import secrets
     os.makedirs(ETC, exist_ok=True)
     tp = os.path.join(ETC, "token")
@@ -611,8 +656,10 @@ def init():
         _atomic_write(tp, secrets.token_urlsafe(24) + "\n", 0o640)
     rp = os.path.join(ETC, "ruleset.nft")
     if not os.path.exists(rp):
-        _atomic_write(rp, render_ruleset(default_policy())[0])
-        _atomic_write(os.path.join(ETC, "policy.json"), json.dumps(default_policy(), indent=2) + "\n")
+        # eth1 is the private link to the sandbox box in the two-VM layout; on a one-NIC host it simply never matches.
+        first = validate_policy({**default_policy(), "sbx_ifaces": [i for i in E("SBXC_SBX_IFACES", "eth1").split(",") if i]})
+        _atomic_write(rp, render_ruleset(first)[0])
+        _atomic_write(os.path.join(ETC, "policy.json"), json.dumps(first, indent=2) + "\n")
     print(f"initialised {ETC} (token: {tp})")
 
 

@@ -8,6 +8,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SBX_HOME=/home/sbx
 KEY=/etc/sbx/id_ed25519
+KEYSRC="$HERE/../keys"   # staged by Packer from build/keys/core (see image/gen-keys.sh); absent = generate
 KH=/etc/sbx/known_hosts
 ENV_FILE=/etc/sbx/broker.env
 SSHD_SNIP=/etc/ssh/sshd_config.d/10-sbx-lite.conf
@@ -31,6 +32,7 @@ chmod 755 "$SBX_HOME"
 
 # ---- key pair (broker side private key, sbx side authorized key) ----
 install -d -m 755 -o root -g root /etc/sbx
+if [ ! -f "$KEY" ] && [ -f "$KEYSRC/broker_ed25519" ]; then install -m 600 "$KEYSRC/broker_ed25519" "$KEY"; fi
 [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N '' -C sbx-broker-lite -f "$KEY"
 chown sbxbroker:sbxbroker "$KEY"
 chmod 600 "$KEY"
@@ -45,6 +47,12 @@ chmod 600 "$SBX_HOME/.ssh/authorized_keys"
 
 # ---- known_hosts: pin the local sshd host key for 127.0.0.1 ----
 printf '127.0.0.1 %s\n' "$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" >"$KH"
+# The separate sandbox box (10.77.0.2) has a build-time host key, pinned here; sbx-regen-hostkeys keeps these lines.
+if [ -f "$KEYSRC/sbx_host_ed25519.pub" ]; then
+  printf '10.77.0.2 %s\n' "$(cut -d' ' -f1,2 "$KEYSRC/sbx_host_ed25519.pub")" >/etc/sbx/known_hosts.box
+  chmod 644 /etc/sbx/known_hosts.box
+  cat /etc/sbx/known_hosts.box >>"$KH"
+fi
 chown root:sbxbroker "$KH"
 chmod 640 "$KH"
 

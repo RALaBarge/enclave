@@ -40,13 +40,13 @@ section{display:none}section.on{display:block}
   <span class="mut" id="tok-state"></span><button class="b" id="tok-btn">Token</button></header>
 <main>
 <section id="fw" class="on">
-  <div class="card"><h2>Egress and ingress allowlist <span class="mut">(default: everything denied)</span></h2>
-    <div class="mut" style="margin-bottom:8px">Hostnames are resolved when applied. CDN-backed hosts change IPs, so re-apply if a service stops working.</div>
+  <div class="card"><h2>What the sandbox may reach <span class="mut">(default: nothing)</span></h2>
+    <div class="mut" style="margin-bottom:8px">This VM is the sandbox's gateway. Traffic arriving on <b id="ifaces" class="mono">?</b> is forwarded only if it matches a rule here. This VM's own traffic is not restricted. Hostnames are resolved when applied. CDN-backed hosts change IPs, so re-apply if a service stops working.</div>
     <table><thead><tr><th>Host / IP / CIDR</th><th>Port</th><th>Proto</th><th>Note</th><th></th></tr></thead><tbody id="allow"></tbody></table>
     <div class="row" style="margin-top:10px"><input id="a-host" placeholder="openrouter.ai" size="22"><input id="a-port" placeholder="443" size="6">
       <select id="a-proto"><option>tcp</option><option>udp</option></select><input id="a-note" placeholder="note" size="20">
       <button class="b" id="a-add">Add</button></div></div>
-  <div class="card"><h2>DNS resolvers <span class="mut">(only these may be asked)</span></h2><div id="dns" class="row"></div>
+  <div class="card"><h2>DNS resolvers <span class="mut">(the sandbox asks this VM; the first one answers)</span></h2><div id="dns" class="row"></div>
     <div class="row" style="margin-top:8px"><input id="d-ip" placeholder="1.1.1.1" size="18"><button class="b" id="d-add">Add</button></div></div>
   <div class="card"><h2>Management access in <span class="mut">(sources allowed to reach this VM)</span></h2>
     <table><tbody id="mgmt"></tbody></table>
@@ -68,7 +68,7 @@ section{display:none}section.on{display:block}
 "use strict";
 const $=id=>document.getElementById(id);
 {const m=location.hash.match(/[#&]t=([\w-]+)/);if(m){try{sessionStorage.setItem("sbxc",m[1])}catch(e){}history.replaceState(null,"",location.pathname)}}   // http://127.0.0.1:8787/#t=TOKEN
-let token=sessionStorage.getItem("sbxc")||"", policy={dns:[],mgmt:[],allow:[]}, dirty=false, poll=null;
+let token=sessionStorage.getItem("sbxc")||"", policy={dns:[],mgmt:[],allow:[],sbx_ifaces:[]}, dirty=false, poll=null;
 function el(tag,props,...kids){const e=document.createElement(tag);for(const k in props||{})k in e?e[k]=props[k]:e.setAttribute(k,props[k]);for(const c of kids)e.append(c);return e}
 function toast(m,bad){const t=$("toast");t.textContent=m;t.style.background=bad?"var(--bad)":"";t.style.display="block";clearTimeout(toast.h);toast.h=setTimeout(()=>t.style.display="none",4500)}
 async function api(path,body){
@@ -83,13 +83,14 @@ $("tok-btn").onclick=askToken;
 // ---- firewall
 function markDirty(){dirty=true;$("dirty").textContent="Unsaved edits: not yet applied"}
 function renderPolicy(){
+  $("ifaces").textContent=(policy.sbx_ifaces||[]).join(", ")||"no interface set (nothing is forwarded)";
   const a=$("allow");a.replaceChildren();
   policy.allow.forEach((r,i)=>a.append(el("tr",{},el("td",{className:"mono"},r.host),el("td",{},r.port),el("td",{},r.proto),el("td",{className:"mut"},r.comment),
     el("td",{},el("button",{className:"b d",textContent:"Remove",onclick:()=>{policy.allow.splice(i,1);markDirty();renderPolicy()}})))));
-  if(!policy.allow.length)a.append(el("tr",{},el("td",{colSpan:5,className:"mut"},"Nothing allowed: no egress at all.")));
+  if(!policy.allow.length)a.append(el("tr",{},el("td",{colSpan:5,className:"mut"},"Nothing allowed: the sandbox cannot reach anything.")));
   const d=$("dns");d.replaceChildren();
   policy.dns.forEach((ip,i)=>d.append(el("span",{className:"pill mono"},ip+" ",el("a",{href:"#",textContent:"×",onclick:e=>{e.preventDefault();policy.dns.splice(i,1);markDirty();renderPolicy()}}))));
-  if(!policy.dns.length)d.append(el("span",{className:"mut"},"None: name lookups are blocked."));
+  if(!policy.dns.length)d.append(el("span",{className:"mut"},"None: the sandbox has no name lookups."));
   const m=$("mgmt");m.replaceChildren();
   policy.mgmt.forEach((r,i)=>m.append(el("tr",{},el("td",{className:"mono"},r.cidr),el("td",{},r.proto+"/"+r.port),
     el("td",{},el("button",{className:"b d",textContent:"Remove",onclick:()=>{policy.mgmt.splice(i,1);markDirty();renderPolicy()}})))));

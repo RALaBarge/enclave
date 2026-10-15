@@ -29,24 +29,62 @@ def fake_resolve(h):
 
 
 class Firewall(unittest.TestCase):
-    def test_default_is_deny_everything(self):
+    def test_default_forwards_nothing_and_leaves_core_output_open(self):
         text, w = c.render_ruleset(c.default_policy(), fake_resolve)
-        self.assertEqual(text.count("policy drop"), 3)
-        self.assertIn("# no egress allowed", text)
-        self.assertNotIn(" accept\n    limit", text.split("chain output")[1].split("oif lo accept")[0])
+        self.assertEqual(text.count("policy drop"), 2)           # input and forward
+        out = text.split("chain output")[1].split("}")[0]
+        self.assertIn("policy accept", out)                      # the core itself is not locked down
+        self.assertIn("# nothing from the sandbox is forwarded", text)
+        self.assertNotIn("masquerade", text)
+        self.assertEqual(len(w), 1)
+        self.assertIn("no sandbox interface", w[0])
+
+    def test_gateway_rules_for_sandbox_traffic(self):
+        p = c.validate_policy({"sbx_ifaces": ["eth1"], "dns": ["1.1.1.1"],
+                               "allow": [{"host": "openrouter.ai", "port": 443, "comment": "llm api"}],
+                               "mgmt": [{"cidr": "192.168.122.0/24", "port": 22}]})
+        text, w = c.render_ruleset(p, fake_resolve)
+        fwd = text.split("chain forward")[1].split("chain output")[0]
+        self.assertIn('iifname { "eth1" } ip daddr { 104.18.2.115, 104.18.3.115 } tcp dport 443 accept comment "llm api"', fwd)
+        self.assertIn('iifname { "eth1" } ip6 daddr { 2606:4700::6812:273 } tcp dport 443 accept', fwd)
+        self.assertIn('iifname { "eth1" } ip daddr { 1.1.1.1 } udp dport 53 accept', fwd)
+        # the sandbox only knows this host: its DNS is redirected to the resolver, and egress is masqueraded
+        self.assertIn('iifname { "eth1" } fib daddr type local udp dport 53 dnat ip to 1.1.1.1', text)
+        self.assertIn('meta mark %s oifname != { "eth1" } masquerade' % c.SBX_MARK, text)
+        self.assertIn("ip saddr { 192.168.122.0/24 } tcp dport 22 accept", text.split("chain forward")[0])
+        # allow rules never apply to the core's own traffic: nothing in the output chain
+        self.assertNotIn("dport 443", text.split("chain output")[1].split("chain prerouting")[0])
+        self.assertEqual(w, [])
+
+    def test_sandbox_interface_validation(self):
+        for bad in (["eth1; flush ruleset"], ["a" * 16], [""], ["eth 1"], [5], ["e"] * 5):
+            with self.assertRaises(c.Bad, msg=str(bad)):
+                c.validate_policy({"sbx_ifaces": bad})
+        self.assertEqual(c.validate_policy({"sbx_ifaces": ["eth1", "br-sbx.10"]})["sbx_ifaces"], ["eth1", "br-sbx.10"])
+
+    def test_apply_keeps_interfaces_when_the_caller_omits_them(self):
+        saved = {"sbx_ifaces": ["eth1"], "dns": [], "mgmt": [], "allow": []}
+        old_load, old_nft = c.load_policy, c._nft
+        c.load_policy = lambda: saved
+        c._nft = lambda args, stdin=None: (0, "")
+        try:
+            c._pending.update(timer=None, prev=None, text=None, deadline=0, policy=None)
+            c.fw_apply({"dns": [], "mgmt": [], "allow": []})
+            self.assertEqual(c._pending["policy"]["sbx_ifaces"], ["eth1"])
+            c.fw_cancel()
+        finally:
+            c.load_policy, c._nft = old_load, old_nft
 
     def test_allow_renders_both_families(self):
-        p = c.validate_policy({"dns": ["1.1.1.1"], "allow": [{"host": "openrouter.ai", "port": 443, "comment": "llm api"}],
-                               "mgmt": [{"cidr": "192.168.122.0/24", "port": 22}]})
+        p = c.validate_policy({"sbx_ifaces": ["eth1"], "dns": ["1.1.1.1"],
+                               "allow": [{"host": "openrouter.ai", "port": 443, "comment": "llm api"}]})
         text, w = c.render_ruleset(p, fake_resolve)
         self.assertIn('ip daddr { 104.18.2.115, 104.18.3.115 } tcp dport 443 accept comment "llm api"', text)
         self.assertIn("ip6 daddr { 2606:4700::6812:273 } tcp dport 443 accept", text)
-        self.assertIn("ip daddr { 1.1.1.1 } udp dport 53 accept", text)
-        self.assertIn("ip saddr { 192.168.122.0/24 } tcp dport 22 accept", text)
         self.assertEqual(w, [])
 
     def test_unresolvable_host_is_skipped_with_warning(self):
-        p = c.validate_policy({"allow": [{"host": "nope.example.com", "port": 443}]})
+        p = c.validate_policy({"sbx_ifaces": ["eth1"], "allow": [{"host": "nope.example.com", "port": 443}]})
         text, w = c.render_ruleset(p, fake_resolve)
         self.assertNotIn("nope", text)
         self.assertEqual(len(w), 1)
@@ -68,7 +106,7 @@ class Firewall(unittest.TestCase):
                 c.validate_policy(p)
 
     def test_port_range_and_cidr_ok(self):
-        p = c.validate_policy({"allow": [{"host": "10.0.0.0/24", "port": "8000-8010", "proto": "udp"}]})
+        p = c.validate_policy({"sbx_ifaces": ["eth1"], "allow": [{"host": "10.0.0.0/24", "port": "8000-8010", "proto": "udp"}]})
         text, _ = c.render_ruleset(p, fake_resolve)
         self.assertIn("udp dport 8000-8010 accept", text)
 

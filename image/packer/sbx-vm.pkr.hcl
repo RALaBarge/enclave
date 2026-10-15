@@ -196,6 +196,40 @@ source "qemu" "sbx" {
   shutdown_timeout = "15m"
 }
 
+# The sandbox box: same installed base disk, provisioned into a lean image that knows only the core (10.77.0.1).
+source "qemu" "sbxnode" {
+  vm_name          = "sbx-node.qcow2"
+  output_directory = "${local.out_dir}/sbxnode"
+  format           = "qcow2"
+  disk_size        = "${var.disk_size_gb}G"
+  disk_compression = true
+  disk_interface   = "virtio"
+  net_device       = "virtio-net"
+  memory           = 2048
+  cpus             = 2
+  accelerator      = var.accelerator
+  headless         = true
+  qemuargs = var.accelerator == "whpx" ? [
+    ["-machine", "type=pc,accel=whpx"],
+    ["-cpu", "Nehalem"],
+    ["-smp", "2"],
+  ] : []
+
+  disk_image       = true
+  use_backing_file = false
+  iso_url          = var.base_image
+  iso_checksum     = "none"
+  boot_wait        = "5s"
+
+  communicator             = "ssh"
+  ssh_username             = local.ssh_user
+  ssh_password             = var.build_password
+  ssh_timeout              = "30m"
+  ssh_file_transfer_method = "sftp"
+  shutdown_command         = "true"
+  shutdown_timeout         = "15m"
+}
+
 # ALTERNATIVE, optional: produces an OVA through VirtualBox. Build only this one with
 #   packer build -only='sbx-vm.virtualbox-iso.sbx_ova' .
 # The installer disk is /dev/sda (SATA) here, so the boot command overrides the preseed's /dev/vda.
@@ -240,7 +274,13 @@ build {
 
   # Stage the repo. image/ must contain artifacts/{agent-desk,tcs-shim,tcs-verify}.
   provisioner "shell" {
-    inline = ["set -e", "mkdir -p /tmp/repo"]
+    inline = ["set -e", "mkdir -p /tmp/repo/keys"]
+  }
+
+  # Broker key pair and the sandbox box's host PUBLIC key (image/gen-keys.sh). Contents land in /tmp/repo/keys/.
+  provisioner "file" {
+    source      = "${local.repo}/build/keys/core/"
+    destination = "/tmp/repo/keys/"
   }
 
   provisioner "file" {
@@ -366,6 +406,76 @@ build {
   }
 
   # SHA-256 manifest for each produced artifact (qcow2 and, if built, the OVA).
+  post-processor "checksum" {
+    checksum_types = ["sha256"]
+    output         = "${local.out_dir}/{{.BuildName}}-{{.BuilderType}}.{{.ChecksumType}}"
+  }
+}
+
+# The sandbox box: no Loom, Ollama, Pi, DeskBox, broker key or console. Needs build/keys/sbx from image/gen-keys.sh.
+build {
+  name    = "sbx-node"
+  sources = ["source.qemu.sbxnode"]
+
+  provisioner "shell" {
+    inline = ["set -e", "mkdir -p /tmp/repo/keys"]
+  }
+
+  provisioner "file" {
+    source      = "${local.repo}/common"
+    destination = "/tmp/repo/"
+  }
+
+  provisioner "file" {
+    source      = "${local.repo}/sbx"
+    destination = "/tmp/repo/"
+  }
+
+  provisioner "file" {
+    source      = "${local.repo}/tools.list"
+    destination = "/tmp/repo/tools.list"
+  }
+
+  provisioner "file" {
+    source      = "${local.repo}/image"
+    destination = "/tmp/repo/"
+  }
+
+  # Broker PUBLIC key and this box's own host key pair.
+  provisioner "file" {
+    source      = "${local.repo}/build/keys/sbx/"
+    destination = "/tmp/repo/keys/"
+  }
+
+  provisioner "shell" {
+    execute_command = local.sudo_cmd
+    inline = [
+      "set -e",
+      "bash /tmp/repo/image/provision-sbx.sh",
+    ]
+  }
+
+  # Switch to the real (static, core-only) network for the next boot, clean up, and power off.
+  provisioner "shell" {
+    execute_command = local.sudo_cmd
+    inline = [<<-EOT
+      set -e
+      bash /tmp/repo/image/finalize-sbx.sh
+      truncate -s 0 /etc/machine-id
+      rm -f /var/lib/dbus/machine-id
+      apt-get clean
+      rm -rf /var/lib/apt/lists/* /tmp/repo /tmp/sbx-*
+      find /var/log -type f -exec truncate -s 0 {} +
+      rm -f /var/cache/debconf/passwords.dat /root/.bash_history /home/sbxadmin/.bash_history
+      # Console-only admin login with a documented password that must be changed at first login. sshd admits only sbx@core.
+      echo 'sbxadmin:sbx-change-me' | chpasswd
+      passwd -e sbxadmin
+      sync
+      systemd-run --on-active=20s --unit=sbx-build-poweroff /bin/systemctl poweroff
+      EOT
+    ]
+  }
+
   post-processor "checksum" {
     checksum_types = ["sha256"]
     output         = "${local.out_dir}/{{.BuildName}}-{{.BuilderType}}.{{.ChecksumType}}"
