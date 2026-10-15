@@ -1,49 +1,47 @@
 # pi-bridge
 
-A small HTTP/SSE API in front of `pi --mode rpc` (one Pi subprocess per session), plus optional **peer messaging**
-between bridge instances on a Tailscale tailnet. No UI: a UI is just a client of these endpoints.
-Python stdlib only; runs anywhere Pi does.
+A small HTTP/SSE API in front of `pi --mode rpc` (one Pi process per session), plus optional messaging between your own
+machines over Tailscale. No UI: a UI is a client of these endpoints. Python stdlib only.
 
 ```
-python server.py --pi-bin /usr/local/bin/pi            # API on 127.0.0.1:9760, token in ~/.pi-bridge-token
-python server.py --peers                               # also enable tailnet peer messaging (off by default)
-python -B -m unittest discover -s tests                # 10 tests, uses a fake Pi
+python server.py --pi-bin /usr/local/bin/pi     # API on 127.0.0.1:9760
+python server.py --peers                        # also talk to your other machines over the tailnet
+python -B -m unittest discover -s tests         # 14 tests, uses a fake Pi
 ```
 
-## Local API (127.0.0.1 only, `Authorization: Bearer <token>`)
+## Local API
+
+Loopback only, **no login**. A web page elsewhere can't drive it: `Host` must be loopback and any `Origin` must be the
+API's own. For another machine, use an SSH tunnel.
 
 | | |
 |---|---|
 | `GET /health` | |
 | `GET/POST /sessions`, `DELETE /sessions/{id}` | create with `{cwd, name?}` |
-| `POST /sessions/{id}/command` | any Pi RPC command object (`prompt`, `steer`, `abort`, `get_messages`, `fork`, ...); returns Pi's response record |
-| `POST /sessions/{id}/ui-response` | answer an extension UI request, no reply expected |
-| `GET /sessions/{id}/events?since=N` | SSE; resumable with `Last-Event-ID`; ring of the last 5000 events |
-| `GET /sessions/{id}/stderr` | last 200 stderr lines from Pi |
+| `POST /sessions/{id}/command` | any Pi RPC command (`prompt`, `steer`, `abort`, `get_messages`, `fork`, ...); returns Pi's response |
+| `POST /sessions/{id}/ui-response` | answer an extension UI request |
+| `GET /sessions/{id}/events?since=N` | SSE, resumable via `Last-Event-ID` (last 5000 events kept) |
+| `GET /sessions/{id}/stderr` | last 200 stderr lines |
 
-Refuses a non-loopback `--listen`, bad `Host` (DNS rebinding) and foreign `Origin` (CSRF). Reach it remotely through an SSH tunnel.
+## Peers (`--peers`)
 
-## Peer messaging (`--peers`)
-
-Lets sessions on different machines send each other messages.
-
-* **Discovery:** `GET /peers` runs `tailscale status --json`, probes each online node on port 9761, and reports which run a
-  bridge. It also lists other Tailscale profiles (`tailscale switch --list`); only the active tailnet is reachable.
-* **Send:** `POST /peers/{node}/send {text, to_session?, from_session?}`.
-* **Identity:** the receiver asks the local tailscaled (`tailscale whois`) who owns the source address. Nothing in the body is
-  trusted for identity. Allowed logins default to this node's own; add more with `--peer-allow`. Tagged nodes with no user
-  login are refused.
-* **Listener:** bound only to this machine's Tailscale IPv4, port 9761, serving only `/peer/hello` and `/peer/message`
-  (64 KiB limit, 30 messages/min per peer, 500-item inbox).
-* **Inbox, not injection:** messages wait in `GET /inbox`. `POST /inbox/{id}/deliver {session}` hands one to a Pi session as a
-  follow-up inside a `<peer-message untrusted="true">` envelope (closing tags in the text are neutralised). `POST
-  /inbox/{id}/dismiss` drops it. Auto-delivery from a given node to a given session exists (`App.auto_deliver`) but is not
-  wired to any flag or endpoint yet, deliberately.
+* **Discovery is open.** `GET /peers` lists your online tailnet nodes and which ones answer `GET /peer/hello` (that reply
+  is only app, version, instance id, name).
+* **First contact negotiates a key.** `POST /peers/{node}/send {text, to_session?}` pairs automatically the first time
+  (X25519 + HKDF, confirmed by a tag), no step for you. Every later request is HMAC-signed with a 60 s window and replay
+  cache. Keys live in `~/.pi-bridge/peers.json`; `DELETE /pairings/{instance}` forgets one. If a peer loses its state, one
+  send fails and the next re-pairs.
+* **Who may pair:** only a tailnet address that `tailscale whois` says belongs to your own login. Everything else is
+  refused. Signing, not Tailscale, decides who may send.
+* **Messages wait in `GET /inbox`.** `POST /inbox/{id}/deliver {session}` hands one to a Pi session inside an
+  `untrusted="true"` envelope (closing tags in the text are neutralised); `.../dismiss` drops it. Nothing reaches an agent
+  on its own.
+* The listener binds to this machine's Tailscale address only (port 9761).
 
 ### Caveats
-* A peer message is untrusted input to an agent that has tools. The envelope is a mitigation, not a boundary. Deliver
-  deliberately, and keep the sandbox doing the real enforcement.
-* Tested end to end on one machine (real Tailscale identity lookup, discovery over the live tailnet). Not yet exercised
-  between two machines.
-* Runs on the **harness** side. The sbx box has no route out and must not run this.
-* The image does not ship Tailscale or this service yet.
+* The key exchange is trust-on-first-use. On your own tailnet that is backed by WireGuard and the whois check; off a tailnet
+  you would be trusting the network.
+* The envelope is a mitigation against prompt injection, not a boundary. The sandbox still does the real enforcement.
+* Run on the harness side only. The sbx box has no route out and must not run this.
+* Verified on one machine (real pairing and signed messages through the live tailnet address). Not yet between two machines.
+* The VM image does not ship Tailscale or this service yet.
