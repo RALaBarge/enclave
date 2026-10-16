@@ -50,6 +50,22 @@ test("sessions: lists, creates, opens into chat, removes, and surfaces errors", 
   assert.equal(s.update({ type: "result", id: "remove", status: 200, body: {} }).calls[0].id, "list");   // success refreshes the list
 });
 
+test("dirs: derives directories from sessions, starts one, hands the session to chat", async () => {
+  const d = await load("dirs.js");
+  assert.deepEqual(validate(d.update({ type: "init" }).view), []);
+  assert.equal(d.update({ type: "init" }).calls[0].path, "/sessions");
+  let out = d.update({ type: "result", id: "list", status: 200, body: [{ id: "a1", cwd: "/w", alive: false }, { id: "b2", cwd: "/w", alive: true }, { id: "c3", cwd: "/v", alive: false }] });
+  assert.deepEqual(validate(out.view), []);
+  assert.match(JSON.stringify(out.view), /"d":"b2"/);
+  assert.doesNotMatch(JSON.stringify(out.view), /"d":"a1"/);
+  assert.deepEqual(d.update({ type: "ui", name: "start", d: "/v" }).calls[0].body, { cwd: "/v" });
+  out = d.update({ type: "result", id: "start", status: 201, body: { id: "e5", cwd: "/v", alive: true } });
+  assert.deepEqual([out.emit[0].to, out.emit[0].msg.session, out.focus], ["chat", "e5", "chat"]);
+  assert.match(JSON.stringify(d.update({ type: "result", id: "start", status: 503, body: { error: "firewall down" } }).view), /firewall down/);
+  out = d.update({ type: "ui", name: "open", d: "b2" });
+  assert.deepEqual([out.emit[0].msg.session, out.focus], ["b2", "chat"]);
+});
+
 test("chat: opens a stream, loads history, streams deltas into one bubble, sends, aborts", async () => {
   const c = await load("chat.js");
   const out = c.update({ type: "open", session: "ab12" });
