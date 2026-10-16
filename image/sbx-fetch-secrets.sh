@@ -3,7 +3,8 @@
 # Installed as /usr/local/bin/sbx-fetch-secrets and run by pi-bridge.service as ExecStartPre=+ (that is, as root, before the
 # service user's process exists). The service then loads the file with EnvironmentFile=.
 #
-#   /etc/sbx/bws-token  machine-account access token. root:root 0600, so the account Pi runs as can NOT read it.
+#   /etc/sbx/bws-token  machine-account access token (lines starting with # are comments). root:root 0600, so the account
+#                       Pi runs as can NOT read it.
 #   /etc/sbx/bws.env    BWS_PROJECT_ID=<uuid of the Bitwarden project holding the secrets>
 #   /run/sbx/secrets.env  output: KEY="value" lines, root:pibridge 0640, on tmpfs (gone at reboot or service stop)
 #
@@ -21,11 +22,11 @@ install -d -m 755 "$out_dir"
 tmp=$(mktemp "$out_dir/.secrets.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 
-if [ -s "$token_file" ]; then
+token=$(grep -sv '^[[:space:]]*#' "$token_file" | tr -d '[:space:]' || true)   # '#' lines are comments
+if [ -n "$token" ]; then
   [ -r "$env_file" ] && . "$env_file"
   : "${BWS_PROJECT_ID:?BWS_PROJECT_ID missing in $env_file}"
-  BWS_ACCESS_TOKEN=$(tr -d '[:space:]' < "$token_file")
-  export BWS_ACCESS_TOKEN
+  export BWS_ACCESS_TOKEN=$token
   json=$(bws secret list "$BWS_PROJECT_ID" --output json)
   printf '%s' "$json" | python3 -c '
 import json, re, sys

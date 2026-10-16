@@ -212,7 +212,7 @@ check_secrets() {
   if ! bws --version >/dev/null 2>&1; then fail secrets "bws is not installed"; return; fi
   if runuser -u pibridge -- test -r /etc/sbx/bws-token 2>/dev/null; then
     fail secrets "the pibridge user can read /etc/sbx/bws-token"; return; fi
-  if [ -s /etc/sbx/bws-token ]; then
+  if grep -qsv '^[[:space:]]*\(#\|$\)' /etc/sbx/bws-token; then
     pass secrets "bws $(bws --version | awk '{print $2}'); token present and unreadable to pibridge (live fetch not tested here)"
   elif sbx-fetch-secrets; then
     pass secrets "bws $(bws --version | awk '{print $2}'); no token yet, fetch step succeeds with an empty env file"
