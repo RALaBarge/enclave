@@ -88,6 +88,32 @@ test("chat: opens a stream, loads history, streams deltas into one bubble, sends
   assert.deepEqual(reopen.streams[0], { id: "events", close: true });
 });
 
+test("tree: lists get_tree as branches, shows a picked node in full, forks there and hands the chat over", async () => {
+  const t = await load("tree.js");
+  assert.deepEqual(t.update({ type: "init" }).view, ["div", { c: "mut" }, "Open a session from the Sessions tab."]);
+  const out = t.update({ type: "open", session: "ab12" });
+  assert.deepEqual(out.calls[0], { id: "tree", method: "POST", path: "/sessions/ab12/command", body: { type: "get_tree" } });
+  const entries = [
+    { id: "e1", parentId: null, message: { role: "user", content: [{ type: "text", text: "hello" }] } },
+    { id: "m1", parentId: "e1", message: { role: "assistant", content: "hi there" } },
+    { id: "x1", parentId: "m1", type: "model_change" },          // no text: skipped, its children attach to m1
+    { id: "u2", parentId: "m1", message: { role: "user", content: "branch A" } },
+    { id: "u3", parentId: "m1", message: { role: "user", content: "branch B" } },
+  ];
+  const tree = JSON.stringify(t.update({ type: "result", id: "tree", status: 200, body: { success: true, data: entries } }).view);
+  assert.match(tree, /branch B/);
+  assert.match(tree, /2 branches/);
+  assert.doesNotMatch(tree, /model_change/);
+  assert.match(JSON.stringify(t.update({ type: "ui", name: "pick", d: "m1" }).view), /hi there/);
+  assert.deepEqual(t.update({ type: "ui", name: "fork", d: "u2" }).calls[0].body, { type: "fork", entryId: "u2" });
+  const done = t.update({ type: "result", id: "fork", status: 200, body: { success: true, data: {} } });
+  assert.deepEqual(done.emit, [{ to: "chat", msg: { type: "open", session: "ab12" } }]);
+  assert.deepEqual([done.focus, done.calls[0].body.type], ["chat", "get_tree"]);
+  assert.match(JSON.stringify(t.update({ type: "result", id: "fork", status: 400, body: { error: "no such entry" } }).view), /no such entry/);
+  const o = (await load("sessions.js")).update({ type: "ui", name: "open", d: "a1" });
+  assert.deepEqual(o.emit.map((e) => e.to), ["chat", "tree"]);
+});
+
 test("chat keeps only the latest 500 items", async () => {
   const c = await load("chat.js");
   c.update({ type: "open", session: "ab12" });
