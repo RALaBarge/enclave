@@ -1,6 +1,6 @@
 # Enclave: status, tasks, decisions
 
-Last updated 2026-10-15. `main` is the last settled state; work happens on short-lived branches.
+Last updated 2026-10-16. `main` is the last settled state; work happens on short-lived branches.
 
 ## Done
 
@@ -12,46 +12,42 @@ Last updated 2026-10-15. `main` is the last settled state; work happens on short
 - Console firewall (merged): session and build profiles, allow and block lists (block wins), instant apply, build timer that falls back to session, UI. Verified in a real browser and on two VMs (instant apply, block beats allow, build profile with timer, switch back).
 - Session lockdown (merged): the bridge makes the console switch to the `session` firewall profile before any session starts, with a tighten-only token (it can never loosen, and fails closed). A build window stays a human action. Verified on the VMs (core smoke 21/21).
 - Project renamed Enclave (README, banners, console title; code identifiers keep `sbx`).
+- Launcher `enclave.cmd` (Oct 16): builds the images, starts and stops both VMs, resets. The core disk persists across restarts (clean ACPI
+  shutdown; a rebuilt image makes it stale and the launcher refuses to reuse it until reset). Verified: a file and a password change survived stop/start.
+- Web UI (Oct 16): modular engine in `harness/ui`, served by pi-bridge at `/ui/`; modules sessions, chat, directories, tree, inspector (JSON in/out
+  Workers with their own CSS). Verified in Edge against a fake Pi and served from the rebuilt core (smoke 22/22). Not yet checked against real Pi events.
+- Bitwarden on the core (Oct 16): real fetch confirmed, both keys arrived. The token file may hold `#` comment lines.
 - MIT licence for this repo (was Apache-2.0 until Oct 15). First-install warnings now describe the strongest setup (sandbox on its own device behind the core).
 
 ## Tasks left, roughly in order
 
-1. ~~Gateway firewall for sandbox traffic~~ **Done** on branch `gateway-firewall`: forward-chain allowlist, DNS redirect, masquerade, core output open;
-   lean sandbox image; two-VM launcher; verified closed -> open -> closed on two real VMs (core 20/20, sandbox 16/16). Follow-ups:
-   - **Tools that need the network:** sandbox tools run in `bwrap` with no network. A per-tool flag in `tools.list` (and `bwrap --share-net`)
-     would let a tool use the gateway path. Touches `toollist.py` (3 copies), `sbx-run`, the contract and the console Tools tab.
-   - Run the two-VM layout on Proxmox later (isolated bridge for the sandbox VM). For now: this PC, QEMU.
-   - Independent security review of the gateway design (a larger model or a human).
-2. **Log everything to Loom from the bridge.** Loom keeps only the last user message and first assistant reply per `/log` call, so tool
-   calls and thinking never get in. The bridge sees every Pi event and can post after each `agent_settled`.
-3a. **Request inspector + fork ("shadow agent") in the UI.** Under each assistant reply bubble, a control that opens the exact HTTP request
-   that produced it (method, URL, params, system prompt, the full message list, tool definitions) in an editor. A **Fork** button in
-   that panel forks the conversation at that step and re-runs it using the edited request, so you can change a prompt, a message or a
-   parameter and compare the new branch against the original side by side.
-   - *Capture:* Pi's RPC does not expose the raw provider request. Likely route: the bridge runs a small local recording proxy and Pi's
-     provider base URL points at it, so every request/response pair is stored (this is also the raw feed for the 98% Loom capture).
-     Match each request to its reply by order and a per-turn id. Redact `Authorization` and other secret headers in anything the UI
-     sees; the real key stays server-side and is added when a request is replayed.
-   - *Fork:* Pi RPC already has `fork {entryId}`, `clone`, `get_fork_messages` and `get_tree`, so the branch itself is cheap.
-   - *Re-run:* **through Pi** (decided 2026-10-15). Fork the session at that entry with Pi's `fork`, apply the edit to the forked
-     context, and run it through Pi, so tool calls execute again in the sandbox and the new branch is a real session you can keep
-     working in. The raw-request recorder stays useful for the inspector view and for Loom.
-   - Conversation tree view already planned for the UI doubles as the place to browse forks.
-3. **Web UI.** STARTED (Oct 16): modular engine in `harness/ui` (modules are JSON-in/JSON-out Workers with their own CSS; served by pi-bridge at `/ui/`; sessions + chat modules, verified in Edge against a fake Pi, NOT yet against real Pi event shapes or in the image). Still to do: directory manager, request inspector/fork, conversation tree, firewall console as a module. Original scope: thin client over the bridge endpoints, including a hierarchical directory manager (expand/collapse, new/rename/delete,
-   pick a session's working directory). Needs bridge endpoints for listing and managing paths, confined to allowed roots (no `..`, no symlink escapes).
-4. **rsync tool for Pi** (where it lives is a decision, below).
-5. **Secrets** via Bitwarden Secrets Manager (`bws run`). DONE for the core VM (Oct 15): `bws` 2.1.0 pinned, `image/sbx-fetch-secrets.sh` runs as root before pi-bridge and writes the keys to a RAM-only env file, token (root-only) placed by hand (SETUP.md). Image not yet rebuilt with it; PC and devbox not wired.
-6. **Tailscale in the image** so bridge peers work from the core (the core is allowed egress under the new design).
-7. **Bridge polish:** session persistence across restarts, file uploads.
-8. **Reset hooks:** per-run reset (`SBX_RESET_CMD`), and the full-mode ones (`sbx-vm-revert`, `sbx-reboot-and-wait`) are not shipped.
-9. **DeskBox licence** in `ralabarge/deskbox`, then rebuild the image from a commit that carries it.
-10. **Push to GitHub** (Git Credential Manager over HTTPS; one browser approval). Nothing is pushed yet.
-10a. **memgate** (spec: `Downloads\MEMGATE_SPEC.md`, written in a web session): a two-stage memory gate on TypeSafe Jev whose Part A changes Loom
-    (ordered append-only messages with `seq`, curated memories with history, `/health` features). Not started. It touches the same Loom schema
-    as the planned `events`/`blobs` extension, so plan both together before changing Loom.
-11. Cross-check `ralabarge/beigebox` for tools and features worth porting.
-12. Not tried yet: Linux/KVM host build, VirtualBox/OVA, UEFI boot. `pi --version` prints `0.0.0`.
-13. Housekeeping: large temp files in the session scratchpad (ISO cache, packer logs, installed.qcow2).
+1. **Put the Bitwarden token back on the core, then check the UI against real Pi.** The chat, tree and inspector modules assume Pi's `get_tree`,
+   `get_fork_messages` and `fork` response shapes and live message events; none is verified. Pi's `fork` is in place on the open session.
+2. **Launcher: keys and smoke test.** Today both are done in the VM window. A host-to-VM channel (a small root service in the image taking fixed
+   verbs over virtio-serial) would let the launcher set the keys and run `sbx-smoke-test`. Also forward a host port to the UI (the bridge listens
+   on the VM's loopback only).
+3. **More UI modules** (research Oct 16, ranked): turn timeline; egress ledger (allow once/always/never from the firewall log); sandbox diff per
+   turn; replay a turn against another model or profile; memory inspector (what Loom injected, editable); prompt X-ray; restore points (disk
+   snapshot per turn); cost/latency ledger; approval gate with secret scope; artifact preview with no network; turn bundle export.
+   - **Firewall console as a module:** built (branch `worktree-agent-aab33566b7ec07002`, not merged). It needs the bridge to proxy `/fw/...` with the
+     console token, which would let Pi edit its own firewall rules. Needs a design where Pi cannot reach the proxy.
+   - Directories: add `GET /dirs` so folders without sessions appear. Inspector: a bridge endpoint that forks into a new session.
+4. **Log everything to Loom from the bridge.** Loom keeps only the last user message and first assistant reply per `/log` call, so tool calls and
+   thinking never get in. The bridge sees every Pi event and can post after each `agent_settled`.
+   - **Request inspector raw view:** Pi's RPC does not expose the provider request. Likely route: a recording proxy in the bridge that Pi's provider
+     base URL points at (also the raw feed for Loom). Redact `Authorization`; the real key stays server-side. Re-run goes through Pi (fork).
+5. **Loom:** merge `memgate-support` into `main`; add the `events`/`blobs` tables and wire `harness/redact/output_redactor.py`; then memgate
+   (spec `Downloads\MEMGATE_SPEC.md`; settle window scoring, the sensitive flag versus auto-write, and the calibration harness first).
+6. **rsync tool for Pi** (harness-side extension: remote hosts, allowlist, dry-run first).
+7. **Tailscale in the image** so bridge peers work from the core.
+8. **Tools that need the network:** a per-tool flag in `tools.list` (and `bwrap --share-net`). Touches `toollist.py` (3 copies), `sbx-run`, the contract and the console Tools tab.
+9. **Reset hooks:** `SBX_RESET_CMD`; the full-mode ones (`sbx-vm-revert`, `sbx-reboot-and-wait`) are not shipped.
+10. **Bridge polish:** session persistence across restarts, file uploads.
+11. **Independent security review** of the gateway design and of the UI engine's sandboxing (a larger model or a human).
+12. Run the two-VM layout on Proxmox (isolated bridge for the sandbox VM). Not tried: Linux/KVM host build, VirtualBox/OVA, UEFI boot.
+13. Housekeeping: large temp files in the session scratchpad; delete the cosmic-comp and webamp forks and the old ai-stack and ORMCP repos on GitHub (then
+    the local clones); unpushed local branches `fw-profiles`, `gateway-firewall`, `session-lockdown`.
+14. Open: keep enclave private (recommended; pinning on GitHub needs public, which first needs a secret/PII scan).
 
 ## Decisions
 
@@ -75,7 +71,7 @@ Still open:
 
 | # | Decision | My recommendation |
 |---|---|---|
-| 10 | **GitHub repo:** public or private, and what name? | Private until the DeskBox licence and secrets handling are settled |
+| 10 | **GitHub repo:** public or private? Now `RALaBarge/enclave`, private | Stay private (see task 14) |
 
 ## From the 2026-10-15 independent review (see repos\REVIEW-2026-10-15.md; report was in OneDrive\Documents\deepseek-harness)
 
@@ -88,4 +84,4 @@ already refused by the existing mismatch check.
 Added: `harness/redact/output_redactor.py` (stdlib secret/PII redactor with a Bitwarden-token pattern, from the old ai-stack). Not wired in yet: it is
 the redaction step for the Loom events/blobs logging task.
 Verified after the fixes (Oct 15): both images rebuilt; core smoke test 22/22, sandbox node test 16/16, kernel lab 28/28. NAS snapshot refreshed (hashes match).
-Still to do: put the Bitwarden token on the core and confirm a real fetch (it has only run against a fake `bws`).
+Bitwarden token on the core and a real fetch: done Oct 16.
