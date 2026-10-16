@@ -44,7 +44,8 @@ test("sessions: lists, creates, opens into chat, removes, and surfaces errors", 
   assert.deepEqual(s.update({ type: "ui", name: "create", values: { cwd: "/w", name: "n" } }).calls[0].body, { cwd: "/w", name: "n" });
   assert.deepEqual(s.update({ type: "ui", name: "create", values: { cwd: "/w", name: "" } }).calls[0].body, { cwd: "/w" });
   out = s.update({ type: "ui", name: "open", d: "a1" });
-  assert.deepEqual([out.emit[0].to, out.emit[0].msg.session, out.focus], ["chat", "a1", "chat"]);
+  assert.deepEqual(out.emit.map((e) => [e.to, e.msg.session]), [["chat", "a1"], ["inspect", "a1"]]);
+  assert.equal(out.focus, "chat");
   assert.equal(s.update({ type: "ui", name: "remove", d: "a1" }).calls[0].method, "DELETE");
   assert.match(JSON.stringify(s.update({ type: "result", id: "create", status: 400, body: { error: "cwd must be a dir" } }).view), /cwd must be a dir/);
   assert.equal(s.update({ type: "result", id: "remove", status: 200, body: {} }).calls[0].id, "list");   // success refreshes the list
@@ -70,6 +71,32 @@ test("chat: opens a stream, loads history, streams deltas into one bubble, sends
   assert.equal(c.update({ type: "ui", name: "abort", values: {} }).calls[0].body.type, "abort");
   const reopen = c.update({ type: "open", session: "cd34" });
   assert.deepEqual(reopen.streams[0], { id: "events", close: true });
+});
+
+test("inspect: timeline of raw events, type filter, expand, replay through a fork", async () => {
+  const s = await load("inspect.js");
+  assert.deepEqual(validate(s.update({ type: "init" }).view), []);
+  let out = s.update({ type: "open", session: "ab12" });
+  assert.deepEqual(out.streams, [{ id: "events", path: "/sessions/ab12/events" }]);
+  assert.deepEqual(out.calls[0], { id: "prompts", method: "POST", path: "/sessions/ab12/command", body: { type: "get_fork_messages" } });
+  s.update({ type: "result", id: "prompts", status: 200, body: { success: true, data: { messages: [{ entryId: "e1", text: "first" }, { entryId: "e2", text: "second" }] } } });
+  const ev = (seq, data) => s.update({ type: "event", stream: "events", seq, data });
+  ev(1, { type: "agent_start" });
+  out = ev(2, { type: "message_update", delta: "hi" });
+  assert.match(JSON.stringify(out.view), / #2 /);
+  assert.deepEqual(validate(out.view), []);
+  out = s.update({ type: "ui", name: "filter", values: { type: "agent_start" } });
+  assert.doesNotMatch(JSON.stringify(out.view), / #2 /);
+  out = s.update({ type: "ui", name: "toggle", d: "1", values: {} });
+  assert.match(JSON.stringify(out.view), /"c":"raw"/);
+  assert.equal(s.update({ type: "ui", name: "replay", d: "e2", values: {} }).calls, undefined, "no replay while a turn runs");
+  s.update({ type: "event", stream: "events", seq: 3, data: { type: "agent_settled" } });
+  out = s.update({ type: "ui", name: "replay", d: "e2", values: {} });
+  assert.deepEqual(out.calls[0].body, { type: "fork", entryId: "e2" });
+  out = s.update({ type: "result", id: "fork", status: 200, body: { success: true, data: {} } });
+  assert.deepEqual(out.calls[1].body, { type: "prompt", message: "second" });
+  for (let i = 0; i < 600; i++) ev(10 + i, { type: "tool_execution_start" });
+  assert.match(JSON.stringify(ev(999, { type: "agent_start" }).view), /"500 events"/);
 });
 
 test("chat keeps only the latest 500 items", async () => {

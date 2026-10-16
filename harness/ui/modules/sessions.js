@@ -47,7 +47,7 @@ export function update(m) {
   }
   if (m.type !== "ui") return {};
   if (m.name === "refresh") return list;
-  if (m.name === "open") return { emit: [{ to: "chat", msg: { type: "open", session: m.d } }], focus: "chat" };
+  if (m.name === "open") return { emit: ["chat", "inspect"].map((to) => ({ to, msg: { type: "open", session: m.d } })), focus: "chat" };
   if (m.name === "remove") return { calls: [{ id: "remove", method: "DELETE", path: "/sessions/" + m.d }] };
   if (m.name === "create") {
     const cwd = (m.values.cwd || "").trim(), name = (m.values.name || "").trim();
