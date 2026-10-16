@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Enclave</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1b2430;--mut:#667385;--card:#fff;--bd:#d9dee5;--ac:#2f5d8a;--ok:#2e8b57;--bad:#b3402a}
+@media (prefers-color-scheme:dark){:root{--bg:#10151b;--fg:#e6eaee;--mut:#93a0ad;--card:#171e26;--bd:#2a333d;--ac:#7aabdb;--ok:#6cc98d;--bad:#ee8a73}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}
+header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--bd);background:var(--card)}
+h1{font-size:16px;margin:0}nav{display:flex;gap:4px}
+nav button{border:0;background:none;color:var(--mut);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+nav button[aria-selected=true]{background:var(--ac);color:#fff}
+main{max-width:980px;margin:0 auto;padding:16px}
+#toast{position:fixed;bottom:14px;right:14px;max-width:420px;padding:10px 14px;border-radius:8px;background:var(--fg);color:var(--bg)}
+</style></head><body>
+<header><h1>Enclave</h1><nav id="nav"></nav></header><main id="main"></main><div id="toast" hidden></div>
+<script type="module">
+// The engine. Modules live in modules/, each a Worker speaking JSON both ways (see host.js); they own their styles and
+// the engine owns the DOM, the network and the clock. Nothing a module does can block this thread.
+import { TAGS, ATTRS, events } from "./view.js";
+
+const mods = new Map();
+const $ = (id) => document.getElementById(id);
+const attrsOf = (n) => (n[1] && typeof n[1] === "object" && !Array.isArray(n[1]) ? n[1] : {});
+const kidsOf = (n) => n.slice(attrsOf(n) === n[1] ? 2 : 1);
+
+let toastTimer;
+function toast(t) {
+  $("toast").textContent = t; $("toast").hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => ($("toast").hidden = true), 6000);
+}
+const show = (id) => { for (const m of mods.values()) { m.btn.setAttribute("aria-selected", m.id === id); m.panel.hidden = m.id !== id; } };
+
+// ---- rendering: positional patch of the module's JSON view into its shadow root
+function setAttrs(el, a, old) {
+  for (const k of Object.keys(old)) if (!(k in a)) {
+    if (k === "on") for (const e of Object.keys(events(old))) delete el.dataset["on" + e];
+    else if (k === "d") delete el.dataset.d;
+    else el.removeAttribute(k === "c" ? "class" : k);
+  }
+  for (const [k, v] of Object.entries(a)) {
+    if (!ATTRS.has(k) || k === "k" || old[k] === v) continue;
+    if (k === "on") for (const [e, name] of Object.entries(events(a))) el.dataset["on" + e] = name;
+    else if (k === "d") el.dataset.d = v;
+    else if (k === "c") el.className = v;
+    else if (k === "value") el.value = v;
+    else if (typeof v === "boolean") { el.toggleAttribute(k, v); if (k in el) el[k] = v; }
+    else el.setAttribute(k, v);
+  }
+  el._a = a;
+}
+function build(n) {
+  if (typeof n === "string" || typeof n === "number") return document.createTextNode(n);
+  const el = document.createElement(TAGS.has(n[0]) ? n[0] : "span");
+  setAttrs(el, attrsOf(n), {});
+  patch(el, kidsOf(n));
+  return el;
+}
+function patch(parent, list) {
+  const want = list.filter((n) => n !== null && n !== false && n !== undefined);
+  want.forEach((n, i) => {
+    const cur = parent.childNodes[i], text = typeof n === "string" || typeof n === "number";
+    if (!cur) parent.append(build(n));
+    else if (text ? cur.nodeType === 3 : cur.localName === n[0] && cur._a && cur._a.k === attrsOf(n).k) {
+      if (text) { if (cur.data !== String(n)) cur.data = n; } else { setAttrs(cur, attrsOf(n), cur._a); patch(cur, kidsOf(n)); }
+    } else cur.replaceWith(build(n));
+  });
+  while (parent.childNodes.length > want.length) parent.lastChild.remove();
+}
+
+// ---- engine -> module
+function send(m, msg) {
+  m.q.push(msg);
+  m.t ||= setTimeout(() => { m.t = 0; m.w.postMessage({ type: "batch", msgs: m.q.splice(0) }); }, 10);
+}
+const allowed = (m, c) => /^\/(?!\/)/.test(c.path) && !c.path.includes("..") && m.spec.allow.some((a) => c.path === a || c.path.startsWith(a + "/"));
+
+async function call(m, c) {
+  let r = { status: 599, body: { error: "call not allowed: " + c.method + " " + c.path } };
+  if (allowed(m, c) && ["GET", "POST", "DELETE"].includes(c.method)) {
+    try {
+      const res = await fetch(c.path, { method: c.method, signal: AbortSignal.timeout(35000),
+        headers: c.body ? { "Content-Type": "application/json" } : {}, body: c.body ? JSON.stringify(c.body) : undefined });
+      r = { status: res.status, body: await res.json().catch(() => null) };
+    } catch (e) { r = { status: 599, body: { error: String(e) } }; }
+  }
+  send(m, { type: "result", id: c.id, ...r });
+}
+
+function stream(m, s) {
+  m.es.get(s.id)?.close();
+  m.es.delete(s.id);
+  if (s.close) return;
+  if (!allowed(m, s)) return toast(m.id + ": stream not allowed: " + s.path);
+  const es = new EventSource(s.path);
+  es.onmessage = (e) => { try { send(m, { type: "event", stream: s.id, seq: +e.lastEventId, data: JSON.parse(e.data) }); } catch {} };
+  m.es.set(s.id, es);
+}
+
+// ---- module -> engine
+function handle(m, out) {
+  if (out.view !== undefined) {
+    m.view = out.view;
+    m.raf ||= requestAnimationFrame(() => { m.raf = 0; patch(m.root, [m.view]); });
+  }
+  (out.calls || []).forEach((c) => call(m, c));
+  (out.streams || []).forEach((s) => stream(m, s));
+  (out.emit || []).forEach((e) => mods.has(e.to) && send(mods.get(e.to), e.msg));
+  if (out.toast) toast(out.toast);
+  if (out.focus && mods.has(out.focus)) show(out.focus);
+}
+
+function mount(m, { spec, css }) {
+  m.spec = spec; m.id = spec.id;
+  mods.set(m.id, m);
+  m.btn.textContent = spec.title;
+  m.btn.dataset.order = spec.order ?? 99;
+  m.btn.onclick = () => show(m.id);
+  [...$("nav").children, m.btn].sort((a, b) => a.dataset.order - b.dataset.order).forEach((b) => $("nav").append(b));
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync("*{box-sizing:border-box}" + css);
+  const shadow = m.panel.attachShadow({ mode: "open" });
+  shadow.adoptedStyleSheets = [sheet];
+  m.root = shadow.appendChild(document.createElement("div"));
+  for (const ev of ["click", "input", "change"]) shadow.addEventListener(ev, (e) => {
+    const el = e.target.closest("[data-on" + ev + "]");
+    if (el) send(m, { type: "ui", name: el.dataset["on" + ev], d: el.dataset.d, values: values(shadow) });
+  });
+  shadow.addEventListener("keydown", (e) => {
+    const el = e.target.closest("[data-onenter]");
+    if (el && e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      send(m, { type: "ui", name: el.dataset.onenter, d: el.dataset.d, values: values(shadow) });
+    }
+  });
+  if (mods.size === 1) show(m.id); else m.panel.hidden = true;
+  send(m, { type: "init" });
+}
+const values = (root) => Object.fromEntries([...root.querySelectorAll("[name]")].map((e) => [e.name, e.type === "checkbox" ? e.checked : e.value]));
+
+async function start() {
+  const files = await (await fetch("modules/modules.json")).json();
+  for (const f of files) {
+    const m = { q: [], t: 0, raf: 0, es: new Map(), btn: document.createElement("button"), panel: document.createElement("section"),
+                w: new Worker("worker.js", { type: "module" }) };
+    $("main").append(m.panel);
+    m.w.onmessage = (e) => (e.data.type === "ready" ? mount(m, e.data) : handle(m, e.data.out));
+    m.w.onerror = (e) => toast(f + ": " + (e.message || "failed to load"));
+    m.w.postMessage({ type: "load", url: new URL("modules/" + f, location.href).href });
+  }
+}
+start().catch((e) => toast("ui failed to start: " + e));
+</script></body></html>

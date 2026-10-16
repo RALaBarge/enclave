@@ -1,7 +1,7 @@
 # pi-bridge
 
 A small HTTP/SSE API in front of `pi --mode rpc` (one Pi process per session), plus optional messaging between your own
-machines over Tailscale. No UI: a UI is a client of these endpoints. Python stdlib only.
+machines over Tailscale. The web UI in `../ui` is a client of these endpoints. Python stdlib only.
 
 ```
 python server.py --pi-bin /usr/local/bin/pi     # API on 127.0.0.1:9760
@@ -17,6 +17,7 @@ API's own. For another machine, use an SSH tunnel.
 | | |
 |---|---|
 | `GET /health` | |
+| `GET /ui/` | the web UI (`../ui`, see its README) |
 | `GET/POST /sessions`, `DELETE /sessions/{id}` | create with `{cwd, name?}` |
 | `POST /sessions/{id}/command` | any Pi RPC command (`prompt`, `steer`, `abort`, `get_messages`, `fork`, ...); returns Pi's response |
 | `POST /sessions/{id}/ui-response` | answer an extension UI request |

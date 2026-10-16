@@ -4,6 +4,7 @@ The local API listens on loopback only and has no login. A web page elsewhere ca
 (DNS rebinding) and any Origin must be the API's own.
 
     GET    /health
+    GET    /ui/                           the web UI (static files from --ui-dir; see ../ui)
     GET    /sessions                      POST /sessions {cwd, name?}          DELETE /sessions/{id}
            (with --firewall-token-file, creating a session first makes the console switch to its `session`
             firewall profile; if that fails the session is NOT started. The bridge can tighten, never loosen.)
@@ -20,6 +21,8 @@ The local API listens on loopback only and has no login. A web page elsewhere ca
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import re
@@ -50,6 +53,8 @@ def host_only(hostport: str) -> str:
         return h[1:h.find("]")] if "]" in h else h
     return h.rsplit(":", 1)[0] if h.count(":") == 1 else h
 SID = r"([0-9a-f]{12})"
+UI_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".json": "application/json"}
+INLINE = re.compile(r"<(script|style)[^>]*>(.*?)</\1>", re.S)
 
 
 class FirewallError(Exception):
@@ -78,6 +83,7 @@ def lockdown(console_url, token_file, timeout=8.0):
 class App:
     def __init__(self, pi_cmd, peer_port=None, state_dir=None, name="bridge", firewall=None):
         self.firewall = firewall          # (console_url, tighten_token_file) or None
+        self.ui_dir = None                # directory served at /ui/
         self.reg = Registry(pi_cmd)
         self.peer_port = peer_port
         self.state_dir = state_dir or tempfile.mkdtemp(prefix="pi-bridge-")
@@ -94,6 +100,25 @@ class App:
         if r.get("success"):
             item["state"], item["delivered_to"] = "delivered", sid
         return r
+
+
+def ui_file(ui_dir, rel):
+    """(path, content type) for a file under ui_dir, or None. Only .html/.js/.json, never outside the directory or in test/."""
+    root = os.path.realpath(ui_dir)
+    path = os.path.realpath(os.path.join(root, rel or "index.html"))
+    ctype = UI_TYPES.get(os.path.splitext(path)[1])
+    if not ctype or os.path.commonpath([root, path]) != root or not os.path.isfile(path) or os.path.relpath(path, root).startswith("test"):
+        return None
+    return path, ctype
+
+
+def ui_csp(html):
+    """script-src and style-src pin the page's own inline blocks by hash; everything else must come from this origin."""
+    def pins(tag):
+        return " ".join("'sha256-%s'" % base64.b64encode(hashlib.sha256(b.replace("\r\n", "\n").encode()).digest()).decode()
+                        for t, b in INLINE.findall(html) if t == tag)
+    return ("default-src 'none'; script-src 'self' %s; style-src 'self' %s; connect-src 'self'; worker-src 'self'; base-uri 'none'"
+            % (pins("script"), pins("style")))
 
 
 def make_handler(app: App):
@@ -134,6 +159,8 @@ def make_handler(app: App):
             if not self._guard():
                 return
             u = urlparse(self.path)
+            if method == "GET" and u.path.startswith("/ui"):
+                return self._ui(u.path)
             try:
                 self._dispatch(method, u.path.rstrip("/") or "/", parse_qs(u.query))
             except KeyError as e:
@@ -144,6 +171,25 @@ def make_handler(app: App):
                 self._json(400, {"error": str(e)})
             except Exception as e:
                 self._json(500, {"error": "%s: %s" % (type(e).__name__, e)})
+
+        def _ui(self, p):
+            if p == "/ui":
+                self.send_response(301)
+                self.send_header("Location", "/ui/")
+                self.send_header("Content-Length", "0")
+                return self.end_headers()
+            f = app.ui_dir and p.startswith("/ui/") and ui_file(app.ui_dir, p[4:])
+            if not f:
+                return self._json(404, {"error": "not found"})
+            raw = open(f[0], "rb").read()
+            self.send_response(200)
+            self.send_header("Content-Type", f[1])
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            if f[1].startswith("text/html"):
+                self.send_header("Content-Security-Policy", ui_csp(raw.decode()))
+            self.end_headers()
+            self.wfile.write(raw)
 
         def do_GET(self):
             self._route("GET")
@@ -273,6 +319,7 @@ def main(argv=None) -> int:
     ap.add_argument("--firewall-token-file", default=None,
                     help="tighten-only token for the console; each new session first switches the firewall to its session profile")
     ap.add_argument("--console-url", default="http://127.0.0.1:8787")
+    ap.add_argument("--ui-dir", default=None, help="web UI files (default: ./ui or ../ui next to this file)")
     ap.add_argument("--peers", action="store_true", help="enable tailnet peer messaging")
     ap.add_argument("--peer-port", type=int, default=P.DEFAULT_PEER_PORT)
     args = ap.parse_args(argv)
@@ -296,6 +343,8 @@ def main(argv=None) -> int:
     app = App([args.pi_bin, "--mode", "rpc", *args.pi_arg], args.peer_port if args.peers else None,
               os.path.abspath(os.path.expanduser(args.state_dir)), name,
               (args.console_url, args.firewall_token_file) if args.firewall_token_file else None)
+    here = os.path.dirname(os.path.abspath(__file__))
+    app.ui_dir = args.ui_dir or next((d for d in (os.path.join(here, "ui"), os.path.join(here, "..", "ui")) if os.path.isdir(d)), None)
     servers = [ThreadingHTTPServer((host, int(port)), make_handler(app))]
     if args.peers:
         ip = next(i for i in st["self"]["ips"] if "." in i)

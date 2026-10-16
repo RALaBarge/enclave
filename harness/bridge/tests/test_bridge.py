@@ -137,6 +137,47 @@ class Local(unittest.TestCase):
         self.assertIn("disabled", r["error"])
 
 
+class Ui(unittest.TestCase):
+    def setUp(self):
+        self.n = Node(self, "u")
+        self.n.app.ui_dir = os.path.join(os.path.dirname(HERE), "..", "ui")
+        self.base = self.n.api
+
+    def get(self, path, headers=None):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(self.base + path, headers=headers or {})) as r:
+                return r.status, r.headers, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
+
+    def test_serves_the_page_with_a_csp_that_pins_its_inline_blocks(self):
+        code, h, body = self.get("/ui/")
+        self.assertEqual(code, 200)
+        self.assertIn(b"<title>Enclave</title>", body)
+        csp = h["Content-Security-Policy"]
+        self.assertIn("default-src 'none'", csp)
+        blocks = S.INLINE.findall(body.decode())
+        self.assertEqual([t for t, _ in blocks], ["style", "script"])
+        for tag, block in blocks:
+            pin = "'sha256-%s'" % S.base64.b64encode(S.hashlib.sha256(block.replace(chr(13) + chr(10), chr(10)).encode()).digest()).decode()
+            self.assertIn(pin, csp.split(tag + "-src")[1].split(";")[0])
+        self.assertNotIn("unsafe-inline", csp)
+
+    def test_files_and_modules(self):
+        self.assertEqual(self.get("/ui/modules/modules.json")[0], 200)
+        self.assertEqual(self.get("/ui/worker.js")[1]["Content-Type"], "text/javascript")
+        self.assertEqual(self.get("/ui")[0], 200)     # urllib follows the redirect to /ui/
+
+    def test_nothing_outside_the_ui_files(self):
+        for bad in ("/ui/../bridge/server.py", "/ui/%2e%2e/bridge/server.py", "/ui/test/ui.test.mjs", "/ui/nope.js", "/ui/modules/"):
+            self.assertEqual(self.get(bad)[0], 404, bad)
+
+    def test_host_checks_apply_and_no_ui_dir_means_404(self):
+        self.assertEqual(self.get("/ui/", {"Host": "evil.example"})[0], 403)
+        self.n.app.ui_dir = None
+        self.assertEqual(self.get("/ui/")[0], 404)
+
+
 class FakeConsole:
     """Stands in for the sbx-console: records lockdown calls and answers with a canned status."""
 

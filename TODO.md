@@ -37,7 +37,7 @@ Last updated 2026-10-15. `main` is the last settled state; work happens on short
      context, and run it through Pi, so tool calls execute again in the sandbox and the new branch is a real session you can keep
      working in. The raw-request recorder stays useful for the inspector view and for Loom.
    - Conversation tree view already planned for the UI doubles as the place to browse forks.
-3. **Web UI.** Thin client over the bridge endpoints, including a hierarchical directory manager (expand/collapse, new/rename/delete,
+3. **Web UI.** STARTED (Oct 16): modular engine in `harness/ui` (modules are JSON-in/JSON-out Workers with their own CSS; served by pi-bridge at `/ui/`; sessions + chat modules, verified in Edge against a fake Pi, NOT yet against real Pi event shapes or in the image). Still to do: directory manager, request inspector/fork, conversation tree, firewall console as a module. Original scope: thin client over the bridge endpoints, including a hierarchical directory manager (expand/collapse, new/rename/delete,
    pick a session's working directory). Needs bridge endpoints for listing and managing paths, confined to allowed roots (no `..`, no symlink escapes).
 4. **rsync tool for Pi** (where it lives is a decision, below).
 5. **Secrets** via Bitwarden Secrets Manager (`bws run`). DONE for the core VM (Oct 15): `bws` 2.1.0 pinned, `image/sbx-fetch-secrets.sh` runs as root before pi-bridge and writes the keys to a RAM-only env file, token (root-only) placed by hand (SETUP.md). Image not yet rebuilt with it; PC and devbox not wired.

@@ -138,6 +138,8 @@ id pibridge &>/dev/null || useradd --system --home /var/lib/pi-bridge --create-h
 install -d -o pibridge -g pibridge /var/lib/pi-bridge/work /var/lib/pi-bridge/state
 install -d /opt/pi-bridge
 for f in pairing peers pibridge server; do install -m 644 "$ROOT/harness/bridge/$f.py" /opt/pi-bridge/; done
+install -d /opt/pi-bridge/ui/modules
+for f in index.html view.js host.js worker.js modules/modules.json modules/sessions.js modules/chat.js; do install -m 644 "$ROOT/harness/ui/$f" "/opt/pi-bridge/ui/$f"; done
 install -m 644 "$ROOT/harness/systemd/pi-bridge.service" /etc/systemd/system/
 install -m 755 "$HERE/smoke-test.sh" /usr/local/sbin/sbx-smoke-test
 install -m 755 "$HERE/sbx-mode.sh" /usr/local/sbin/sbx-mode
