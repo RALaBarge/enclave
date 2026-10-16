@@ -92,10 +92,7 @@ only as far as the allowlist says, and masquerades it out. The sandbox holds non
 **On the Windows PC (verified):** QEMU runs both VMs and joins them with a socket network, so the sandbox has no other path.
 
 ```powershell
-bash image/gen-keys.sh                                  # once: broker key + sandbox host key (build/keys, gitignored)
-# build both images (see image/packer/README.md): -only='sbx-vm.qemu.sbx' and -only='sbx-node.qemu.sbxnode'
-powershell -File image\run-two-vm.ps1                   # boots both; consoles on VNC 5907 (core) and 5908 (sandbox)
-powershell -File image\run-two-vm.ps1 -Stop             # stops both, removes the overlays
+enclave.cmd            # menu: build, start both VMs, stop, reset. The core's own window is its console.
 ```
 
 **On the core:** `sudo sbx-mode box` points the broker at `10.77.0.2` and turns this VM's own sshd off. `sudo sbx-mode lite` goes back.

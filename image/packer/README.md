@@ -41,7 +41,7 @@ packer build -force -only='sbx-node.qemu.sbxnode' -var "base_image=<path to base
 # -> build/packer-out/sbxnode/sbx-node.qcow2
 ```
 
-Run both with `image\run-two-vm.ps1` (see `image/SETUP.md`, Full mode). The core build needs `build/keys/core` and this one needs
+Run both with `enclave.cmd` (see `image/SETUP.md`, Full mode). The core build needs `build/keys/core` and this one needs
 `build/keys/sbx`, both made by `gen-keys.sh`.
 
 ## First boot

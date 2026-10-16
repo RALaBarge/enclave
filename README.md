@@ -23,17 +23,19 @@ its gateway: the sandbox's traffic goes out only as far as an allowlist says, an
 | `console/` | **console**: the firewall (profiles, allow and block lists, instant apply, build timer), the tools list, settings; a small web page. `test_netns.sh` proves the rules on a real kernel. |
 | `harness/broker/` | **broker**: sends tool calls from the core to the sandbox over SSH (forced command). |
 | `sbx/` | the sandbox side: `sbx-run` and the tools, each in its own `bwrap` with no network. |
-| `image/` | builds the VM images with Packer + QEMU: the **core** (`sbx-vm`) and the lean **sandbox** (`sbx-node`, no secrets), plus `run-two-vm.ps1` to boot both. |
+| `image/` | builds the VM images with Packer + QEMU: the **core** (`sbx-vm`) and the lean **sandbox** (`sbx-node`, no secrets), plus `enclave.ps1` (repo root), the launcher. |
 
 Code identifiers keep the older `sbx` name (`sbx-console`, `/opt/sbx`, the `sbxfw` firewall table); Enclave is the project.
 
 ## Try it
 
 ```powershell
-bash image/gen-keys.sh                       # once
-# build both images: image/packer/README.md
-powershell -File image\run-two-vm.ps1        # boots core + sandbox on QEMU
+enclave.cmd                                  # menu: build images, start, stop, reset
 ```
+
+The launcher builds the images (Packer + QEMU, see `image/packer/README.md`) and boots the core and sandbox VMs. The core keeps a
+persistent disk, so its password, keys and data survive restarts; the sandbox starts fresh each time. `enclave.cmd status|start|stop`
+and `enclave.cmd build sbx|core|all` do one thing without the menu.
 
 Then follow `image/SETUP.md`. On the core: `sudo sbx-mode box`, `sudo sbx-smoke-test`. On the sandbox: `sudo sbx-node-test`.
 
