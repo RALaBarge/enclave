@@ -156,7 +156,7 @@ whether deployed tools match the repo (`sync.py` checks the repo, deployment is 
 - It needs general network egress from the core. An agent-facing fetch or curl tool running in the harness process, a listener
   that is not loopback, or a proxy the agent controls, is unfiltered core egress: the console's rules are the forward chain for
   the sandbox interface, and the core's output is `policy accept`. A tool with `net` in `tools.list` is not this; it runs in the
-  sandbox's namespace and is still filtered by that forward chain. The harness's own HTTPS connection to the model provider is
+  The forward chain filters what the sandbox *forwards*, which is the full-mode path. In lite mode the sandbox is this VM, so a net tool shares the core's namespace and reaches loopback (desk, bridge, console, Loom) without the forward chain ever seeing it.
   not this either; an arbitrary request primitive is.
 - It installs its own tool protocol server in the core. MCP is declined (`TODO.md`, 2026-10-18) because it turns a pinned tool
   surface into prompt text served at runtime by a server inside the key-holding VM. A harness that only speaks MCP adds that
