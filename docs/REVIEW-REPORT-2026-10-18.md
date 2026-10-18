@@ -94,6 +94,7 @@ written to that claim would have emitted an empty input schema for every tool an
 | `tcs-verify` on both contracts | all 2 contracts OK |
 | `bash -n` on every shell file touched | clean |
 | `systemd-analyze verify` on the four units | parses; only "marked executable" and "binary not installed here" |
+| note | three bridge tests (`FirewallLockdown`) need `AF_UNIX` and fail on Windows, so that suite's number depends on where it runs; everything above was run under WSL |
 
 Three negative controls, because a check that cannot fail is not a check:
 
