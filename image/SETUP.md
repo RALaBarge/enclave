@@ -11,7 +11,7 @@
 > gateway deciding what its traffic may reach. Set it up exactly that way (Full mode, below).
 >
 > - **Lite mode (default):** the sandbox runs inside this VM, sharing one kernel with the core. Each tool runs in its own
->   `bwrap` with no network. Convenient, not the locked-down option.
+>   `bwrap` with no network unless its `tools.list` line opts in. Convenient, not the locked-down option.
 > - **Full mode:** the sandbox runs on its own device, as above. See below.
 
 ## Boot and log in
@@ -64,22 +64,34 @@ All three are local to the VM.
   its own docs at the pinned commit in `image/manifest.env`.
 - **Loom** (`http://127.0.0.1:9741`): memory service. It embeds text through Ollama using `nomic-embed-text`
   (`http://127.0.0.1:11434`). Embeddings need no internet access.
-- **DeskBox** (`/usr/local/bin/deskbox`, desk at `http://127.0.0.1:8080`): the desk the agent works in.
-  Run `deskbox -h` for its options.
+- **DeskBox** (`/usr/local/bin/agent-desk`, desk at `http://127.0.0.1:8080`): the desk every tool call goes through.
+  It runs as the `deskbox` system account under `-strict`, serves the tools in `/opt/deskbox/tools` (0700, that account only),
+  and keeps its job store and workspaces in `/var/lib/deskbox`. `systemctl status deskbox` and `curl -s 127.0.0.1:8080/`
+  are the two things to look at: the second prints the `enforcement` block, which says whether the sandbox, the syscall filter
+  and the per-job limits are actually live rather than merely configured.
+  The broker's socket is `/run/sbx/broker.sock` (mode 0660, group `sbxdesk`). That socket, bound into each job by the contract's
+  `sandbox.bind`, is the only way a tool call leaves the desk, and no stub has a network at all.
 
 ## Adding a tool
 
 Tools are not installable from the console. Add one by hand:
 
-1. Add a line to `tools.list`: `name [timeout_seconds]` (default 30, max 120).
+1. Add a line to `tools.list`: `name [timeout_seconds] [net]` (timeout default 30, max 120). Add `net` only if the tool
+   needs the sandbox's network namespace; without it the tool runs with no network. The console's Tools tab can toggle it later.
 2. Write `sbx/tools/<name>/run` (runs on the sandbox side; reads JSON on stdin, writes JSON on stdout).
-3. Write `harness/tools/<name>-sbx/tcs.yaml` (the contract, on the trusted side).
+3. Write `harness/tools/<name>-sbx/tcs.yaml` (the contract, on the trusted side). It must keep
+   `allowed_side_effects.network: false` and declare the broker socket in `sandbox.bind`; `sync.py` refuses a contract that
+   drops either, because a stub with no socket and no network cannot call anything.
 4. Run `python3 sync.py`. It generates the stub and validates everything.
 5. Deploy: `tools.list` goes to `/etc/sbx/tools.list` (harness) and to the sandbox side's `tools.list`
-   (see Known limits). Copy `sbx/tools/<name>` to `/opt/sbx/tools/`.
-6. Re-pin the stub hash in agent-desk. The Tools tab in the console shows the hash.
+   (see Known limits). Copy `sbx/tools/<name>` to `/opt/sbx/tools/`. Then
+   `sudo python3 sync.py --deploy /opt/deskbox/tools && sudo chown -R deskbox:deskbox /opt/deskbox/tools` — the desk only
+   serves what is in that directory, and 0700 on the run scripts is what stops anything but the desk from executing them.
+6. Pin the stub: `agent-desk -pin /opt/deskbox/tools/<name>-sbx`, then paste `integrity.run_sha256` into the repo's
+   `tcs.yaml` and re-deploy. The desk checks the pin at load and again per job.
 
-The broker re-reads `/etc/sbx/tools.list` on each request, so list edits apply without a restart.
+The broker and `sbx-run` re-read their `tools.list` on each request, so list edits apply without a restart. A network
+tool still only reaches what the Firewall tab allows for the sandbox.
 
 ## Full mode: the sandbox on its own device (the strongest setup)
 
@@ -103,11 +115,70 @@ the core, `sudo sbx-node-test --expect open <host>`). `sudo sbx-smoke-test` on t
 greet tool running through the broker into the sandbox.
 
 On a physical sandbox box the same layout applies with a real second NIC pair or a crossover cable; set the core's `SBXC_SBX_IFACES`
-(default `eth1`) to the NIC that faces it. Per-run reset: set `SBX_RESET_CMD` in `/etc/sbx/broker.env` to a reset that restores
-the sandbox after each job. **The reset hooks (`sbx-vm-revert`, `sbx-reboot-and-wait`) are not shipped.**
+(default `eth1`) to the NIC that faces it.
 
-Notes: the sandbox's `/etc/resolv.conf` is immutable (`chattr -i` before changing it). Tools in the sandbox still run in `bwrap`
-with no network of their own; a tool that needs the gateway path would need a per-tool network flag (see `TODO.md`).
+**Per-job reset.** The broker runs `SBX_RESET_CMD` after every job while holding its one-job lock, and the next job starts as
+soon as that command returns. A reset that returns early is worse than none: the broker would hand out work on a box in an
+unknown state. The shipped choices:
+
+| Mode | `SBX_RESET_CMD=` | What it does |
+|---|---|---|
+| lite | *(empty)* | Nothing to reset. Every job already gets a fresh `bwrap` tmpfs, and the sandbox is this VM, so a reboot would take the broker with it. |
+| full, separate box | `/usr/local/bin/sbx-reboot-and-wait` | Reboots the box over the broker's SSH channel and waits for that channel to answer again. Installed on the core by `provision.sh`; the box side is installed by `provision-sbx.sh`. |
+| full, QEMU VM, disk revert | **not shipped:** leave it empty | `sbx-vm-revert` is a host-side QEMU operation. See below. |
+
+`sbx-reboot-and-wait` sends the reboot through `/opt/sbx/sbx-channel`: the same key, account, port and known_hosts the broker
+uses, with one extra verb. It then waits up to 60 s for the box to drop SSH and up to 180 s more for `sbx-run` to answer an
+empty request again (exit 2 = the tool channel is back). If either deadline passes it prints the reason to stderr and exits 1;
+the broker logs the failure. It clears RAM and tmpfs, not the box's disk. The box needs `sudo`, `/usr/local/sbin/sbx-reset` and
+the sudoers line; `provision-sbx.sh` installs all three. On a hand-built box, copy `sbx/sbx-channel` and `image/sbx-reset.sh`
+and add the sudoers line as `provision-sbx.sh` does.
+
+**`sbx-vm-revert`: what it must be, and why it is not here.** Reverting a VM disk snapshot is a host-side QEMU operation: stop
+the sandbox VM, throw away its overlay (`build\run\sbx.qcow2`), re-create it from the built image
+(`build\packer-out\sbxnode\sbx-node.qcow2`), and start it again. The broker runs `SBX_RESET_CMD` on the core, and the core has
+no channel to the Windows hypervisor. A script installed on the core under that name could only be a no-op or a failure; either
+way the disk is not reverted, which is the fake this setup deliberately does not ship. The launcher already creates a fresh
+sandbox overlay on every start, so stop/start is the clean-disk operation today. If you add a host-side channel, the helper it
+calls must meet the same contract as `sbx-reboot-and-wait`: bounded, non-zero on failure, and it must not return until the
+box's SSH answers again. That helper cannot be written and called correctly without testing on the host, so it is documentation
+here, not code. The console's reset dropdown still offers `/usr/local/bin/sbx-vm-revert`; choosing it while the file is absent
+makes every reset fail (the broker logs it and the sandbox is not reset). Leave the setting empty on a VM unless you have
+installed a host-side helper and a way for the core to call it.
+
+Notes: the sandbox's `/etc/resolv.conf` is immutable (`chattr -i` before changing it). Tools in the sandbox run in `bwrap` with no
+network unless their `tools.list` line says `net`; a network tool shares the sandbox's network namespace and reaches only what the
+core's firewall forwards for the sandbox.
+
+## Tailscale and bridge peers (installed, off by default)
+
+The image has `tailscaled` and `tailscale` (pinned in `image/manifest.env`) and `tailscaled.service` is enabled, but
+this node is **not logged in**: no auth key or account is baked in, the same rule as the Bitwarden token. Peer
+messaging is off as well: `pi-bridge.service` starts without `--peers`, so it opens no peer listener.
+
+To join your tailnet, on the core as `sbxadmin`:
+
+```sh
+sudo tailscale up --accept-dns=false   # prints a login URL; approve this node on any device on your tailnet
+```
+
+`--accept-dns=false` keeps tailscaled from rewriting `/etc/resolv.conf` (its unit runs with `ProtectSystem=strict`);
+the bridge talks to peers by tailnet IP, so MagicDNS is not needed. `tailscale status` then shows the tailnet and
+`sudo tailscale down` leaves it. Node identity lives in `/var/lib/tailscale`; `sudo systemctl disable --now tailscaled`
+takes the agent out of boot. Nothing here is required for the single-machine setup.
+
+To turn peer messaging on, add `--peers` to the bridge's `ExecStart` and restart it:
+
+```sh
+sudo systemctl edit --full pi-bridge     # append  --peers  to the ExecStart line
+sudo systemctl restart pi-bridge
+```
+
+The peer listener binds this node's tailnet address on TCP 9761 only; the local API stays on `127.0.0.1:9760`. Peers
+are still refused by the firewall's default-deny input chain, because the console's generated ruleset has no
+`tailscale0` rule: `console/nftables.conf` records the one interface-scoped rule that is missing and why it cannot
+live in that file (the console rewrites `/etc/sbxfw/ruleset.nft` on every Apply). Until that rule is in the console's
+generated input chain, inbound peer connections to 9761 are dropped and logged as `sbxfw-drop`.
 
 ## Verify
 
@@ -127,7 +198,9 @@ after every firewall change, and after any tool change.
 - **Blocked-attempt log** (Firewall tab) is empty if the console user cannot read the journal.
 - **Lite mode is not a boundary.** The `bwrap` jail protects the sandbox box from tools. It does not protect this
   VM from a hostile tool that escapes `bwrap`.
-- **Reset hooks are not shipped.** Lite mode does not need one. Full mode does.
+- **`sbx-vm-revert` is not shipped.** A VM disk revert is a host-side QEMU operation, but the broker runs `SBX_RESET_CMD` on
+  the core. The shipped full-mode hook is `sbx-reboot-and-wait` (a reboot, not a disk revert). See Full mode for the contract.
+  The console's reset dropdown still offers the `sbx-vm-revert` path; choosing it without the file makes the reset fail.
 - **Provisioning gaps (check before relying on tools):** `provision.sh` installs `tools.list` only to
   `/etc/sbx/tools.list`, but `sbx-run` reads `/opt/sbx/tools.list`, which it does not install. It also does not
   create the `sbx` SSH user, does not enable `sbx-broker`, and does not write the forced-command key or set
