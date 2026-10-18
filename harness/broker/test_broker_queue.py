@@ -98,6 +98,35 @@ class BrokerTest(unittest.TestCase):
             time.sleep(0.01)
         self.fail(f"timed out waiting for {what}")
 
+    # -- malformed requests answer, they do not drop the connection ------
+
+    def raw_post(self, body, content_length=None):
+        import http.client
+        host, port = self.base.rsplit("//", 1)[1].split(":")
+        c = http.client.HTTPConnection(host, int(port), timeout=5)
+        try:
+            c.putrequest("POST", "/run")
+            c.putheader("Content-Length", content_length if content_length is not None else str(len(body)))
+            c.endheaders()
+            c.send(body)
+            r = c.getresponse()
+            return r.status, json.loads(r.read())
+        finally:
+            c.close()
+
+    def test_malformed_requests_get_an_answer(self):
+        self.use_lane(1, 5)
+        for label, body, clen, want in [
+            ("content-length not a number", b"{}", "abc", 400),
+            ("body is a list", b"[]", None, 400),
+            ("body is a string", b'"hi"', None, 400),
+            ("body is null", b"null", None, 400),
+            ("missing tool", b"{}", None, 400),
+        ]:
+            with self.subTest(label):
+                code, body_out = self.raw_post(body, clen)
+                self.assertEqual(code, want, body_out)
+
     # -- /status ---------------------------------------------------------
 
     def test_status_idle_shape(self):
