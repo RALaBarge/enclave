@@ -1,6 +1,6 @@
 # Enclave: status, tasks, decisions
 
-Last updated 2026-10-18. `main` is the last settled state; work happens on short-lived branches.
+Last updated 2026-10-18 (branch `desk-tools`). `main` is the last settled state; work happens on short-lived branches.
 
 ## Done
 
@@ -18,6 +18,17 @@ Last updated 2026-10-18. `main` is the last settled state; work happens on short
   Workers with their own CSS). Verified in Edge against a fake Pi and served from the rebuilt core (smoke 22/22). Not yet checked against real Pi events.
 - Bitwarden on the core (Oct 16): real fetch confirmed, both keys arrived. The token file may hold `#` comment lines.
 - MIT licence for this repo (was Apache-2.0 until Oct 15). First-install warnings now describe the strongest setup (sandbox on its own device behind the core).
+- **Tools/desk track (Oct 18, branch `desk-tools`).** 15: DeskBox runs as the `deskbox` account under `-strict`, `sync.py --deploy` fills
+  `/opt/deskbox/tools` at 0700, and the smoke test checks the enforcement block and the whole desk -> stub -> broker -> sandbox path.
+  16: the broker listens on `/run/sbx/broker.sock` (0660, group `sbxdesk`) and each `-sbx` contract binds it in through DeskBox's new
+  `sandbox.bind`, so the stubs declare `network: false` and `sync.py` refuses a contract that drops either. 17: `harness/toolsadapter`
+  turns the desk's contracts into a harness's tool definitions (1 + N requests: `GET /tools` lists, `GET /tools/{name}` carries the
+  schemas). 18: `sbx-session-gate` owns the tighten-only token and the lockdown; the bridge calls it and fails closed, and `pibridge`
+  can no longer read the token at all. 19: the broker's serial lane is FIFO, bounded, observable at `GET /status`, and a failed reset
+  gates the next caller instead of handing it an un-reset box. 20: `docs/HARNESS-ADMISSION.md`.
+  Also on the branch: 7 Tailscale (pinned 1.104.1, hardened unit, no key in the image, the `tailscale0` peer rule in the console's
+  generator), 8 the per-tool `net` flag, 9 the reset hooks (`sbx-reboot-and-wait`, `sbx-channel`, `sbx-reset`).
+  Not verified on a VM: this whole list needs an image rebuild and one smoke run.
 
 ## Tasks left, roughly in order
 
@@ -39,9 +50,6 @@ Last updated 2026-10-18. `main` is the last settled state; work happens on short
 5. **Loom:** merge `memgate-support` into `main`; add the `events`/`blobs` tables and wire `harness/redact/output_redactor.py`; then memgate
    (spec `Downloads\MEMGATE_SPEC.md`; settle window scoring, the sensitive flag versus auto-write, and the calibration harness first).
 6. **rsync tool for Pi** (harness-side extension: remote hosts, allowlist, dry-run first).
-7. **Tailscale in the image** so bridge peers work from the core.
-8. **Tools that need the network:** a per-tool flag in `tools.list` (and `bwrap --share-net`). Touches `toollist.py` (3 copies), `sbx-run`, the contract and the console Tools tab.
-9. **Reset hooks:** `SBX_RESET_CMD`; the full-mode ones (`sbx-vm-revert`, `sbx-reboot-and-wait`) are not shipped.
 10. **Bridge polish:** session persistence across restarts, file uploads.
 11. **Independent security review** of the gateway design and of the UI engine's sandboxing (a larger model or a human).
 12. Run the two-VM layout on Proxmox (isolated bridge for the sandbox VM). Not tried: Linux/KVM host build, VirtualBox/OVA, UEFI boot.
@@ -49,15 +57,8 @@ Last updated 2026-10-18. `main` is the last settled state; work happens on short
     the local clones); unpushed local branches `fw-profiles`, `gateway-firewall`, `session-lockdown`.
 14. Open: keep enclave private (recommended; pinning on GitHub needs public, which first needs a secret/PII scan).
 
-Tools/desk track (15–20; 15–17 before 6. Nothing is served by the desk until 15 lands):
-
-15. **Run DeskBox as a service and deploy tools into it.** Today the binary is installed and `/opt/deskbox/tools` is empty: no unit, no `.env`, and nothing copies `harness/tools/<name>-sbx/` there — `sync.py` only writes the stub into the repo, and SETUP.md deploys `tools.list` and `sbx/tools/<name>` only. Add a `deskbox.service` (`-strict`; the image has bwrap and systemd-run), a `deskbox.yaml`/`.env` with `-tools /opt/deskbox/tools`, and a `sync.py` deploy step that installs the stub, the `tcs.yaml` and its `integrity.run_sha256` pin. Smoke test: `GET /` reports `strict: true, sandbox: true, seccomp: true`, and a `greet-sbx` call returns through desk → stub → broker → sandbox.
-   - **Its own account.** `deskbox` (system user, `nologin`), owning `/opt/deskbox/tools` at 0700 and `/var/lib/deskbox`, `User=deskbox` in the unit, `NoNewPrivileges=yes`/`ProtectSystem=strict`/`CapabilityBoundingSet=` like the other four services, and no read on `/run/sbx/secrets.env` or `/etc/sbx/id_ed25519`. This is what makes the run-script permission a real boundary: while the desk and Pi share `pibridge`, `chmod 700` means nothing because the owner is both. It does not gate the broker — loopback accepts any uid — so pair it with task 16 (group-owned socket, `root:deskbox 0660`), or Pi still calls `:8099` around the desk.
-16. **Broker on a unix socket, stubs `network: false`.** Every `-sbx` stub declares `network: true` only because it posts to `127.0.0.1:8099`, and DeskBox's `network: true` is all-or-nothing host egress — so the desk's own job has the core's full internet, which is the one path where the core firewall has no say. Needs: broker listening on a stream socket, the stub talking to it over `http.client` (urllib has no unix-socket transport), and a DeskBox feature to bind a host path into the job's bwrap, since today only declared `in/` files and the tool's own dir are bound. Until then the contract in `harness/tools/*-sbx/tcs.yaml` overstates what the sandbox holds.
-17. **Harness → tools adapter, generated from `GET /tools`.** MCP declined (see Decisions); the replacement is one small adapter per harness that reads `/tools` (already JSON Schema) and emits that harness's tool definitions. Do Pi first, then the second harness reuses it — this is what keeps "no per-harness tool code" true without MCP.
-18. **Session gate out of pi-bridge.** Firewall-profile forcing and the tighten-only token live in the bridge, so any other harness in the core gets no lockdown at all. Extract into one small service any bridge calls; then `pi-bridge` is session gate + tool adapter + UI shim, and harness #2 doesn't get its own copy of the lockdown guarantee to get wrong.
-19. **One sandbox lane.** `sbx-broker` holds a global lock and runs `SBX_RESET_CMD` after every job, so N harnesses serialize on one sandbox. Decide before harness #2: accept serialization, or a small pool (which needs the reset hooks from task 9, still unshipped).
-20. **Write down what a harness must lose to be admitted.** The desk is a contract/audit/durability layer, not a jail: anything in the core can reach `127.0.0.1:8099` and `/etc/sbx/id_ed25519` directly, so enforcement is the VM split. Admitting a harness means its built-in exec tools (bash/read/write/edit) are disabled and rerouted through the desk — per-harness removal work, not a plugin-parity check. Write the criterion before counting a second harness as cheap. (written: docs/HARNESS-ADMISSION.md)
+Tasks 7, 8, 9 and 15–20 are done on branch `desk-tools` (see Done). Those numbers are not reused, so the references to them
+in `docs/HARNESS-ADMISSION.md`, `image/SETUP.md` and the commit messages still resolve.
 
 ## Decisions
 
