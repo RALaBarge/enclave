@@ -15,7 +15,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 # rsync + openssh-client are for the `rsync` tool (sbx/tools/rsync): it runs the
 # sandbox's own rsync, so both ends of the transfer are this box's binaries.
-apt-get install -y --no-install-recommends nftables python3 bubblewrap openssh-server ca-certificates curl iproute2 sudo rsync openssh-client
+apt-get install -y --no-install-recommends nftables python3 bubblewrap openssh-server ca-certificates curl iproute2 sudo rsync openssh-client iputils-ping
 
 # ---- sandbox user: key login only, forced into sbx-channel (sbx-run, or reset for a reboot) ----
 SBX_HOME=/home/sbx
