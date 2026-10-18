@@ -198,7 +198,13 @@ class DeskTest(unittest.TestCase):
         self.desk.serve("a", {"name": "a"})
         self.desk.serve("b", {"name": "b"})
         tools = DT.fetch(self.base)
-        self.assertEqual([tool["input_schema"] for tool in tools], [DT.EMPTY_OBJECT_SCHEMA] * 2)
+        # Literal, not DT.EMPTY_OBJECT_SCHEMA: comparing to the module's own
+        # constant would pass even if that constant became a schema the desk
+        # rejects. The second line is the property a shared constant cannot
+        # show - each tool gets its own object, so mutating one cannot leak
+        # into another.
+        expect = {"type": "object", "properties": {}}
+        self.assertEqual([tool["input_schema"] for tool in tools], [expect, expect])
         self.assertIsNot(tools[0]["input_schema"], tools[1]["input_schema"])
 
     def test_fetch_fills_an_absent_input_type_with_object(self):
