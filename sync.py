@@ -79,7 +79,7 @@ for name in tools:
     if not os.path.isfile(tcs):
         problems.append(f"missing contract:     {os.path.relpath(hdir, ROOT)}/tcs.yaml")
     else:
-        problems.extend(contract_problems(os.path.relpath(tcs, ROOT)))
+        problems.extend(contract_problems(tcs))
         stub = os.path.join(ROOT, "harness", "stub", "run.py")
         copy = os.path.join(hdir, "run.py")
         if not check_only:

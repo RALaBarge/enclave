@@ -83,6 +83,32 @@ class TooLarge(Exception):
     """A file over MAX_FILE, in either direction."""
 
 
+# Directories a session may not use as its cwd. The listener is loopback-only
+# and unauthenticated, so any local process may create a session; the file
+# endpoints serve whatever the session's cwd contains, as the bridge's own
+# account. Without this, `{"cwd": "/run/sbx"}` plus
+# `/sessions/<id>/files?path=secrets.env` reads the model keys, and
+# `/etc/sbxfw` reads the console tokens - a confused-deputy read of exactly
+# the files docs/HARNESS-ADMISSION.md says the account boundary protects.
+# It is a deny-list, so it narrows the obvious path rather than proving there
+# is none: a file the pibridge account can read elsewhere is still readable by
+# a local caller who names its directory.
+PROTECTED_ROOTS = (
+    "/run/sbx", "/run/sbx-gate", "/etc/sbxfw", "/etc/sbx", "/etc/ssh",
+    "/etc/shadow", "/etc/sudoers", "/root", "/var/lib/pi-bridge",
+    "/var/lib/deskbox", "/var/lib/loom", "/proc", "/sys", "/dev", "/boot",
+)
+
+
+def protected_root(path: str) -> bool:
+    p = os.path.normcase(os.path.realpath(path))
+    for root in PROTECTED_ROOTS:
+        r = os.path.normcase(os.path.realpath(root))
+        if p == r or p.startswith(r + os.sep):
+            return True
+    return False
+
+
 def session_path(cwd: str, rel: str) -> tuple[str, str]:
     """(absolute resolved path, normalised relative path) for a file under a session's cwd.
 
@@ -104,6 +130,8 @@ def session_path(cwd: str, rel: str) -> tuple[str, str]:
     if ".." in parts:
         raise Forbidden("'..' is not allowed in a path")
     root = os.path.realpath(cwd)
+    if protected_root(root):
+        raise Forbidden("that directory holds the core's secrets and cannot host a session")
     target = os.path.realpath(os.path.join(root, *parts))
     try:
         inside = os.path.commonpath([root, target])
@@ -654,6 +682,8 @@ def make_handler(app: App):
                     b = self._body()
                     if not b.get("cwd") or not os.path.isdir(b["cwd"]):
                         raise ValueError("cwd must be an existing directory")
+                    if protected_root(b["cwd"]):
+                        return self._json(403, {"error": "that directory holds the core's secrets and cannot host a session"})
                     fw = None
                     if app.gate:
                         try:

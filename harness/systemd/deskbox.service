@@ -14,21 +14,15 @@ Group=deskbox
 SupplementaryGroups=sbxdesk
 WorkingDirectory=/var/lib/deskbox
 # Per-job resource limits go through `systemd-run --user --scope`, which needs
-# this user's own session bus. `loginctl enable-linger deskbox` (provisioning)
-# is what makes that exist without a login; the wait below turns a missing bus
-# into a clear start-up failure instead of a confusing degradation later.
-Environment=XDG_RUNTIME_DIR=/run/user/%U
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
-ExecStartPre=/bin/sh -c 'i=0; while [ $i -lt 60 ] && [ ! -S /run/user/%U/bus ]; do i=$((i+1)); sleep 1; done; [ -S /run/user/%U/bus ] || { echo "no user bus for %U; run: loginctl enable-linger %U" >&2; exit 1; }'
-# -strict: refuse to serve at all rather than run jobs without bwrap, the
-# syscall filter or the per-job limits. This box has all three, so a desk that
-# came up degraded means something broke and should be loud about it.
-ExecStart=/usr/local/bin/agent-desk -addr 127.0.0.1:8080 -tools /opt/deskbox/tools -data /var/lib/deskbox -strict
+# this account's own session bus. The wrapper resolves the uid and waits for
+# it: a `%U` here would be the manager's UID (0) in a system unit, not
+# deskbox's, which is a restart loop. `loginctl enable-linger deskbox`
+# (provisioning) is what makes the bus exist without a login.
+ExecStart=/usr/local/bin/deskbox-run
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ReadWritePaths=/var/lib/deskbox
