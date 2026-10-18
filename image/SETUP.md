@@ -113,7 +113,7 @@ that parses the schema the way the gate does, so it is what notices a keyword th
 `run.py` is group/other-readable: the deployed copy is written 0700, which is the mode the desk actually checks.
 
 The broker and `sbx-run` re-read their `tools.list` on each request, so list edits apply without a restart. A network
-tool still only reaches what the Firewall tab allows for the sandbox.
+tool reaches only what the Firewall tab allows in full mode; in lite mode the sandbox is this VM, so the tool shares its namespace and can reach loopback.
 
 ### `rsync` allowlist
 
@@ -207,7 +207,7 @@ installed a host-side helper and a way for the core to call it.
 
 Notes: the sandbox's `/etc/resolv.conf` is immutable (`chattr -i` before changing it). Tools in the sandbox run in `bwrap` with no
 network unless their `tools.list` line says `net`; a network tool shares the sandbox's network namespace and reaches only what the
-core's firewall forwards for the sandbox.
+core's firewall forwards for the sandbox, which is the full-mode path; in lite mode a net tool shares the core's namespace and reaches loopback without it.
 
 ## Tailscale and bridge peers (installed, off by default)
 
