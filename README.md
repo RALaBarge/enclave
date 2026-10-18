@@ -48,6 +48,7 @@ Then follow `image/SETUP.md`. On the core: `sudo sbx-mode box`, `sudo sbx-smoke-
 python console/test_console.py                           # 32 tests
 python -B -m unittest discover -s harness/bridge/tests    # 39 tests
 python -B -m unittest discover -s harness/gate            # 6 tests, Linux (AF_UNIX + grp)
+python -m unittest discover -s harness/broker -p "test_*.py"   # 11 tests, Linux for the socket cases
 bash console/test_netns.sh                               # 28 checks, real nftables, throwaway namespaces (WSL/Linux, root)
 ```
 
