@@ -1,0 +1,57 @@
+name: rsync-sbx
+summary: |
+  rsync a local path against a remote path. A remote side is written
+  <name>:<path>, where <name> is an entry in the sandbox's rsync allowlist; the
+  user and port come only from that file, there are no wildcards and an empty
+  allowlist permits nothing. It runs rsync --dry-run unless the call sets
+  apply to true, and returns the exact command and rsync's output as JSON.
+  This stub has no network; it reaches the broker over the bound socket. The
+  sandbox job that runs the rsync binary has the network (tools.list says
+  net), and the core's firewall still decides which hosts it may reach.
+
+input:
+  type: object
+  additionalProperties: false
+  required: [source, destination]
+  properties:
+    source:      { type: string, minLength: 1, maxLength: 4096 }
+    destination: { type: string, minLength: 1, maxLength: 4096 }
+    apply:       { type: boolean, default: false }
+
+output:
+  schema:
+    type: object
+    additionalProperties: false
+    required: [ok, dry_run, applied, source, destination, command]
+    properties:
+      ok:          { type: boolean }
+      dry_run:     { type: boolean }
+      applied:     { type: boolean }
+      source:      { type: string, maxLength: 4096 }
+      destination: { type: string, maxLength: 4096 }
+      command:     { type: array, maxItems: 32, items: { type: string } }
+      reason:      { type: string, maxLength: 200 }
+      detail:      { type: string, maxLength: 500 }
+      exit_code:   { type: integer, minimum: 0, maximum: 255 }
+      stdout:      { type: string, maxLength: 65536 }
+      stderr:      { type: string, maxLength: 65536 }
+
+allowed_side_effects:
+  files: []
+  # The *stub* is a network:false desk job. It posts the call to the broker
+  # over the unix socket bound below; the broker then runs sbx/tools/rsync/run
+  # in the sandbox, where tools.list's `net` gives rsync the sandbox network
+  # namespace. That is the job that moves bytes, and the core's forward chain
+  # still filters it. network:true here would instead give the stub the core's
+  # whole internet, which is exactly what this contract must not do.
+  network: false
+
+sandbox:
+  bind:
+    - src: /run/sbx/broker.sock          # sbx-broker's unix socket
+      dst: /deskbox/broker.sock          # where the stub looks for it
+
+execution:
+  mode: queued
+  max_retries: 0      # the sandbox is reset per run; don't auto-retry
+  timeout_ms: 150000

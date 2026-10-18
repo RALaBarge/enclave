@@ -14,3 +14,4 @@
 #   4. python3 sync.py                         (generates the stub, validates everything)
 #   5. deploy: this file -> /etc/sbx/tools.list (harness) and /opt/sbx/tools.list (sbx)
 greet   10
+rsync   120 net

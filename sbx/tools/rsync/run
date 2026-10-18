@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""sbx-run entry point for rsync-sbx.
+
+The logic lives in rsync_tool.py beside this file because the tool dir is
+bound read-only into the job, and keeping the parser/argv builder importable
+is what lets the tests run without the sandbox.  Read that module's header for
+why this is a DeskBox-backed tool rather than a Pi extension, and for the
+allowlist and dry-run rules.
+"""
+import os
+import sys
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rsync_tool import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

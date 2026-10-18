@@ -60,8 +60,18 @@ def bwrap_args(tool_dir, in_dir, out_dir, network=False):
             a += ["--ro-bind", p, p]
     a += ["--ro-bind", tool_dir, "/deskbox/tool",
           "--ro-bind", in_dir, "/deskbox/in",
-          "--bind", out_dir, "/deskbox/out",
-          "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
+          "--bind", out_dir, "/deskbox/out"]
+    if network:
+        # A network tool that shells out (rsync-over-ssh) needs the name service
+        # and the trust store inside the job: without /etc/resolv.conf the DNS
+        # lookup fails, and without /etc/passwd nsswitch has no local user to
+        # resolve. Same set DeskBox binds for a network:true contract. Each is
+        # bound only if it exists, so a minimal image still starts.
+        for p in ("/etc/passwd", "/etc/group", "/etc/nsswitch.conf", "/etc/resolv.conf",
+                  "/etc/hosts", "/etc/ssl", "/etc/ca-certificates"):
+            if os.path.exists(p):
+                a += ["--ro-bind", p, p]
+    a += ["--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
           "--setenv", "LANG", "C.UTF-8", "--chdir", "/deskbox", "/deskbox/tool/run"]
     return a
 
