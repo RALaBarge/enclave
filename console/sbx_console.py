@@ -286,6 +286,12 @@ table inet sbxfw {{
     iif lo accept
     ct state established,related accept
     ct state invalid drop
+    # A tailnet peer reaches the bridge's listener as a new connection on
+    # tailscale0, so an established-only rule is not enough and the drop below
+    # would eat it. Interface-scoped on purpose: this does not widen core input
+    # to the tailnet generally, and nothing listens unless pi-bridge runs with
+    # --peers (off by default, see image/SETUP.md).
+    iifname "tailscale0" tcp dport 9761 accept comment "tailnet peers (pi-bridge)"
     {(sb + 'icmp type echo-request accept') if ifs else '# no sandbox interface'}
     {ind.join(in_rules) if in_rules else '# no management sources allowed'}
     limit rate 10/second log prefix "sbxfw-drop: " drop
