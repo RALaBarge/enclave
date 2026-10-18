@@ -44,19 +44,24 @@ problems = []
 # The two facts a generated stub relies on. Textual on purpose: sync.py stays
 # stdlib-only, so it cannot parse YAML the way the desk does. tcs-verify is
 # the thing that validates the contract properly; this is the cheap check
-# that the invariant is still written down.
-BIND_RE = re.compile(r"^\s*-\s*src:\s*\S*/broker\.sock\s*(?:#.*)?$", re.M)
-NET_FALSE_RE = re.compile(r"^\s*network:\s*false\s*$", re.M)
+# that the invariant is still written down, and it is written to fail on the
+# shapes a YAML parser would also refuse to read the way the author meant:
+# two `network:` keys (the last one wins in YAML, so counting matters), or a
+# value that is not the literal `false`.
+BIND_RE = re.compile(r"^[ \t]*-[ \t]*src:[ \t]*\S*/broker\.sock[ \t]*(?:#.*)?$", re.M)
+NET_KEY_RE = re.compile(r"^[ \t]*network:[ \t]*(\S+)[ \t]*(?:#.*)?$", re.M)
 
 
 def contract_problems(path):
     with open(path, encoding="utf-8") as f:
         text = f.read()
     out = []
-    if not NET_FALSE_RE.search(text):
+    nets = NET_KEY_RE.findall(text)
+    if nets != ["false"]:
         out.append(
-            f"{path}: allowed_side_effects.network must be false — the stub reaches the "
-            f"broker over a bound unix socket, never the network")
+            f"{path}: allowed_side_effects.network must be exactly one `network: false` "
+            f"(found {nets or 'none'}) — the stub reaches the broker over a bound unix "
+            f"socket, never the network")
     if not BIND_RE.search(text):
         out.append(
             f"{path}: sandbox.bind must mount sbx-broker's socket (src .../broker.sock) — "

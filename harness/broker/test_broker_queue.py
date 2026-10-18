@@ -329,5 +329,49 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(state["reset_overlap"], 0)
 
 
+@unittest.skipIf(os.name == "nt", "AF_UNIX: run this under Linux")
+class SocketOwnership(unittest.TestCase):
+    """Two brokers must never share a path.
+
+    A second broker that unlinked a live socket would leave the first serving
+    an unlinked inode: everything looks up, and nothing is reachable.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "broker.sock")
+        self.srv = None
+
+    def tearDown(self):
+        if self.srv:
+            # No shutdown(): serve_forever was never started, and shutdown()
+            # waits for it to return. Closing the listener is what this needs.
+            self.srv.server_close()
+
+    def test_second_broker_refuses_a_live_socket(self):
+        self.srv = sbx_broker.open_socket(self.path)
+        before = os.lstat(self.path).st_ino
+        with self.assertRaises(SystemExit) as cm:
+            sbx_broker.open_socket(self.path)
+        self.assertIn("another broker is listening", str(cm.exception))
+        self.assertEqual(os.lstat(self.path).st_ino, before, "the live socket was replaced")
+
+    def test_a_dead_socket_is_reclaimed_not_refused(self):
+        self.srv = sbx_broker.open_socket(self.path)
+        self.srv.server_close()
+        self.srv = None                      # the file is left behind, as after a crash
+        self.assertTrue(os.path.exists(self.path))
+        self.srv = sbx_broker.open_socket(self.path)
+        self.assertTrue(os.path.exists(self.path))
+
+    def test_a_regular_file_is_never_deleted(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("not a socket")
+        with self.assertRaises(SystemExit) as cm:
+            sbx_broker.open_socket(self.path)
+        self.assertIn("is not a socket", str(cm.exception))
+        self.assertTrue(os.path.exists(self.path))
+
+
 if __name__ == "__main__":
     unittest.main()

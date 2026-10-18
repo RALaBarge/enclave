@@ -430,16 +430,27 @@ class UnixHTTPServer(_UnixBase):
 def open_socket(path):
     """Bind path, replacing a socket left behind by a dead broker.
 
-    Only a socket is reclaimed: if something that is not a socket sits at
-    that path, refuse rather than delete a file the operator did not mean to
-    lose.
+    Only a socket is reclaimed, and only after a connect attempt fails: a
+    second broker that unlinked a live socket would leave the first serving an
+    unlinked inode, which looks like "the broker is up" and behaves like
+    nothing is listening. If something that is not a socket sits at that path,
+    refuse rather than delete a file the operator did not mean to lose.
     """
     import grp  # Unix-only; kept out of the module import so tests can load it
     if os.path.exists(path):
         mode = os.lstat(path).st_mode
         if not stat.S_ISSOCK(mode):
             raise SystemExit(f"refusing to start: {path} exists and is not a socket")
-        os.unlink(path)  # stale: nothing is listening (we would not be starting otherwise)
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(1.0)
+            probe.connect(path)
+        except OSError:
+            os.unlink(path)  # nothing answered: stale
+        else:
+            raise SystemExit(f"refusing to start: another broker is listening on {path}")
+        finally:
+            probe.close()
     srv = UnixHTTPServer(path, H)
     # The socket is the gate: mode 0660 and only the desk's group, so a
     # process that is not the desk cannot submit a job here. chgrp needs the
