@@ -136,12 +136,13 @@ copy the run script executable: `chmod 755 /opt/sbx/tools/rsync/run`.
 Point the harness's tool definitions at the desk:
 
 ```sh
-python3 harness/toolsadapter/desk_tools.py --desk http://127.0.0.1:8080 openapi
+python3 /usr/local/lib/enclave/desk_tools.py --desk http://127.0.0.1:8080 openapi
 ```
 
-`list` and `text` are the other output forms. The desk is the only executor: every call goes back to
-`POST /tools/{name}`, so the harness needs no tool code. Do not give the harness a shell — that gives up the contract, the
-sandbox and the account boundary at once; see `docs/HARNESS-ADMISSION.md`.
+That file is installed by `provision.sh`; in a checkout it is `harness/toolsadapter/desk_tools.py`. `list` and `text` are
+the other output forms. The desk is the only executor: every call goes back to `POST /tools/{name}`, so the harness needs no
+tool code. Do not give the harness a shell — that gives up the contract, the sandbox and the account boundary at once; see
+`docs/HARNESS-ADMISSION.md`.
 
 ## Full mode: the sandbox on its own device (the strongest setup)
 

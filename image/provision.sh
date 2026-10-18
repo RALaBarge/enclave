@@ -157,6 +157,10 @@ id sbxgate &>/dev/null || useradd --system --home /nonexistent --shell /usr/sbin
 install -d /opt/sbx-gate
 install -m 644 "$ROOT/harness/gate/session_gate.py" /opt/sbx-gate/
 install -m 644 "$ROOT/harness/systemd/sbx-session-gate.service" /etc/systemd/system/
+# The adapter a second harness points its tool definitions at. Installed so the
+# image does not depend on a checkout being present at /repo.
+install -d /usr/local/lib/enclave
+install -m 644 "$ROOT/harness/toolsadapter/desk_tools.py" /usr/local/lib/enclave/
 # ---- Bitwarden Secrets Manager CLI. The access token is NOT baked in: put it in /etc/sbx/bws-token by hand (see SETUP.md).
 tmpz=$(mktemp); curl -fsSL -o "$tmpz" "https://github.com/bitwarden/sdk-sm/releases/download/bws-v${BWS_VERSION}/bws-x86_64-unknown-linux-gnu-${BWS_VERSION}.zip"
 [ "${ALLOW_UNPINNED:-0}" = 1 ] || echo "${BWS_SHA256}  $tmpz" | sha256sum -c -
