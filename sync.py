@@ -103,6 +103,15 @@ for name in tools:
         problems.append(f"missing contract:     {os.path.relpath(hdir, ROOT)}/tcs.yaml")
     else:
         problems.extend(contract_problems(tcs))
+        # The desk sets DESKBOX_TOOL to the contract's name, the stub sends it as
+        # `caller`, and the broker accepts only "<tool>-sbx". The directory name is
+        # the convention everything else uses, so the contract must say the same.
+        with open(tcs, encoding="utf-8") as fh:
+            m = re.search(r"^name:[ \t]*['\"]?([^\s'\"#]+)", fh.read(), re.M)
+        if not m or m.group(1) != f"{name}-sbx":
+            problems.append(
+                f"contract name:      {os.path.relpath(tcs, ROOT)} says {m.group(1) if m else 'nothing'!r}, must be "
+                f"'{name}-sbx' (the broker only accepts a caller named <tool>-sbx)")
         stub = os.path.join(ROOT, "harness", "stub", "run.py")
         copy = os.path.join(hdir, "run.py")
         # Read the copy's own number before the drift comparison blanks it.

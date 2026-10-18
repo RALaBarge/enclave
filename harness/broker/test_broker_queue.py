@@ -127,6 +127,17 @@ class BrokerTest(unittest.TestCase):
                 self.assertEqual(len(ran) - before, 1 if want == 200 else 0)
         self.assertEqual(ran, ["greet"])
 
+    def test_a_caller_mismatch_is_logged_as_an_alert(self):
+        self.use_lane(1, 5)
+        lines = []
+        saved = sbx_broker.log
+        sbx_broker.log = lines.append
+        self.addCleanup(setattr, sbx_broker, "log", saved)
+        code, _ = self.post_body({"tool": "greet", "caller": "rsync-sbx", "input": {}})
+        self.assertEqual(code, 403)
+        self.assertTrue(any(l.startswith("ALERT caller_mismatch") and "tool=greet" in l and "caller=rsync-sbx" in l
+                            for l in lines), lines)
+
     def test_the_shipped_stub_sends_its_contract_as_caller(self):
         # The broker now refuses a request without a matching caller, so a stub
         # that stopped sending one would fail every call. Text check only: the

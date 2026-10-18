@@ -374,6 +374,10 @@ class H(BaseHTTPRequestHandler):
         # error instead of a quiet success, and it is the field a desk-issued
         # per-job token would later be checked against.
         if caller != tool + "-sbx":
+            # A stub asking for a tool that is not its own is the "someone
+            # changed a stub" signal; a refusal nobody sees waits to regress.
+            # Both names matched TOOL_RE above, so they are safe to log.
+            log(f"ALERT caller_mismatch tool={tool} caller={caller}")
             return self._err(403, "caller_mismatch")
 
         try:

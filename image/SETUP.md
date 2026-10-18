@@ -115,6 +115,12 @@ that parses the schema the way the gate does, so it is what notices a keyword th
 The broker and `sbx-run` re-read their `tools.list` on each request, so list edits apply without a restart. A network
 tool reaches only what the Firewall tab allows in full mode; in lite mode the sandbox is this VM, so the tool shares its namespace and can reach loopback.
 
+### Deploying the stubs and the broker together
+
+The stubs send `caller` and the broker refuses any request whose caller is not `<tool>-sbx`, so they are one change:
+an old broker with new stubs, or new stubs with an old broker, answers 403 or 400 for every call. Deploy
+`sbx-broker`, `sync.py --deploy` and the stubs from the same commit.
+
 ### `rsync` allowlist
 
 `rsync` is listed as `rsync 120 net`; the sandbox image installs `rsync` and `openssh-client` (`image/provision-sbx.sh`). Its
