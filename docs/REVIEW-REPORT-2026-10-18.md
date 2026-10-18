@@ -1,6 +1,6 @@
 # Tools/desk track: review report
 
-2026-10-18. Branch `enclave:desk-tools` (30 commits on top of `main`), DeskBox branch `deskbox:sandbox-bind`
+2026-10-18. Branch `enclave:desk-tools` (32 commits on top of `main`), DeskBox branch `deskbox:sandbox-bind`
 (`4a39e508dccccf39ecd54f0db4b7c9bc356026d2`, pinned as `DESKBOX_COMMIT` in `image/manifest.env`).
 
 This is the written record of what was built, what was actually run, what the reviews found, and what is still open.
@@ -113,7 +113,9 @@ the branch:
    into `image/deskbox-run.sh`, which asks `id -u deskbox`, and `ProtectHome` is gone.
 2. **The bridge file API was a confused deputy.** `POST /sessions {"cwd": "/run/sbx"}` followed by
    `GET /sessions/<id>/files?path=secrets.env` read the model keys as the bridge's account; `/etc/sbxfw` did the same for
-   the console tokens. The secret directories now refuse both a cwd and a read.
+   the console tokens. The resolved cwd and the resolved target are both checked against the secret directories now. The
+   first version of this fix checked only the cwd, which the reviewer defeated with `cwd: /run` + `path: sbx/secrets.env`;
+   that is what the second check is for.
 3. **`sync.py` crashed outside the repo root** — it resolved the contract path against the caller's directory.
 4. **A contract keyword DeskBox would have ignored** — `rsync-sbx` declared `default: false`, which is outside the
    schema subset, so the desk accepted the contract while the key meant nothing. `sync.py` now calls `tcs-verify`.

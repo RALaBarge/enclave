@@ -123,7 +123,20 @@ class UnixServer(socketserver.ThreadingUnixStreamServer):
 
 def main():
     if os.path.exists(SOCKET):
-        os.unlink(SOCKET)          # stale socket from a previous process
+        # Reclaim a socket left by a dead gate, but not one a running gate is
+        # still serving: unlinking a live socket leaves the first process
+        # reachable by nobody, which looks like "the gate is up". Same probe as
+        # the broker's open_socket.
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(1.0)
+            probe.connect(SOCKET)
+        except OSError:
+            os.unlink(SOCKET)      # nothing answered: stale
+        else:
+            raise SystemExit(f"refusing to start: another session gate is listening on {SOCKET}")
+        finally:
+            probe.close()
     os.makedirs(os.path.dirname(SOCKET) or ".", exist_ok=True)
     srv = UnixServer(SOCKET, H)
     try:

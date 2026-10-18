@@ -130,9 +130,12 @@ def session_path(cwd: str, rel: str) -> tuple[str, str]:
     if ".." in parts:
         raise Forbidden("'..' is not allowed in a path")
     root = os.path.realpath(cwd)
-    if protected_root(root):
-        raise Forbidden("that directory holds the core's secrets and cannot host a session")
     target = os.path.realpath(os.path.join(root, *parts))
+    # Both ends: a refused cwd is not enough, because a cwd one level above a
+    # secret directory (`/run` with `sbx/secrets.env`, `/` with
+    # `etc/sbxfw/token`) resolves inside it. The target is what gets opened.
+    if protected_root(root) or protected_root(target):
+        raise Forbidden("that directory holds the core's secrets and cannot host a session")
     try:
         inside = os.path.commonpath([root, target])
     except ValueError:                      # different drives on Windows
