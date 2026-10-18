@@ -42,6 +42,29 @@ if "--deploy" in sys.argv:
 tools = toollist.load(os.path.join(ROOT, "tools.list"))
 problems = []
 
+def _norm(path):
+    """The stub as deployed, with the per-tool timeout blanked.
+
+    The copy differs from the source by exactly that one line, so comparing
+    bytes would report drift for every tool forever.
+    """
+    with open(path, encoding="utf-8") as f:
+        return STUB_TIMEOUT_RE.sub("CLIENT_TIMEOUT = <per-tool>", f.read())
+
+QUEUE_WAIT_S = 60            # broker.env.example default
+RESET_BUDGET_S = 300         # sbx_broker.py: reset wall timeout
+MARGIN_S = 30
+STUB_TIMEOUT_RE = re.compile(r"^CLIENT_TIMEOUT = \d+$", re.M)
+TIMEOUT_MS_RE = re.compile(r"^\s*timeout_ms:[ \t]*(\d+)\s*$", re.M)
+
+
+def stub_timeout(tcs_path):
+    """What the stub's client timeout must be for this contract."""
+    with open(tcs_path, encoding="utf-8") as f:
+        m = TIMEOUT_MS_RE.search(f.read())
+    tool_s = int(m.group(1)) / 1000 if m else 30
+    return int(QUEUE_WAIT_S + tool_s + 15 + RESET_BUDGET_S + MARGIN_S)
+
 # The two facts a generated stub relies on. Textual on purpose: sync.py stays
 # stdlib-only, so it cannot parse YAML the way the desk does. tcs-verify is
 # the thing that validates the contract properly; this is the cheap check
@@ -84,7 +107,14 @@ for name in tools:
         copy = os.path.join(hdir, "run.py")
         if not check_only:
             shutil.copyfile(stub, copy)
-        elif not os.path.isfile(copy) or open(copy, "rb").read() != open(stub, "rb").read():
+            # Size the stub's client timeout to the broker's own worst case:
+            # queue wait + the tool's budget + 15 s + reset + margin. Written
+            # into the copy so the two cannot drift.
+            with open(copy, encoding="utf-8") as fh:
+                text = fh.read()
+            with open(copy, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(STUB_TIMEOUT_RE.sub(f"CLIENT_TIMEOUT = {stub_timeout(tcs)}", text))
+        elif not os.path.isfile(copy) or _norm(copy) != _norm(stub):
             # A copy that has drifted from the stub is a tool running edited
             # code that nobody reviewed as a stub change. --check is what CI
             # runs, so it has to notice.

@@ -26,6 +26,13 @@ SOCKET = "/deskbox/broker.sock"
 IN_DIR, OUT_DIR = "/deskbox/in", "/deskbox/out"
 NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 
+# Rewritten by sync.py from the contract's timeout_ms: queue wait (60 s) + the
+# tool's own budget + 15 s + reset (300 s) + margin, which is the broker's own
+# worst case. The literal here is only the floor for a hand-copied stub; a
+# timeout below that sum makes the client give up on a job the broker is still
+# running, and the desk records a failure for work that succeeded.
+CLIENT_TIMEOUT = 375
+
 
 class UnixConnection(http.client.HTTPConnection):
     """http.client over a unix socket; there is no address to resolve."""
@@ -55,7 +62,7 @@ try:
                 with open(path, "rb") as f:
                     files[name] = base64.b64encode(f.read()).decode()
     body = json.dumps({"tool": tool, "input": payload, "files": files}).encode()
-    conn = UnixConnection(SOCKET)
+    conn = UnixConnection(SOCKET, timeout=CLIENT_TIMEOUT)
     try:
         conn.request("POST", "/run", body=body, headers={"Content-Type": "application/json"})
         resp = conn.getresponse()
