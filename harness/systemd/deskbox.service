@@ -26,7 +26,10 @@ ProtectSystem=strict
 PrivateTmp=yes
 PrivateDevices=yes
 ReadWritePaths=/var/lib/deskbox
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is not optional: bwrap opens a netlink socket to bring up loopback
+# in a network:false sandbox. Without it the desk's seccomp probe (and every job)
+# fails, and -strict refuses to start. Found on the first real boot.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 CapabilityBoundingSet=
 
 [Install]

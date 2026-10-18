@@ -11,11 +11,12 @@ uid=$(id -u deskbox)
 export XDG_RUNTIME_DIR="/run/user/$uid"
 export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus"
 i=0
-while [ "$i" -lt 60 ] && [ ! -S "$DBUS_SESSION_BUS_ADDRESS" ]; do
+bus="/run/user/$uid/bus"    # a path: $DBUS_SESSION_BUS_ADDRESS is "unix:path=...", never a socket for -S
+while [ "$i" -lt 60 ] && [ ! -S "$bus" ]; do
   i=$((i + 1))
   sleep 1
 done
-if [ ! -S "/run/user/$uid/bus" ]; then
+if [ ! -S "$bus" ]; then
   echo "no user bus for deskbox at /run/user/$uid/bus; run: loginctl enable-linger deskbox" >&2
   exit 1
 fi
