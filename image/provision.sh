@@ -18,7 +18,7 @@ need() {
     fi
   done
 }
-need OLLAMA_VERSION OLLAMA_TGZ_SHA256 LOOM_REPO LOOM_COMMIT DESKBOX_COMMIT PI_REPO PI_VERSION PI_SOURCE_SHA256 NODE_VERSION NODE_SHA256
+need OLLAMA_VERSION OLLAMA_TGZ_SHA256 LOOM_REPO LOOM_COMMIT DESKBOX_COMMIT PI_REPO PI_VERSION PI_SOURCE_SHA256 NODE_VERSION NODE_SHA256 TS_VERSION TS_TGZ_SHA256
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -97,7 +97,16 @@ WantedBy=multi-user.target
 EOF
 
 # ---- DeskBox (prebuilt static binaries from the build host) ----
-install -d /opt/deskbox/tools
+# The desk runs as its own account, not as pibridge. It executes tool code and
+# its job workspaces are where anything that escapes a sandbox lands; sharing
+# the agent's account would also make every run script executable from the
+# agent's own shell, which is the one bypass a contract cannot close from the
+# inside. 0700 on tools/ is what turns that into a permission.
+getent group sbxdesk >/dev/null || groupadd -r sbxdesk
+id deskbox &>/dev/null || useradd --system --home /var/lib/deskbox --create-home --shell /usr/sbin/nologin deskbox
+install -d -m 0700 -o deskbox -g deskbox /var/lib/deskbox
+install -d -m 0700 -o deskbox -g deskbox /opt/deskbox
+install -d -m 0700 -o deskbox -g deskbox /opt/deskbox/tools
 # Built on the build host: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/{agent-desk,tcs-shim,tcs-verify}
 for b in agent-desk tcs-shim tcs-verify; do
   [ -f "$HERE/artifacts/$b" ] || { echo "ERROR: image/artifacts/$b missing (build DeskBox first)" >&2; exit 1; }
@@ -105,6 +114,17 @@ done
 install -m 755 "$HERE/artifacts/agent-desk" /usr/local/bin/agent-desk
 install -m 755 "$HERE/artifacts/tcs-verify" /usr/local/bin/tcs-verify
 install -m 755 "$HERE/artifacts/tcs-shim" /usr/bin/tcs-shim    # shimmed tools expect it under /usr
+# The tools the desk actually serves: each contract plus the generated stub,
+# run scripts 0700 so only that account can execute them. sync.py refuses to
+# ship a contract whose stub would need the network, which is what keeps every
+# call on the broker socket.
+python3 "$ROOT/sync.py" --deploy /opt/deskbox/tools
+chown -R deskbox:deskbox /opt/deskbox/tools
+install -m 644 "$ROOT/harness/systemd/deskbox.service" /etc/systemd/system/
+# The desk runs -strict, and its per-job memory/task limits go through
+# `systemd-run --user --scope`: that needs this account's own session bus to
+# exist without a login, which is what linger buys.
+loginctl enable-linger deskbox
 
 # ---- Pi: build from pinned commit ----
 bash "$HERE/build-pi.sh"
@@ -133,7 +153,55 @@ tmpz=$(mktemp); curl -fsSL -o "$tmpz" "https://github.com/bitwarden/sdk-sm/relea
 unzip -o -q "$tmpz" bws -d /usr/local/bin; chmod 755 /usr/local/bin/bws; rm -f "$tmpz"
 install -m 755 "$HERE/sbx-fetch-secrets.sh" /usr/local/bin/sbx-fetch-secrets
 install -d -m 755 /etc/sbx
-# ---- pi-bridge: local HTTP/SSE API over Pi's RPC mode (loopback; peer messaging stays off, no Tailscale in the image) ----
+
+# ---- Tailscale: node agent only. pi-bridge still starts without --peers, so peers stay OFF until the operator logs in
+# and opts in (see SETUP.md). No auth key is baked in; `tailscale up` is the operator's step, like the Bitwarden token.
+# Static tarball, not the apt repo: same shape as bws/ollama (one pinned artifact, one pinned hash). Binaries land in
+# /usr/local/bin, which is where harness/bridge/peers.py looks for the CLI.
+tstgz=$(mktemp)
+curl -fsSL -o "$tstgz" "https://pkgs.tailscale.com/stable/tailscale_${TS_VERSION}_amd64.tgz"
+[ "${ALLOW_UNPINNED:-0}" = 1 ] || echo "${TS_TGZ_SHA256}  $tstgz" | sha256sum -c -
+tar -C /usr/local/bin --strip-components=1 -xzf "$tstgz" \
+  "tailscale_${TS_VERSION}_amd64/tailscale" "tailscale_${TS_VERSION}_amd64/tailscaled"
+chmod 755 /usr/local/bin/tailscale /usr/local/bin/tailscaled
+rm -f "$tstgz"
+# tailscaled makes the TUN device with TUNSETIFF; load the module at every boot so /dev/net/tun exists (harmless if built in).
+install -d /etc/modules-load.d
+printf '%s\n' tun >/etc/modules-load.d/tailscale.conf
+modprobe tun 2>/dev/null || true
+# Not the release's own unit: that one runs with the full root capability set. This one keeps root (tailscaled sets up a
+# TUN device, routes and the local API socket) but bounds it to what a node agent needs, like the other units here.
+cat >/etc/systemd/system/tailscaled.service <<'EOF'
+[Unit]
+Description=Tailscale node agent (tailnet peers for pi-bridge; not logged in until the operator runs tailscale up)
+Documentation=https://tailscale.com/docs/
+Wants=network-pre.target
+After=network-pre.target network.target
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641
+ExecStopPost=-/usr/local/bin/tailscaled --cleanup
+Restart=on-failure
+# Node identity and WireGuard keys live here (0700).
+StateDirectory=tailscale
+StateDirectoryMode=0700
+RuntimeDirectory=tailscale
+RuntimeDirectoryMode=0755
+ReadWritePaths=/var/lib/tailscale
+# TUN + routes only. No module loading, no ptrace, no setuid, no device nodes beyond what /dev already exposes.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now tailscaled
+# ---- pi-bridge: local HTTP/SSE API over Pi's RPC mode (loopback; Tailscale installed above, but the bridge starts without
+#      --peers, so peer messaging stays off until the operator opts in) ----
 id pibridge &>/dev/null || useradd --system --home /var/lib/pi-bridge --create-home --shell /usr/sbin/nologin pibridge
 install -d -o pibridge -g pibridge /var/lib/pi-bridge/work /var/lib/pi-bridge/state
 install -d /opt/pi-bridge
@@ -153,7 +221,7 @@ touch /etc/sbx/bws-token /etc/sbx/bws.env; chown root:root /etc/sbx/bws-token /e
 chgrp pibridge /etc/sbxfw/tighten-token
 chmod 640 /etc/sbxfw/tighten-token
 systemctl daemon-reload
-systemctl enable nftables sbx-console loom ollama pi-bridge
+systemctl enable nftables sbx-console loom ollama pi-bridge deskbox
 
 # ---- gateway for the separate sandbox box: private link on eth1 (10.77.0.1), forwarding on. The firewall forwards
 # nothing until the console allowlist says so. A one-NIC VM simply never brings eth1 up.
@@ -165,5 +233,6 @@ iface eth1 inet static
 EOF
 echo "net.ipv4.ip_forward=1" >/etc/sysctl.d/90-sbx-gateway.conf
 
+install -m 755 "$HERE/sbx-reboot-and-wait.sh" /usr/local/bin/sbx-reboot-and-wait   # full-mode SBX_RESET_CMD
 bash "$HERE/setup-lite.sh"      # sbx user + forced-command key + loopback sshd + broker env + first-boot banner
 echo "Provisioned. Run: bash image/smoke-test.sh"

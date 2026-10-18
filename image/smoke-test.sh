@@ -15,7 +15,8 @@ case "${1:-}" in
 esac
 
 EMBED_MODEL="${EMBED_MODEL:-nomic-embed-text}"   # matches image/manifest.env
-BROKER_PORT="${SBX_BROKER_PORT:-8099}"           # sbx_broker.py default
+BROKER_SOCK="${SBX_SOCKET:-/run/sbx/broker.sock}" # sbx_broker.py default
+DESK=http://127.0.0.1:8080
 LOOM_PORT=9741
 PASS_N=0; FAIL_N=0; SKIP_N=0
 
@@ -35,7 +36,7 @@ check_mode() { pass mode "$MODE (sandbox ${MODE/lite/in this VM})"; }
 
 check_units() {
   local u state
-  for u in ollama loom sbx-console sbx-broker pi-bridge nftables; do
+  for u in ollama loom sbx-console sbx-broker deskbox pi-bridge nftables; do
     state=$(systemctl is-active "$u" 2>/dev/null)
     if [ "$state" = active ]; then pass "unit:$u" "active"
     else fail "unit:$u" "state=${state:-unknown}"; fi
@@ -164,6 +165,48 @@ check_deskbox() {
   else fail deskbox-check "rc=$rc: $(printf '%s' "$out" | head -c 200)"; fi
 }
 
+# The desk runs -strict: contract validation, bwrap and the syscall filter are
+# what "every tool call goes through the desk" actually rests on, so a desk
+# that came up degraded is a failed check, not a note.
+check_desk_service() {
+  local body
+  body=$(curl -fsS --max-time 5 "$DESK/" 2>/dev/null) \
+    || { fail desk-service "GET $DESK/ failed (unit:deskbox)"; return; }
+  if printf '%s' "$body" | python3 -c '
+import json, sys
+e = json.load(sys.stdin)["enforcement"]
+assert e.get("strict") is True, "not running -strict"
+for k in ("sandbox", "seccomp", "resource_limits"):
+    assert e.get(k) is True, k + " not enforced"
+assert not e.get("root"), "running as root"
+' 2>/dev/null; then
+    pass desk-service "strict, sandboxed, seccomp, per-job limits"
+  else
+    fail desk-service "enforcement block: $(printf '%s' "$body" | head -c 240)"
+  fi
+}
+
+# greet the whole way round, from the side an agent sees it: desk -> stub
+# (inside bwrap, network:false) -> broker socket -> ssh -> sbx-run -> greet.
+check_desk_e2e() {
+  if [ "$QUICK" = 1 ]; then skip desk-e2e "--quick"; return; fi
+  if ! systemctl is-active --quiet deskbox; then skip desk-e2e "deskbox not active (see unit:deskbox)"; return; fi
+  local body
+  body=$(curl -sS --max-time 90 -H 'Content-Type: application/json' \
+          -d '{"input":{"name":"smoke-test"}}' "$DESK/tools/greet-sbx?wait=60s" 2>&1) \
+    || { fail desk-e2e "desk request failed: $(printf '%s' "$body" | head -c 200)"; return; }
+  if printf '%s' "$body" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d.get("status") == "done", d.get("status") or d.get("error")
+assert d["result"]["greeting"] == "Hello, smoke-test.", d.get("result")
+' 2>/dev/null; then
+    pass desk-e2e "desk -> stub -> broker -> sbx-run -> greet OK"
+  else
+    fail desk-e2e "unexpected response: $(printf '%s' "$body" | head -c 240)"
+  fi
+}
+
 check_bwrap() {
   if ! have bwrap; then fail bwrap "bwrap missing"; return; fi
   local out rc
@@ -172,7 +215,7 @@ check_bwrap() {
   else fail bwrap "rc=$rc: $(printf '%s' "$out" | head -c 200)"; fi
 }
 
-# greet through the full path: curl -> sbx-broker -> ssh -> sbx-run -> bwrap -> greet.
+# greet through the full path: curl -> broker socket -> ssh -> sbx-run -> bwrap -> greet.
 check_greet_e2e() {
   if [ "$QUICK" = 1 ]; then skip greet-e2e "--quick"; return; fi
   if ! systemctl is-active --quiet sbx-broker; then skip greet-e2e "sbx-broker not active (see unit:sbx-broker)"; return; fi
@@ -180,9 +223,9 @@ check_greet_e2e() {
     skip greet-e2e "/opt/sbx/sbx-run or /opt/sbx/tools/greet not installed"; return
   fi
   local body
-  body=$(curl -sS --max-time 40 -H 'Content-Type: application/json' \
+  body=$(curl -sS --max-time 40 --unix-socket "$BROKER_SOCK" -H 'Content-Type: application/json' \
           -d '{"tool":"greet","input":{"name":"smoke-test"}}' \
-          "http://127.0.0.1:${BROKER_PORT}/run" 2>&1) \
+          "http://localhost/run" 2>&1) \
     || { fail greet-e2e "broker request failed: $(printf '%s' "$body" | head -c 200)"; return; }
   if printf '%s' "$body" | python3 -c \
       'import json,sys; d=json.load(sys.stdin); assert d["output"]["greeting"]=="Hello, smoke-test."' 2>/dev/null; then
@@ -234,8 +277,10 @@ check_bridge
 check_secrets
 check_lockdown
 check_deskbox
+check_desk_service
 check_bwrap
 check_greet_e2e
+check_desk_e2e
 echo "----"
 echo "$PASS_N passed, $FAIL_N failed, $SKIP_N skipped"
 [ "$FAIL_N" -eq 0 ]

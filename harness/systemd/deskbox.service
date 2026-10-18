@@ -1,0 +1,39 @@
+[Unit]
+Description=DeskBox agent desk (contract-enforced tool calls for the core's harnesses)
+Documentation=file:///opt/deskbox/README.md
+After=network.target sbx-broker.service
+Wants=sbx-broker.service
+
+[Service]
+User=deskbox
+Group=deskbox
+# The only group that may connect to sbx-broker's socket, and the socket is
+# the only way tool calls leave this box. Membership is not a convenience:
+# /run/sbx is 0750 sbxbroker:sbxdesk, so without this the desk cannot stat the
+# socket the job sandbox needs to bind.
+SupplementaryGroups=sbxdesk
+WorkingDirectory=/var/lib/deskbox
+# Per-job resource limits go through `systemd-run --user --scope`, which needs
+# this user's own session bus. `loginctl enable-linger deskbox` (provisioning)
+# is what makes that exist without a login; the wait below turns a missing bus
+# into a clear start-up failure instead of a confusing degradation later.
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+ExecStartPre=/bin/sh -c 'i=0; while [ $i -lt 60 ] && [ ! -S /run/user/%U/bus ]; do i=$((i+1)); sleep 1; done; [ -S /run/user/%U/bus ] || { echo "no user bus for %U; run: loginctl enable-linger %U" >&2; exit 1; }'
+# -strict: refuse to serve at all rather than run jobs without bwrap, the
+# syscall filter or the per-job limits. This box has all three, so a desk that
+# came up degraded means something broke and should be loud about it.
+ExecStart=/usr/local/bin/agent-desk -addr 127.0.0.1:8080 -tools /opt/deskbox/tools -data /var/lib/deskbox -strict
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/deskbox
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
