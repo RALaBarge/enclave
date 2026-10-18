@@ -63,8 +63,18 @@ done
 
 # Sandbox plumbing.
 if [ -x /opt/sbx/sbx-run ] && [ -x /opt/sbx/tools/greet/run ]; then pass sbx-run "installed with the greet tool"; else fail sbx-run "missing /opt/sbx/sbx-run or the greet tool"; fi
-grep -q 'command="/opt/sbx/sbx-run"' /home/sbx/.ssh/authorized_keys 2>/dev/null && grep -q restrict /home/sbx/.ssh/authorized_keys \
-  && pass forced-command "sbx key is locked to sbx-run" || fail forced-command "authorized_keys is not forced/restricted"
+# The broker key is locked to the channel: sbx-run for tool requests, reset for the per-job reboot.
+if grep -q 'command="/opt/sbx/sbx-channel"' /home/sbx/.ssh/authorized_keys 2>/dev/null && grep -q restrict /home/sbx/.ssh/authorized_keys \
+    && [ -x /opt/sbx/sbx-channel ] && [ -x /usr/local/sbin/sbx-reset ] \
+    && grep -q 'NOPASSWD: /usr/local/sbin/sbx-reset' /etc/sudoers.d/sbx-reset 2>/dev/null; then
+  pass forced-command "sbx key is locked to sbx-channel (sbx-run + reset)"
+else fail forced-command "authorized_keys is not forced to sbx-channel, or its reset helper is missing"; fi
+# The no-command path must still be sbx-run: empty input is a bad request (exit 2). The reset path
+# is not exercised here because it would reboot this box.
+printf '' | runuser -u sbx -- /usr/bin/env SSH_ORIGINAL_COMMAND= /opt/sbx/sbx-channel >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] && pass channel-tool "no-command path is sbx-run (exit 2)" || fail channel-tool "no-command path rc=$rc (want 2)"
+printf '' | runuser -u sbx -- /usr/bin/env SSH_ORIGINAL_COMMAND=unknown /opt/sbx/sbx-channel >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 64 ] && pass channel-verb "unknown verb refused" || fail channel-verb "unknown verb rc=$rc (want 64)"
 timeout 20 bwrap --ro-bind / / --unshare-net true >/dev/null 2>&1 && pass bwrap "starts with --unshare-net" || fail bwrap "bwrap failed"
 
 # What the core's allowlist does with this box's traffic.

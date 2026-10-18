@@ -13,11 +13,11 @@ for f in broker_ed25519.pub sbx_host_ed25519 sbx_host_ed25519.pub; do [ -f "$KEY
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends nftables python3 bubblewrap openssh-server ca-certificates curl iproute2
+apt-get install -y --no-install-recommends nftables python3 bubblewrap openssh-server ca-certificates curl iproute2 sudo
 
-# ---- sandbox user: key login only, forced into sbx-run ----
+# ---- sandbox user: key login only, forced into sbx-channel (sbx-run, or reset for a reboot) ----
 SBX_HOME=/home/sbx
-FORCED='command="/opt/sbx/sbx-run",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty,restrict'
+FORCED='command="/opt/sbx/sbx-channel",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty,restrict'
 id sbx >/dev/null 2>&1 || useradd --create-home --home-dir "$SBX_HOME" --shell /bin/sh sbx
 usermod -s /bin/sh -p '!' sbx
 chmod 755 "$SBX_HOME"
@@ -31,8 +31,14 @@ install -d /opt/sbx/tools
 install -m 644 "$ROOT/common/toollist.py" /opt/sbx/
 install -m 644 "$ROOT/tools.list" /opt/sbx/tools.list
 install -m 755 "$ROOT/sbx/sbx-run" /opt/sbx/sbx-run
+install -m 755 "$ROOT/sbx/sbx-channel" /opt/sbx/sbx-channel    # forced command: sbx-run, or reset
+install -m 755 "$HERE/sbx-reset.sh" /usr/local/sbin/sbx-reset  # root helper behind the reset verb
+# The reset channel may run exactly one program as root, with no TTY (the forced command has none).
+printf '%s\n' 'Defaults:sbx !requiretty' 'sbx ALL=(root) NOPASSWD: /usr/local/sbin/sbx-reset' >/etc/sudoers.d/sbx-reset
+chmod 440 /etc/sudoers.d/sbx-reset
+visudo -cf /etc/sudoers.d/sbx-reset
 cp -r "$ROOT/sbx/tools/." /opt/sbx/tools/
-chmod 755 /opt/sbx/sbx-run /opt/sbx/tools/*/run     # uploads from Windows lose Unix modes
+chmod 755 /opt/sbx/sbx-run /opt/sbx/sbx-channel /opt/sbx/tools/*/run     # uploads from Windows lose Unix modes
 
 # ---- host key: fixed at build time so the core can pin it (the core's known_hosts.box has this public key) ----
 rm -f /etc/ssh/ssh_host_*
