@@ -36,7 +36,7 @@ check_mode() { pass mode "$MODE (sandbox ${MODE/lite/in this VM})"; }
 
 check_units() {
   local u state
-  for u in ollama loom sbx-console sbx-broker deskbox pi-bridge nftables; do
+  for u in ollama loom sbx-console sbx-broker sbx-session-gate deskbox pi-bridge nftables; do
     state=$(systemctl is-active "$u" 2>/dev/null)
     if [ "$state" = active ]; then pass "unit:$u" "active"
     else fail "unit:$u" "state=${state:-unknown}"; fi
@@ -233,6 +233,26 @@ check_greet_e2e() {
   else fail greet-e2e "unexpected response: $(printf '%s' "$body" | head -c 200)"; fi
 }
 
+# The gate holds the only readable copy of the tighten-only token, and its socket is the only way in. Mode, group and
+# the token's unreadability to pibridge are the access control, so they are what gets checked.
+check_session_gate() {
+  local sock=/run/sbx-gate/gate.sock mode grp out
+  if [ ! -S "$sock" ]; then fail session-gate "$sock missing"; return; fi
+  mode=$(stat -c '%a' "$sock" 2>/dev/null); grp=$(stat -c '%G' "$sock" 2>/dev/null)
+  if [ "$mode" != 660 ] || [ "$grp" != pibridge ]; then
+    fail session-gate "socket is ${mode:-?} ${grp:-?} (want 660 pibridge)"; return
+  fi
+  if runuser -u pibridge -- test -r /etc/sbxfw/tighten-token 2>/dev/null; then
+    fail session-gate "pibridge can read the tighten token (only sbxgate should)"; return
+  fi
+  out=$(curl -sS --max-time 10 --unix-socket "$sock" -X POST http://localhost/lockdown 2>&1) \
+    || { fail session-gate "POST /lockdown failed: $(printf '%s' "$out" | head -c 160)"; return; }
+  if printf '%s' "$out" | python3 -c \
+      'import json,sys; d=json.load(sys.stdin); assert d.get("active")=="session", d' 2>/dev/null; then
+    pass session-gate "socket 660 pibridge, token unreadable to pibridge, lockdown -> session"
+  else fail session-gate "unexpected answer: $(printf '%s' "$out" | head -c 160)"; fi
+}
+
 # pi-bridge against the REAL pi binary: create a session, ask pi for its state over RPC, delete it. No model call.
 check_bridge() {
   local api=http://127.0.0.1:9760 sid out
@@ -276,6 +296,7 @@ check_pi
 check_bridge
 check_secrets
 check_lockdown
+check_session_gate
 check_deskbox
 check_desk_service
 check_bwrap
