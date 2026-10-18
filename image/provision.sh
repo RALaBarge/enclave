@@ -118,6 +118,9 @@ install -m 755 "$HERE/artifacts/tcs-shim" /usr/bin/tcs-shim    # shimmed tools e
 # run scripts 0700 so only that account can execute them. sync.py refuses to
 # ship a contract whose stub would need the network, which is what keeps every
 # call on the broker socket.
+# The repo was uploaded from a Windows host, which drops Unix execute bits, and
+# tcs-verify (run by sync.py) rejects a contract whose run.py is not executable.
+chmod 755 "$ROOT"/harness/tools/*/run.py "$ROOT"/harness/stub/run.py
 python3 "$ROOT/sync.py" --deploy /opt/deskbox/tools
 chown -R deskbox:deskbox /opt/deskbox/tools
 install -m 644 "$ROOT/harness/systemd/deskbox.service" /etc/systemd/system/
