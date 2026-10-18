@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """sbx-console: local control panel for the deskbox sandbox bridge.
 
-Tabs: Firewall (nftables allowlist), Tools (tools.list health, enable/disable, timeouts), Settings.
+Tabs: Firewall (nftables allowlist), Tools (tools.list health, enable/disable, timeouts, network), Settings.
 Tools are deliberately NOT installable from the UI: adding one means writing sandbox code, a
 contract and a pinned stub by hand (see sync.py).
 Stdlib only. Binds 127.0.0.1; every /api call needs the bearer token in
@@ -512,24 +512,41 @@ def _read_toollist_lines():
         return []
 
 
-OFF_RE = re.compile(r"^#\s*off:\s*([a-z0-9][a-z0-9-]{0,63})(?:\s+(\d+))?\s*$")
+OFF_RE = re.compile(r"^#\s*off:\s*([a-z0-9][a-z0-9-]{0,63})(?:\s+(\d+))?(?:\s+(" + toollist.NET_FIELD + r"))?\s*$")
+
+
+def _fields(parts):
+    """name plus the rest of a tools.list line -> (timeout_s, network). Unparseable fields are ignored, as before."""
+    t, network = toollist.DEFAULT_TIMEOUT, False
+    for p in parts[1:]:
+        if p == toollist.NET_FIELD:
+            network = True
+        elif p.isdigit():
+            t = int(p)
+    return max(1, min(t, toollist.MAX_TIMEOUT)), network
+
+
+def _fmt(name, t, network, enabled=True):
+    body = f"{name} {t}" + (f" {toollist.NET_FIELD}" if network else "")
+    return body if enabled else f"# off: {body}"
 
 
 def parse_tools():
-    """-> [{name, enabled, timeout_s}] from tools.list incl. '# off: name t' disabled lines."""
+    """-> [{name, enabled, timeout_s, network}] from tools.list incl. '# off: name t net' disabled lines."""
     tools = []
     for ln in _read_toollist_lines():
         m = OFF_RE.match(ln.strip())
         if m:
+            t = int(m.group(2) or toollist.DEFAULT_TIMEOUT)
             tools.append({"name": m.group(1), "enabled": False,
-                          "timeout_s": int(m.group(2) or toollist.DEFAULT_TIMEOUT)})
+                          "timeout_s": max(1, min(t, toollist.MAX_TIMEOUT)), "network": m.group(3) is not None})
             continue
         body = ln.split("#", 1)[0].strip()
         if body:
             parts = body.split()
             if NAME_RE.match(parts[0]):
-                t = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else toollist.DEFAULT_TIMEOUT
-                tools.append({"name": parts[0], "enabled": True, "timeout_s": max(1, min(t, toollist.MAX_TIMEOUT))})
+                t, network = _fields(parts)
+                tools.append({"name": parts[0], "enabled": True, "timeout_s": t, "network": network})
     return tools
 
 
@@ -575,10 +592,11 @@ def tool_toggle(name, enabled):
         for ln in lines:
             m = OFF_RE.match(ln.strip())
             body = ln.split("#", 1)[0].split()
-            if enabled and m and m.group(1) == name:
-                out.append(f"{name} {m.group(2)}" if m.group(2) else name)
-            elif not enabled and body and body[0] == name and not ln.lstrip().startswith("#"):
-                out.append(f"# off: {name}" + (f" {body[1]}" if len(body) > 1 else ""))
+            if m and m.group(1) == name:
+                out.append(_fmt(name, int(m.group(2) or toollist.DEFAULT_TIMEOUT), m.group(3) is not None, enabled))
+            elif body and body[0] == name and not ln.lstrip().startswith("#"):
+                t, network = _fields(body)
+                out.append(_fmt(name, t, network, enabled))
             else:
                 out.append(ln)
         return out
@@ -599,14 +617,37 @@ def tool_timeout(name, t):
             m = OFF_RE.match(ln.strip())
             body = ln.split("#", 1)[0].split()
             if m and m.group(1) == name:
-                out.append(f"# off: {name} {t}")
+                out.append(_fmt(name, t, m.group(3) is not None, False))
             elif body and body[0] == name and not ln.lstrip().startswith("#"):
-                out.append(f"{name} {t}")
+                _, network = _fields(body)
+                out.append(_fmt(name, t, network, True))
             else:
                 out.append(ln)
         return out
     _write_toollist(mut)
     return {"ok": True}
+
+
+def tool_network(name, enabled):
+    if not any(x["name"] == name for x in parse_tools()):
+        raise Bad("unknown tool")
+    network = bool(enabled)
+
+    def mut(lines):
+        out = []
+        for ln in lines:
+            m = OFF_RE.match(ln.strip())
+            body = ln.split("#", 1)[0].split()
+            if m and m.group(1) == name:
+                out.append(_fmt(name, int(m.group(2) or toollist.DEFAULT_TIMEOUT), network, False))
+            elif body and body[0] == name and not ln.lstrip().startswith("#"):
+                t, _ = _fields(body)
+                out.append(_fmt(name, t, network, True))
+            else:
+                out.append(ln)
+        return out
+    _write_toollist(mut)
+    return {"ok": True, "note": "Deploy tools.list to the sandbox box too (full mode); sbx-run reads it per job."}
 
 
 # ------------------------------------------------------------------ settings
@@ -723,6 +764,7 @@ ROUTES = {
     ("GET", "/api/tools"): lambda b: tools_list(),
     ("POST", "/api/tools/toggle"): lambda b: tool_toggle(b.get("name"), bool(b.get("enabled"))),
     ("POST", "/api/tools/timeout"): lambda b: tool_timeout(b.get("name"), b.get("timeout_s")),
+    ("POST", "/api/tools/network"): lambda b: tool_network(b.get("name"), bool(b.get("enabled"))),
     ("GET", "/api/settings"): lambda b: settings_get(),
     ("POST", "/api/settings"): lambda b: settings_set(b),
 }

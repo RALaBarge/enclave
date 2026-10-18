@@ -249,7 +249,8 @@ class Tools(unittest.TestCase):
             f.write("# header\ngreet 10   # note\nother\n")
 
     def test_parse_toggle_timeout_roundtrip(self):
-        self.assertEqual([(t["name"], t["enabled"], t["timeout_s"]) for t in c.parse_tools()], [("greet", True, 10), ("other", True, 30)])
+        self.assertEqual([(t["name"], t["enabled"], t["timeout_s"], t["network"]) for t in c.parse_tools()],
+                         [("greet", True, 10, False), ("other", True, 30, False)])
         c.tool_toggle("greet", False)
         self.assertIn("# off: greet 10", open(c.TOOLLIST).read())
         self.assertEqual(c.parse_tools()[0]["enabled"], False)
@@ -263,6 +264,52 @@ class Tools(unittest.TestCase):
         import toollist
         self.assertEqual(toollist.load(c.TOOLLIST)["greet"]["timeout_s"], 45)   # broker still parses it
 
+    def test_network_flag_parse(self):
+        with open(c.TOOLLIST, "w") as f:
+            f.write("# header\ngreet 10\nweb 60 net\nshort net\n# off: batch 20 net\n# off: old 5\n")
+        self.assertEqual([(t["name"], t["enabled"], t["timeout_s"], t["network"]) for t in c.parse_tools()],
+                         [("greet", True, 10, False), ("web", True, 60, True), ("short", True, 30, True),
+                          ("batch", False, 20, True), ("old", False, 5, False)])
+
+    def test_network_toggle_roundtrip_and_other_edits_keep_it(self):
+        with open(c.TOOLLIST, "w") as f:
+            f.write("greet 10\nweb 60 net\n# off: batch 20 net\n")
+        r = c.tool_network("greet", True)
+        self.assertTrue(r["ok"])
+        self.assertIn("deploy tools.list to the sandbox box", r["note"].lower())
+        self.assertIn("greet 10 net\n", open(c.TOOLLIST).read())
+        c.tool_toggle("web", False)                    # disabling keeps the flag
+        self.assertIn("# off: web 60 net\n", open(c.TOOLLIST).read())
+        c.tool_timeout("web", 45)                      # so does a timeout change
+        self.assertIn("# off: web 45 net\n", open(c.TOOLLIST).read())
+        c.tool_toggle("web", True)
+        self.assertIn("web 45 net\n", open(c.TOOLLIST).read())
+        c.tool_network("web", False)
+        self.assertIn("web 45\n", open(c.TOOLLIST).read())
+        c.tool_toggle("batch", True)                   # enabling a disabled network tool keeps the flag
+        c.tool_network("batch", False)
+        self.assertIn("batch 20\n", open(c.TOOLLIST).read())
+        import toollist
+        parsed = toollist.load(c.TOOLLIST)
+        self.assertTrue(parsed["greet"]["network"])
+        self.assertFalse(parsed["web"]["network"])
+        self.assertFalse(parsed["batch"]["network"])
+
+    def test_toollist_network_field_backward_compatible_and_validated(self):
+        import toollist
+        with open(c.TOOLLIST, "w") as f:
+            f.write("greet\ngreet2 15\ngreet3 20 net\ngreet4 net\n")
+        parsed = toollist.load(c.TOOLLIST)
+        self.assertEqual((parsed["greet"]["timeout_s"], parsed["greet"]["network"]), (30, False))
+        self.assertEqual((parsed["greet2"]["timeout_s"], parsed["greet2"]["network"]), (15, False))
+        self.assertEqual((parsed["greet3"]["timeout_s"], parsed["greet3"]["network"]), (20, True))
+        self.assertEqual((parsed["greet4"]["timeout_s"], parsed["greet4"]["network"]), (30, True))
+        for bad in ("greet 10 net net\n", "greet 10 net 5\n", "greet 10 15\n", "greet net net\n"):
+            with open(c.TOOLLIST, "w") as f:
+                f.write(bad)
+            with self.assertRaises(ValueError, msg=bad):
+                toollist.load(c.TOOLLIST)
+
     def test_disabled_tool_invisible_to_broker(self):
         import toollist
         c.tool_toggle("other", False)
@@ -273,6 +320,8 @@ class Tools(unittest.TestCase):
             c.tool_toggle("nope", True)
         with self.assertRaises(c.Bad):
             c.tool_timeout("greet", 999)
+        with self.assertRaises(c.Bad):
+            c.tool_network("nope", True)
 
     def test_status_shows_pin_hash(self):
         os.makedirs(os.path.join(c.SBX_TOOLS, "greet"), exist_ok=True)
@@ -342,7 +391,7 @@ class Http(unittest.TestCase):
         # it opens nothing else: every other route still needs the main token
         for path in ("/api/fw", "/api/tools"):
             self.assertEqual(self.req("GET", path, headers=T)[0], 401)
-        for path in ("/api/fw/apply", "/api/fw/profile", "/api/fw/confirm"):
+        for path in ("/api/fw/apply", "/api/fw/profile", "/api/fw/confirm", "/api/tools/network"):
             self.assertEqual(self.req("POST", path, body="{}", headers=T)[0], 401)
         self.assertEqual(self.req("POST", c.LOCKDOWN_PATH, body="{}", headers={**T, "Authorization": "Bearer nope"})[0], 401)
         old = (c._nft, c.ETC)
@@ -371,6 +420,16 @@ class Http(unittest.TestCase):
                 c._pending["timer"].cancel()
             c._pending.update(timer=None, prev=None, text=None, deadline=0, policy=None)
             c.Handler.tighten_token = None
+
+    def test_tool_network_route(self):
+        open(c.TOOLLIST, "w").write("greet 10\n")
+        h = {"Authorization": "Bearer tok123", "Content-Type": "application/json"}
+        code, body = self.req("POST", "/api/tools/network", json.dumps({"name": "greet", "enabled": True}), h)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)["ok"], True)
+        self.assertIn("greet 10 net\n", open(c.TOOLLIST).read())
+        self.assertEqual(self.req("POST", "/api/tools/network",
+                                  json.dumps({"name": "nope", "enabled": True}), h)[0], 400)
 
     def test_post_needs_json_type_and_size_cap(self):
         a = {"Authorization": "Bearer tok123"}

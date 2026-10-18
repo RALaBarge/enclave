@@ -1,7 +1,7 @@
 # sbx-console (Enclave console)
 
 Local control panel for Enclave's sandbox gateway: **Firewall** (nftables gateway for the sandbox's traffic),
-**Tools** (health of what's in `tools.list`, enable/disable, timeouts) and **Settings** (broker env, lite/full mode).
+**Tools** (health of what's in `tools.list`, enable/disable, timeouts, network opt-in) and **Settings** (broker env, lite/full mode).
 Stdlib Python, one static page, no framework. Binds `127.0.0.1:8787`; every API call needs the bearer token.
 
 Tools are deliberately **not** installable from the UI. Adding one means writing sandbox code, a contract and a
@@ -24,7 +24,8 @@ DNS from the sandbox is redirected to the first resolver you list, sandbox traff
 
 ## Modes
 
-- **Lite (default):** sandbox runs in this VM; each tool in its own `bwrap` (no network, fresh tmpfs per job).
+- **Lite (default):** sandbox runs in this VM; each tool in its own `bwrap` (no network unless its `tools.list` line says `net`,
+  fresh tmpfs per job).
   Set `SBX_HOST=127.0.0.1` and run `sshd` locally with the forced-command key (see the main setup).
 - **Full:** `SBX_HOST` points at a separate physical box. Add the two-NIC rules from the design notes there.
   The broker's SSH key is locked to `sbx-run`, so tools and `tools.list` are copied to that box by hand.

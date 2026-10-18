@@ -71,9 +71,10 @@ section{display:none}section.on{display:block}
     <div class="mut" id="drops-err"></div><button class="b" id="drops-refresh" style="margin-top:8px">Refresh</button></div>
 </section>
 <section id="tools"><div class="card"><h2>Loaded tools</h2>
-  <table><thead><tr><th>On</th><th>Name</th><th>Timeout (s)</th><th>Sandbox tool</th><th>Contract</th><th>Stub sha256 (for agent-desk -pin)</th></tr></thead><tbody id="tl"></tbody></table>
+  <table><thead><tr><th>On</th><th>Name</th><th>Timeout (s)</th><th>Network</th><th>Sandbox tool</th><th>Contract</th><th>Stub sha256 (for agent-desk -pin)</th></tr></thead><tbody id="tl"></tbody></table>
   <p class="mut">Tools are added by hand (sandbox <span class="mono">run</span>, <span class="mono">tcs.yaml</span>, stub via <span class="mono">sync.py</span>), not from this page.
-  Disabling comments the tool out of tools.list; the broker reads the list per request. In full mode, deploy the same list to the sandbox box.</p></div></section>
+  Disabling comments the tool out of tools.list; the broker reads the list per request. Network lets that tool share the sandbox's network namespace
+  instead of an isolated one; the Firewall tab still decides what it can reach. In full mode, deploy the same list to the sandbox box.</p></div></section>
 <section id="set"><div class="card"><h2>Settings</h2><div id="settings"></div>
   <div class="row" style="margin-top:12px"><button class="b p" id="save">Save</button><span class="mut" id="save-note"></span></div></div></section>
 </main><div id="toast"></div>
@@ -161,11 +162,12 @@ async function loadTools(){
   r.tools.forEach(t=>{
     const cb=el("input",{type:"checkbox",checked:t.enabled,onchange:()=>act(async()=>{await api("/api/tools/toggle",{name:t.name,enabled:cb.checked});loadTools()}).catch(()=>{})});
     const to=el("input",{type:"number",min:1,max:120,value:t.timeout_s,size:4,style:"width:70px",onchange:()=>act(async()=>{await api("/api/tools/timeout",{name:t.name,timeout_s:to.value});toast("Timeout saved")})});
+    const net=el("input",{type:"checkbox",checked:t.network,onchange:()=>act(async()=>{await api("/api/tools/network",{name:t.name,enabled:net.checked});toast(net.checked?"Network on for "+t.name:"Network off for "+t.name)})});
     const yn=(v,l)=>el("span",{className:v?"ok":"bad"},v?"✓ "+l:"✗ missing");
-    b.append(el("tr",{},el("td",{},cb),el("td",{className:"mono"},t.name),el("td",{},to),el("td",{},yn(t.sbx_run,"present")),el("td",{},yn(t.contract,"present")),
+    b.append(el("tr",{},el("td",{},cb),el("td",{className:"mono"},t.name),el("td",{},to),el("td",{},net),el("td",{},yn(t.sbx_run,"present")),el("td",{},yn(t.contract,"present")),
       el("td",{className:"mono mut"},t.stub_sha256?t.stub_sha256.slice(0,16)+"…":"none")));
   });
-  if(!r.tools.length)b.append(el("tr",{},el("td",{colSpan:6,className:"mut"},"tools.list is empty.")));
+  if(!r.tools.length)b.append(el("tr",{},el("td",{colSpan:7,className:"mut"},"tools.list is empty.")));
 }
 
 // ---- settings

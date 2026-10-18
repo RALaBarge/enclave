@@ -22,8 +22,9 @@ its gateway: the sandbox's traffic goes out only as far as an allowlist says, an
 | `harness/bridge/` | **pi-bridge**: HTTP/SSE API over Pi's RPC mode, one Pi process per session; optional tailnet peer messaging. Forces the `session` firewall profile before any session starts. |
 | `console/` | **console**: the firewall (profiles, allow and block lists, instant apply, build timer), the tools list, settings; a small web page. `test_netns.sh` proves the rules on a real kernel. |
 | `harness/broker/` | **broker**: sends tool calls from the core to the sandbox over SSH (forced command). |
-| `sbx/` | the sandbox side: `sbx-run` and the tools, each in its own `bwrap` with no network. |
+| `sbx/` | the sandbox side: `sbx-run` and the tools, each in its own `bwrap` with no network unless its `tools.list` line says `net`. |
 | `image/` | builds the VM images with Packer + QEMU: the **core** (`sbx-vm`) and the lean **sandbox** (`sbx-node`, no secrets), plus `enclave.ps1` (repo root), the launcher. |
+| `docs/HARNESS-ADMISSION.md` | what a second harness must give up before it may run next to Pi: what the core actually enforces, the admission checklist, the disqualifiers, and the cost. |
 
 Code identifiers keep the older `sbx` name (`sbx-console`, `/opt/sbx`, the `sbxfw` firewall table); Enclave is the project.
 

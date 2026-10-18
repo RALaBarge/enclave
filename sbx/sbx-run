@@ -9,8 +9,8 @@ Runs /opt/sbx/tools/<tool>/run in bubblewrap with the SAME layout the desk uses:
   /deskbox/in/<name>   input files (read-only)
   /deskbox/out/        writable output dir
   /deskbox/tool/       the tool dir (read-only)
-no network, cleared env, tmpfs /tmp, read-only /usr.  `input` goes to the
-tool's stdin as JSON.
+no network unless the tool's tools.list entry says `net`, cleared env, tmpfs
+/tmp, read-only /usr.  `input` goes to the tool's stdin as JSON.
 
 Response (stdout, one JSON doc), only on success:
   {"output": <tool stdout JSON>, "files": {name: base64}}   (every regular file in out/)
@@ -46,10 +46,13 @@ FILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 TOOL_RE = toollist.TOOL_RE
 
 
-def bwrap_args(tool_dir, in_dir, out_dir):
-    a = ["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
-         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-         "--ro-bind", "/usr", "/usr"]
+def bwrap_args(tool_dir, in_dir, out_dir, network=False):
+    a = ["bwrap", "--unshare-all"]
+    if network:
+        a += ["--share-net"]        # --unshare-all would give an empty netns; the entry opts back into the sandbox's
+    a += ["--die-with-parent", "--new-session", "--clearenv",
+          "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+          "--ro-bind", "/usr", "/usr"]
     for p in ("/bin", "/sbin", "/lib", "/lib64"):
         if os.path.islink(p):
             a += ["--symlink", os.readlink(p), p]
@@ -99,6 +102,7 @@ def main():
         if listed is None:
             return 3
         timeout = max(1, min(int(req.get("timeout_s", 30)), listed["timeout_s"]))
+        network = listed["network"]
         payload = json.dumps(req.get("input", {})).encode()
         in_files = req.get("files", {})
         if not isinstance(in_files, dict) or len(in_files) > MAX_FILES:
@@ -121,16 +125,16 @@ def main():
                 return 2
             with open(os.path.join(in_dir, name), "wb") as f:
                 f.write(base64.b64decode(b64, validate=True))
-        return run_tool(tool_dir, in_dir, out_dir, payload, timeout, work)
+        return run_tool(tool_dir, in_dir, out_dir, payload, timeout, work, network)
     except (ValueError, OSError):
         return 2
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def run_tool(tool_dir, in_dir, out_dir, payload, timeout, work):
+def run_tool(tool_dir, in_dir, out_dir, payload, timeout, work, network=False):
     err = open(os.path.join(work, "stderr"), "w+b")  # never forwarded, only classified
-    p = subprocess.Popen(bwrap_args(tool_dir, in_dir, out_dir), stdin=subprocess.PIPE,
+    p = subprocess.Popen(bwrap_args(tool_dir, in_dir, out_dir, network), stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=err,
                          start_new_session=True, preexec_fn=limits(timeout))
     timed_out = threading.Event()
