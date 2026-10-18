@@ -342,11 +342,16 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path != "/run":
             return self._err(404, "not_found")
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._err(400, "bad_request")
         if n <= 0 or n > MAX_REQ:
             return self._err(413, "bad_size")
         try:
             req = json.loads(self.rfile.read(n))
+            if not isinstance(req, dict):
+                raise ValueError
             tool = req["tool"]
             if not isinstance(tool, str) or not TOOL_RE.match(tool):
                 raise ValueError

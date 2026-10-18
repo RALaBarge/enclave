@@ -162,15 +162,46 @@ if problems:
     sys.exit(1)
 
 if deploy_dir:
+    # The destination tree is owned by the desk's account while this runs as
+    # root, so every step is relative to a directory fd opened with
+    # O_NOFOLLOW: a symlink planted where a directory or a file belongs makes
+    # the open fail instead of redirecting a root write (and chmod) elsewhere.
+    # Files are created O_EXCL under a temporary name with their final mode,
+    # then renamed over the old one, which replaces a link rather than
+    # following it.
+    if not hasattr(os, "O_NOFOLLOW"):
+        print("--deploy needs a POSIX system", file=sys.stderr)
+        sys.exit(2)
+    DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     os.makedirs(deploy_dir, mode=0o700, exist_ok=True)
+    try:
+        pfd = os.open(deploy_dir, DIR_FLAGS)
+    except OSError as e:
+        sys.exit(f"refusing --deploy: {deploy_dir}: {e.strerror}")
     for name in tools:
         src = os.path.join(hroot, f"{name}-sbx")
         dst = os.path.join(deploy_dir, f"{name}-sbx")
-        os.makedirs(dst, mode=0o700, exist_ok=True)
-        for f in ("run.py", "tcs.yaml"):
-            target = os.path.join(dst, f)
-            shutil.copyfile(os.path.join(src, f), target)
-            os.chmod(target, 0o700 if f == "run.py" else 0o600)
+        try:
+            try:
+                os.mkdir(f"{name}-sbx", 0o700, dir_fd=pfd)
+            except FileExistsError:
+                pass
+            dfd = os.open(f"{name}-sbx", DIR_FLAGS, dir_fd=pfd)
+        except OSError as e:
+            sys.exit(f"refusing --deploy: {dst}: {e.strerror}")
+        try:
+            for f in ("run.py", "tcs.yaml"):
+                with open(os.path.join(src, f), "rb") as fh:
+                    data = fh.read()
+                tmp = f".{f}.deploy-{os.getpid()}"
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o700 if f == "run.py" else 0o600, dir_fd=dfd)
+                with os.fdopen(fd, "wb") as out:
+                    out.write(data)
+                os.rename(tmp, f, src_dir_fd=dfd, dst_dir_fd=dfd)
+        finally:
+            os.close(dfd)
         print(f"deployed {dst}")
+    os.close(pfd)
     print("Re-pin after any edit to a run script: agent-desk -pin <tool dir>, then paste "
           "integrity.run_sha256 into that tool's tcs.yaml and re-deploy.")

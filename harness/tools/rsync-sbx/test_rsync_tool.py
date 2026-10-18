@@ -136,10 +136,12 @@ class EndpointParsing(unittest.TestCase):
         self.assertTrue(ep.remote)
         self.assertEqual((ep.name, ep.path), ("backup", "/srv/data"))
 
-    def test_remote_name_with_relative_path(self):
-        ep = R.parse_endpoint("nas:data/x")
-        self.assertTrue(ep.remote)
-        self.assertEqual((ep.name, ep.path), ("nas", "data/x"))
+    def test_remote_path_must_be_absolute(self):
+        # ~ and relative paths mean the remote account's home over rsh, which
+        # the allowlist (host only) never meant to hand out.
+        for spec in ("nas:data/x", "nas:~/.ssh/authorized_keys", "nas:.ssh/authorized_keys"):
+            with self.assertRaises(R.InputError, msg=spec):
+                R.parse_endpoint(spec)
 
     def test_absolute_local_path(self):
         ep = R.parse_endpoint("/tmp/a:b")
@@ -236,9 +238,8 @@ class RefusalAndResolution(Base):
         self.assertIn("-p 22", ssh)
         # The model cannot put a port in the path and have it interpreted.
         report2, runner2 = self.call(destination="nas:2222:/srv/a")
-        self.assertTrue(report2["ok"])
-        self.assertEqual(report2["command"][-1], "10.0.0.10:2222:/srv/a")
-        self.assertEqual(len(runner2.calls), 1)
+        self.assertFalse(report2["ok"])
+        self.assertEqual(runner2.calls, [])
 
     def test_both_local_refused(self):
         report, runner = self.call(source="/tmp/a", destination="/tmp/b")
@@ -326,6 +327,19 @@ class ArgumentBuilding(unittest.TestCase):
 
 
 class RsyncResult(Base):
+    def test_rsync_is_run_with_a_timeout_and_expiry_is_reported(self):
+        # Without timeout= the TimeoutExpired branch could never be reached.
+        report, runner = self.call()
+        self.assertEqual(runner.calls[0][1].get("timeout"), R.RSYNC_TIMEOUT_S)
+        report, _ = self.call(runner=FakeRunner(exc=subprocess.TimeoutExpired("rsync", 1)))
+        self.assertEqual(report["reason"], "rsync_timeout")
+
+    def test_a_home_relative_remote_path_never_reaches_rsync(self):
+        report, runner = self.call(destination="nas:~/.ssh/authorized_keys", apply=True)
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["reason"], "invalid_input")
+        self.assertEqual(runner.calls, [])
+
     def test_missing_rsync_is_reported_with_the_command(self):
         report, _ = self.call(runner=FakeRunner(exc=FileNotFoundError("rsync")))
         self.assertFalse(report["ok"])

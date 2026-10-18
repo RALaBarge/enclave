@@ -69,6 +69,9 @@ LOCAL_ROOTS = ("/deskbox/in", "/deskbox/out", "/tmp")
 MAX_PATH = 4096
 MAX_ALLOWLIST_BYTES = 64 * 1024
 OUTPUT_LIMIT = 65536
+# Below the 120 s the tool's tools.list budget gives the whole job, so a stalled
+# rsync is reported as rsync_timeout instead of the job being killed from outside.
+RSYNC_TIMEOUT_S = 100
 DETAIL_LIMIT = 500
 
 # Exact names only: no "*", "?", "[" or "]" and no ":" (that starts the path).
@@ -225,6 +228,11 @@ def parse_endpoint(spec):
         name, path = match.group(1), match.group(2)
         if not path:
             raise InputError(f"remote path is empty in {spec!r}")
+        # Over the rsh transport a relative path or ~ means the remote account's
+        # home, so `name:~/.ssh/authorized_keys` or `name:.ssh/...` would reach
+        # files the allowlist was never meant to cover. Absolute paths only.
+        if not path.startswith("/"):
+            raise InputError(f"remote path must be absolute (no ~ or relative paths): {spec!r}")
         return Endpoint(spec=spec, remote=True, name=name, path=path)
     if not spec.startswith("/"):
         raise InputError(
@@ -379,7 +387,7 @@ def handle(payload, allowlist_path=None, runner=subprocess.run):
     base["command"] = argv
 
     try:
-        proc = runner(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = runner(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=RSYNC_TIMEOUT_S)
     except FileNotFoundError:
         return refuse(
             "rsync_not_installed",

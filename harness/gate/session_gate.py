@@ -18,7 +18,7 @@ is 0660 in the bridge's group, and a process outside that group cannot reach
 it. No shared secret, nothing to rotate.
 
   GET  /status    -> {"ok": true, "profiles_forcible": ["session"], "last": {...}|null}
-  POST /lockdown  -> {"active": "session", "changed": bool, ...} from the console
+  POST /lockdown  -> {"profile": "session", "changed": bool, ...} from the console
                      or 502 with the console's reason (never the token)
 """
 import grp
