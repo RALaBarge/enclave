@@ -248,7 +248,7 @@ check_session_gate() {
   out=$(curl -sS --max-time 10 --unix-socket "$sock" -X POST http://localhost/lockdown 2>&1) \
     || { fail session-gate "POST /lockdown failed: $(printf '%s' "$out" | head -c 160)"; return; }
   if printf '%s' "$out" | python3 -c \
-      'import json,sys; d=json.load(sys.stdin); assert d.get("active")=="session", d' 2>/dev/null; then
+      'import json,sys; d=json.load(sys.stdin); assert d.get("profile")=="session", d' 2>/dev/null; then
     pass session-gate "socket 660 sbxgate, token unreadable to pibridge, lockdown -> session"
   else fail session-gate "unexpected answer: $(printf '%s' "$out" | head -c 160)"; fi
 }

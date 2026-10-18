@@ -39,7 +39,7 @@ class FakeConsole(BaseHTTPRequestHandler):
             return self._send(401, {"error": "unauthorized"})
         if FakeConsole.mode == "fail":
             return self._send(500, {"error": "nftables rejected the ruleset"})
-        return self._send(200, {"active": "session", "changed": True})
+        return self._send(200, {"profile": "session", "changed": True})
 
     def _send(self, code, obj):
         body = json.dumps(obj).encode()
@@ -120,7 +120,7 @@ class SessionGate(unittest.TestCase):
     def test_lockdown_forwards_the_console_answer(self):
         code, doc = http_unix(self.sock, "/lockdown", "POST", b"{}")
         self.assertEqual(code, 200)
-        self.assertEqual(doc["active"], "session")
+        self.assertEqual(doc["profile"], "session")
         self.assertTrue(doc["changed"])
 
     def test_console_failure_is_a_refusal_with_its_reason(self):
@@ -142,7 +142,7 @@ class SessionGate(unittest.TestCase):
         self.assertIsNone(doc["last"]["result"])
         http_unix(self.sock, "/lockdown", "POST", b"{}")
         code, doc = http_unix(self.sock, "/status")
-        self.assertEqual(doc["last"]["result"]["active"], "session")
+        self.assertEqual(doc["last"]["result"]["profile"], "session")
         self.assertIsNone(doc["last"]["error"])
 
     def test_missing_token_fails_closed(self):
