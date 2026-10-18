@@ -68,7 +68,10 @@ class BrokerTest(unittest.TestCase):
         return sbx_broker.lane
 
     def post(self, timeout=10):
-        data = json.dumps({"tool": "greet", "input": {}}).encode()
+        return self.post_body({"tool": "greet", "caller": "greet-sbx", "input": {}}, timeout)
+
+    def post_body(self, doc, timeout=10):
+        data = json.dumps(doc).encode()
         req = urllib.request.Request(self.base + "/run", data=data, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -97,6 +100,41 @@ class BrokerTest(unittest.TestCase):
                 return
             time.sleep(0.01)
         self.fail(f"timed out waiting for {what}")
+
+    # -- the caller must be the contract of the tool it asks for -----------
+
+    def test_caller_must_match_the_tool(self):
+        self.use_lane(1, 5)
+        ran = []
+        def record(request, wall_timeout):
+            ran.append(request["tool"])
+            return "ok", OK_ENVELOPE
+        sbx_broker.run_on_sbx = record
+        with open(self.tool_list, "w", encoding="utf-8") as f:
+            f.write("greet 5\nrsync 5 net\n")
+        for label, doc, want in [
+            ("matching caller", {"tool": "greet", "caller": "greet-sbx", "input": {}}, 200),
+            ("a non-net stub asking for a net tool", {"tool": "rsync", "caller": "greet-sbx", "input": {}}, 403),
+            ("caller without the -sbx suffix", {"tool": "greet", "caller": "greet", "input": {}}, 403),
+            ("caller of another tool", {"tool": "greet", "caller": "rsync-sbx", "input": {}}, 403),
+            ("no caller at all", {"tool": "greet", "input": {}}, 400),
+            ("caller that is not a name", {"tool": "greet", "caller": ["greet-sbx"], "input": {}}, 400),
+        ]:
+            with self.subTest(label):
+                before = len(ran)
+                code, body = self.post_body(doc)
+                self.assertEqual(code, want, body)
+                self.assertEqual(len(ran) - before, 1 if want == 200 else 0)
+        self.assertEqual(ran, ["greet"])
+
+    def test_the_shipped_stub_sends_its_contract_as_caller(self):
+        # The broker now refuses a request without a matching caller, so a stub
+        # that stopped sending one would fail every call. Text check only: the
+        # stub hardcodes /deskbox paths and cannot be run here.
+        with open(os.path.join(HERE, "..", "stub", "run.py"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn('caller = os.environ.get("DESKBOX_TOOL", "")', text)
+        self.assertIn('"caller": caller', text)
 
     # -- malformed requests answer, they do not drop the connection ------
 

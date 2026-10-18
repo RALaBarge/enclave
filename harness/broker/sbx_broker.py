@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """sbx-broker: runs on the trusted harness box.
 
-Accepts {"tool": ..., "input": {...}} on a unix socket from the *-sbx stub
-tools, runs the matching tool on the sandbox box over SSH (harness initiates,
+Accepts {"tool": ..., "caller": ..., "input": {...}} on a unix socket from the
+*-sbx stub tools, runs the matching tool on the sandbox box over SSH (harness initiates,
 sandbox never connects back), and returns the tool's JSON stdout.
 
 The socket is the point: every stub runs with no network at all (network:false
@@ -355,6 +355,9 @@ class H(BaseHTTPRequestHandler):
             tool = req["tool"]
             if not isinstance(tool, str) or not TOOL_RE.match(tool):
                 raise ValueError
+            caller = req["caller"]
+            if not isinstance(caller, str) or not TOOL_RE.match(caller):
+                raise ValueError
             inp = req.get("input", {})
             files = req.get("files", {})
             if not isinstance(files, dict) or len(files) > 16 or not all(
@@ -362,6 +365,16 @@ class H(BaseHTTPRequestHandler):
                 raise ValueError
         except (ValueError, KeyError):
             return self._err(400, "bad_request")
+
+        # Every stub names the contract it runs under (the desk sets DESKBOX_TOOL
+        # to "<tool>-sbx") and may ask for the tool of that name, nothing else.
+        # This is a declaration, not authentication: a job that holds the socket
+        # can write any caller. It makes the wrong-tool case (a stub copied from
+        # another, a changed name, a net tool asked for by a non-net stub) a hard
+        # error instead of a quiet success, and it is the field a desk-issued
+        # per-job token would later be checked against.
+        if caller != tool + "-sbx":
+            return self._err(403, "caller_mismatch")
 
         try:
             entry = toollist.load(TOOLLIST).get(tool)  # re-read: edits apply without restart

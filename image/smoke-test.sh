@@ -224,7 +224,7 @@ check_greet_e2e() {
   fi
   local body
   body=$(curl -sS --max-time 40 --unix-socket "$BROKER_SOCK" -H 'Content-Type: application/json' \
-          -d '{"tool":"greet","input":{"name":"smoke-test"}}' \
+          -d '{"tool":"greet","caller":"greet-sbx","input":{"name":"smoke-test"}}' \
           "http://localhost/run" 2>&1) \
     || { fail greet-e2e "broker request failed: $(printf '%s' "$body" | head -c 200)"; return; }
   if printf '%s' "$body" | python3 -c \

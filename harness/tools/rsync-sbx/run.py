@@ -5,7 +5,8 @@ symlink: the desk's bwrap only binds the tool's own directory). Pin with agent-d
 Forwards the desk's stdin JSON plus any declared input files (/deskbox/in/*,
 base64) to the local sbx-broker over the unix socket the desk binds into this
 sandbox, prints the tool's JSON, and writes returned files into /deskbox/out/.
-Tool name = DESKBOX_TOOL minus a trailing "-sbx". The desk still validates
+Tool name = DESKBOX_TOOL minus a trailing "-sbx"; the full DESKBOX_TOOL goes along as
+"caller", and the broker refuses a request whose caller is not "<tool>-sbx". The desk still validates
 everything against tcs.yaml afterwards; the stub only refuses names/types the
 desk would refuse anyway.
 
@@ -48,9 +49,8 @@ class UnixConnection(http.client.HTTPConnection):
         self.sock = sock
 
 
-tool = os.environ.get("DESKBOX_TOOL", "")
-if tool.endswith("-sbx"):
-    tool = tool[:-4]
+caller = os.environ.get("DESKBOX_TOOL", "")
+tool = caller[:-4] if caller.endswith("-sbx") else caller
 
 try:
     payload = json.load(sys.stdin)
@@ -61,7 +61,7 @@ try:
             if NAME_RE.match(name) and stat.S_ISREG(os.lstat(path).st_mode):
                 with open(path, "rb") as f:
                     files[name] = base64.b64encode(f.read()).decode()
-    body = json.dumps({"tool": tool, "input": payload, "files": files}).encode()
+    body = json.dumps({"tool": tool, "caller": caller, "input": payload, "files": files}).encode()
     conn = UnixConnection(SOCKET, timeout=CLIENT_TIMEOUT)
     try:
         conn.request("POST", "/run", body=body, headers={"Content-Type": "application/json"})
