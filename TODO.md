@@ -34,7 +34,7 @@ Last updated 2026-10-18 (branch `desk-tools`). `main` is the last settled state;
   logging (`--loom-url`, one assistant message per turn with tool and unknown-event lines, redaction first and fail-closed).
   Verified on Linux (WSL, real bwrap + seccomp, deskbox built from the pin): a tool declaring `sandbox.bind` reached a host unix
   socket from inside the job and returned its reply with `network: false` in force; the same tool with the bind removed failed to
-  connect; a bind with `dst: /etc/passwd` was refused at load. Every other suite is green here (gate 6, bridge 39, adapter 25,
+  connect; a bind with `dst: /etc/passwd` was refused at load. Same host: the real `harness/stub/run.py` reached the real broker over the unix socket with `ssh` faked, got `{"greeting": "Hello, fake.", "length": 11}` back, and `/status` answered on that socket at mode 0660 with nothing on TCP. (The socket group fell back to the default there because `sbxdesk` does not exist on that host, so that exercised the missing-group path rather than the intended one.) Every other suite is green here (gate 6, bridge 39, adapter 25,
   broker 11, rsync 52, console 32). Not verified on a VM: this whole list needs an image rebuild and one smoke run.
 
 ## Tasks left, roughly in order
