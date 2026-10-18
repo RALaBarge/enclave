@@ -106,6 +106,11 @@ Tools are not installable from the console. Add one by hand:
 6. Pin the stub: `agent-desk -pin /opt/deskbox/tools/<name>-sbx`, then paste `integrity.run_sha256` into the repo's
    `tcs.yaml` and re-deploy. The desk checks the pin at load and again per job.
 
+If `tcs-verify` is on `PATH`, `sync.py` runs it over every contract and fails on what it finds; it is the only thing here
+that parses the schema the way the gate does, so it is what notices a keyword the validator would silently drop (a
+`default:` in a property, for instance). In a checkout that cannot store the exec bit, `tcs-verify` also warns that
+`run.py` is group/other-readable: the deployed copy is written 0700, which is the mode the desk actually checks.
+
 The broker and `sbx-run` re-read their `tools.list` on each request, so list edits apply without a restart. A network
 tool still only reaches what the Firewall tab allows for the sandbox.
 

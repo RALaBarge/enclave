@@ -20,6 +20,7 @@ the run script at 0700, so only the desk's account can execute it.
 import os
 import re
 import shutil
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -95,6 +96,21 @@ hroot = os.path.join(ROOT, "harness", "tools")
 for d in sorted(os.listdir(hroot)):
     if d.endswith("-sbx") and d[:-4] not in tools:
         problems.append(f"unlisted tool dir:   harness/tools/{d} (not in tools.list)")
+
+# If the desk's own linter is on PATH, use it. The checks above are textual and
+# deliberately cheap; tcs-verify parses the contract the way the gate does, so
+# it is what catches a schema keyword the validator would silently ignore (a
+# `default:` is the one that got through once). Absent, this step is skipped
+# rather than failing: a build host without the Go binary should still be able
+# to run sync.py.
+verifier = shutil.which("tcs-verify")
+if verifier:
+    for name in tools:
+        tdir = os.path.join(hroot, f"{name}-sbx")
+        r = subprocess.run([verifier, tdir], capture_output=True, text=True)
+        if r.returncode != 0:
+            detail = "; ".join(ln.strip() for ln in (r.stdout or "").splitlines() if "FAIL" in ln)
+            problems.append(f"tcs-verify:         harness/tools/{name}-sbx: {detail or 'rejected'}")
 
 print(f"{len(tools)} tool(s): {', '.join(tools)}")
 for p in problems:

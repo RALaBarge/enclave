@@ -16,7 +16,10 @@ input:
   properties:
     source:      { type: string, minLength: 1, maxLength: 4096 }
     destination: { type: string, minLength: 1, maxLength: 4096 }
-    apply:       { type: boolean, default: false }
+    # No `default:` here: DeskBox's schema subset does not support it, so the
+    # desk would ignore it and tcs-verify rejects it. The tool treats a missing
+    # `apply` as dry-run, which is the same thing without a silent no-op key.
+    apply:       { type: boolean }
 
 output:
   schema:
