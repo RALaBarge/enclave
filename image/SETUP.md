@@ -77,13 +77,11 @@ All three are local to the VM.
   action it exposes is "make sure the session profile is active" — there is no endpoint that loosens anything.
 
 **One lane for every harness.** All broker callers share one serial lane: a job runs, `SBX_RESET_CMD` runs, then
-the next job starts. A call that arrives while a job is running waits in order for up to `SBX_QUEUE_WAIT_S`; if
-`SBX_QUEUE_MAX` callers are already waiting, or that wait expires, the broker answers `503` with
-`"error": "lane_busy"`, a `reason` of `queue_full` or `queue_timeout`, and the current depth, so the tool call
-fails instead of hanging. Raise both settings for more overlapping harnesses; lower them to fail fast.
-`GET /status` on the same socket reports `busy`, `queued`, `depth_max`, the last job, `"lane": "serial"` and the
-`reset` state (`ok`, `rc`, `at`). After a failed reset the next call retries it and, if that fails too, answers `503`
-`sandbox_not_reset` before running anything; a later successful reset reopens the lane.
+the next starts. A call arriving while a job runs waits in order for up to `SBX_QUEUE_WAIT_S`; if `SBX_QUEUE_MAX`
+callers already wait, or that wait expires, the broker answers `503` (`lane_busy`, with `queued`/`depth_max`) instead
+of hanging. Raise both settings for more harnesses; lower them to fail fast. `GET /status` reports `busy`, `queued`,
+`depth_max`, the last job, the `reset` state (`ok`, `rc`, `at`) and `"lane": "serial"`; a failed reset makes the next
+call retry it and, if that also fails, answer `503 sandbox_not_reset`.
 
 ## Adding a tool
 
@@ -105,6 +103,28 @@ Tools are not installable from the console. Add one by hand:
 
 The broker and `sbx-run` re-read their `tools.list` on each request, so list edits apply without a restart. A network
 tool still only reaches what the Firewall tab allows for the sandbox.
+
+### `rsync` allowlist
+
+`rsync` is listed as `rsync 120 net`; the sandbox image installs `rsync` and `openssh-client` (`image/provision-sbx.sh`). Its
+allowlist is a file in the tool's own directory on the sandbox side: `/opt/sbx/tools/rsync/allowlist` (inside the job,
+`/deskbox/tool/allowlist`). Start from `allowlist.example` and keep one entry per line:
+
+```text
+# <name> = [user@]<host>[:port]
+backup = ryan@backup.example.com
+nas = 10.0.0.10:22
+```
+
+A remote source or destination is written `<name>:<path>`; the name must match an entry exactly, and the user and port come
+only from this file. There are no wildcards, CIDR ranges or default entry: an empty, missing or malformed allowlist permits
+no remote host. The local side is limited to `/deskbox/in`, `/deskbox/out` and `/tmp`, so the job cannot upload the allowlist
+or the SSH key from its own tool directory. The call runs `rsync --dry-run` unless it sets `"apply": true`. SSH reads
+`id_ed25519` and `known_hosts` from that same directory (neither is in the repo), with `StrictHostKeyChecking=yes` and
+`BatchMode=yes`, so an unknown host or a passphrase fails instead of prompting. A `net` tool now also gets
+`/etc/resolv.conf`, `/etc/passwd` and the trust store bound in (`sbx/sbx-run`), so a hostname in the allowlist resolves.
+Keep the allowlist and key readable by the sandbox's `sbx` account (the job runs as it; the key should be mode 600), and
+copy the run script executable: `chmod 755 /opt/sbx/tools/rsync/run`.
 
 ## A second harness
 
