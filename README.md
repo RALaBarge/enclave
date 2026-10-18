@@ -19,9 +19,11 @@ its gateway: the sandbox's traffic goes out only as far as an allowlist says, an
 
 | Path | What |
 |---|---|
-| `harness/bridge/` | **pi-bridge**: HTTP/SSE API over Pi's RPC mode, one Pi process per session; optional tailnet peer messaging. Forces the `session` firewall profile before any session starts. |
+| `harness/bridge/` | **pi-bridge**: HTTP/SSE API over Pi's RPC mode, one Pi process per session; optional tailnet peer messaging. Calls the session gate before any session starts. |
 | `console/` | **console**: the firewall (profiles, allow and block lists, instant apply, build timer), the tools list, settings; a small web page. `test_netns.sh` proves the rules on a real kernel. |
-| `harness/broker/` | **broker**: sends tool calls from the core to the sandbox over SSH (forced command). |
+| `harness/gate/` | **session gate**: the one place a new session's firewall profile is forced. Holds the tighten-only token, exposes `lockdown` and nothing that loosens, on a unix socket owned by the bridge's group. |
+| `harness/broker/` | **broker**: sends tool calls from the core to the sandbox over SSH (forced command), on a unix socket only the desk's group may connect to. |
+| `deskbox` (pinned in `image/manifest.env`) | the **desk** every tool call goes through: contract check in, contract check out, each run in its own bwrap. Runs as its own account; the tools it serves live in `/opt/deskbox/tools`, deployed by `sync.py --deploy`. |
 | `sbx/` | the sandbox side: `sbx-run` and the tools, each in its own `bwrap` with no network unless its `tools.list` line says `net`. |
 | `image/` | builds the VM images with Packer + QEMU: the **core** (`sbx-vm`) and the lean **sandbox** (`sbx-node`, no secrets), plus `enclave.ps1` (repo root), the launcher. |
 | `docs/HARNESS-ADMISSION.md` | what a second harness must give up before it may run next to Pi: what the core actually enforces, the admission checklist, the disqualifiers, and the cost. |
@@ -43,10 +45,14 @@ Then follow `image/SETUP.md`. On the core: `sudo sbx-mode box`, `sudo sbx-smoke-
 ## Tests
 
 ```
-python console/test_console.py                      # 28 tests
-python -B -m unittest discover -s harness/bridge/tests   # 17 tests
-bash console/test_netns.sh                          # 28 checks, real nftables, throwaway namespaces (WSL/Linux, root)
+python console/test_console.py                           # 32 tests
+python -B -m unittest discover -s harness/bridge/tests    # 24 tests
+python -B -m unittest discover -s harness/gate            # 6 tests, Linux (AF_UNIX + grp)
+bash console/test_netns.sh                               # 28 checks, real nftables, throwaway namespaces (WSL/Linux, root)
 ```
+
+The broker's queue and the tools adapter have their own `test_*.py` next to them. Nothing in this list needs a VM; the
+bwrap, nftables and systemd paths they describe do.
 
 ## Honest limits
 

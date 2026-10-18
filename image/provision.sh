@@ -224,12 +224,13 @@ install -m 755 "$HERE/sbx-mode.sh" /usr/local/sbin/sbx-mode
 install -m 755 "$HERE/sbx-regen-hostkeys.sh" /usr/local/sbin/sbx-regen-hostkeys
 [ -f /etc/sbx/broker.env ] || install -m 640 "$ROOT/harness/broker/broker.env.example" /etc/sbx/broker.env
 runuser -u sbxconsole -- env SBXC_ETC=/etc/sbxfw SBX_COMMON=/opt/sbx-console/common python3 /opt/sbx-console/sbx_console.py --init
-# The pi-bridge may read ONLY the tighten-only token (POST /api/fw/lockdown): a new agent session always starts on the
-# session firewall profile. It cannot read the console's main token, so it can never loosen the firewall.
+# The tighten-only token belongs to sbx-session-gate, which is the only thing that may call /api/fw/lockdown. It is NOT
+# readable by pibridge: the bridge asks the gate over its socket, and Pi has no route to the console's firewall API at all.
+getent group sbxgate >/dev/null || groupadd -r sbxgate
+chgrp sbxgate /etc/sbxfw/tighten-token
+chmod 640 /etc/sbxfw/tighten-token
 # Bitwarden token and project id (created by the operator; sbx-fetch-secrets reads them as root before pi-bridge starts).
 touch /etc/sbx/bws-token /etc/sbx/bws.env; chown root:root /etc/sbx/bws-token /etc/sbx/bws.env; chmod 600 /etc/sbx/bws-token /etc/sbx/bws.env   # root only: Pi's user never reads the token
-chgrp pibridge /etc/sbxfw/tighten-token
-chmod 640 /etc/sbxfw/tighten-token
 systemctl daemon-reload
 systemctl enable nftables sbx-console loom ollama pi-bridge sbx-session-gate deskbox
 

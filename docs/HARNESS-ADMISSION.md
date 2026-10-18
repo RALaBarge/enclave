@@ -14,7 +14,8 @@ and the broker's log. The service accounts sit around those things:
 
 | Account | Created by | What it can reach, from the code |
 |---|---|---|
-| `pibridge` | `image/provision.sh` (`useradd` for `pibridge`) | `127.0.0.1:9760`; its children inherit `/run/sbx/secrets.env` (`root:pibridge 0640`) and `/etc/sbxfw/tighten-token` (group `pibridge`); writes `/var/lib/pi-bridge` |
+| `pibridge` | `image/provision.sh` (`useradd` for `pibridge`) | `127.0.0.1:9760`; its children inherit `/run/sbx/secrets.env` (`root:pibridge 0640`); connects to `/run/sbx-gate/gate.sock` (`0660` group `pibridge`) but cannot read `/etc/sbxfw/tighten-token` (`0640` group `sbxgate`); writes `/var/lib/pi-bridge` |
+| `sbxgate` | `image/provision.sh` | `/run/sbx-gate/gate.sock`; reads `/etc/sbxfw/tighten-token` and may call `/api/fw/lockdown` and nothing else |
 | `sbxbroker` | `image/provision.sh`, `image/setup-lite.sh` | the broker listener; `/etc/sbx/id_ed25519` (`0600`); SSH to the sandbox forced command; `RuntimeDirectory=sbx` in its unit |
 | `deskbox` | `image/provision.sh`, `harness/systemd/deskbox.service` | `127.0.0.1:8080` (`-strict`); `/opt/deskbox/tools` at `0700`; `/var/lib/deskbox`; group `sbxdesk`, which is the group on the broker socket |
 | `sbxconsole` | `image/provision.sh` | `127.0.0.1:8787`; `CAP_NET_ADMIN`; reads and writes `/etc/sbxfw` and `/etc/sbx` |
@@ -63,9 +64,11 @@ What a process in the core can reach, whatever its account:
   callers is not verified here. Any local process that can reach the port can ask the desk to run a declared tool.
 - `127.0.0.1:9760` (pi-bridge): no login; a loopback `Host` and same-origin `Origin` only (`harness/bridge/server.py`, `_guard`),
   which stop browsers, not local processes.
-- `127.0.0.1:8787` (console): bearer token. `token` is `0640` group `sbxconsole`; `tighten-token` is `0640` group `pibridge` and
-  is accepted only on `/api/fw/lockdown` (`console/sbx_console.py`). A harness in `pibridge` holds a credential that can tighten
-  the profile and nothing else.
+- `127.0.0.1:8787` (console): bearer token. `token` is `0640` group `sbxconsole`; `tighten-token` is `0640` group `sbxgate` and
+  is accepted only on `/api/fw/lockdown` (`console/sbx_console.py`). A `pibridge` process cannot read it: the bridge reaches the
+  lockdown through `sbx-session-gate`'s socket instead (`harness/gate/session_gate.py`).
+- `/run/sbx-gate/gate.sock` (session gate): `0660` group `pibridge`, so the bridge's account may connect and nothing else in the
+  core may. The gate exposes `lockdown` and no verb that loosens.
 - `127.0.0.1:9741` (Loom): no authentication on any route; the loopback bind is the only access control (`image/provision.sh`,
   noting it of Loom's source, not verified against `LOOM_COMMIT`). `11434` (Ollama) has no token configured either.
 - Files: `/etc/sbx/id_ed25519` `0600 sbxbroker` (`image/setup-lite.sh`); `/run/sbx/secrets.env` `0640 root:pibridge`
@@ -111,11 +114,11 @@ image hash and harness version. Run the checks as the candidate's own account on
 
 4. It starts a session only after the gate has forced the `session` profile, and fails closed.
    Must: refuse to start a harness process when the gate is unreachable or answers badly; never fall back to "start anyway".
-   Settled by: the unit passing the gate credentials (`--firewall-token-file` in `harness/systemd/pi-bridge.service`), and a run
-   with the console stopped where `POST /sessions` answers 503 and no harness process exists. The existing tests are the shape to
-   copy: `FirewallLockdown` in `harness/bridge/tests/test_bridge.py`. Note the code's default: without the flag a session starts
-   with no gate at all (`test_not_configured_means_no_call`, same file). Until TODO task 18 extracts the gate, a second harness
-   that does not share this code path is duplicating it; that is a failure of this item, not a pass.
+   Settled by: the unit passing `--gate-socket` (`harness/systemd/pi-bridge.service`), and a run with the gate stopped where
+   `POST /sessions` answers 503 and no harness process exists. The tests are the shape to copy: `FirewallLockdown` in
+   `harness/bridge/tests/test_bridge.py` (`test_unreachable_gate_is_a_refusal`). Note the code's default: without
+   `--gate-socket` a session starts with no gate at all (`test_not_configured_means_no_call`, same file), so a unit that omits it
+   fails this item. Any second bridge calls the same `sbx-session-gate`, never a copy of the lockdown.
 
 5. Model keys arrive through the secrets env and never from a file.
    Must: take keys from the process environment, written by a root `ExecStartPre` before the service user exists

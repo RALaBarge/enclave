@@ -6,7 +6,7 @@ machines over Tailscale. The web UI in `../ui` is a client of these endpoints. P
 ```
 python server.py --pi-bin /usr/local/bin/pi     # API on 127.0.0.1:9760
 python server.py --peers                        # also talk to your other machines over the tailnet
-python -B -m unittest discover -s tests         # 14 tests, uses a fake Pi
+python -B -m unittest discover -s tests         # uses a fake Pi
 ```
 
 ## Local API

@@ -16,7 +16,8 @@
 
 ## Boot and log in
 
-1. Boot the VM. Services start on their own: `ollama`, `loom`, `sbx-console`, `sbx-broker`, `nftables`, `ssh`.
+1. Boot the VM. Services start on their own: `ollama`, `loom`, `sbx-console`, `sbx-broker`, `sbx-session-gate`, `deskbox`,
+   `tailscaled` (no account until you run `tailscale up`), `nftables`, `ssh`.
 2. Log in on the VM console as `sbxadmin` with the initial password `sbx-change-me`. You are forced to set a new
    password immediately. Nothing on the network can use the initial password: sshd listens on 127.0.0.1 only and
    admits only the `sbx` forced-command user. Everything else listens on loopback (127.0.0.1 / ::1) only too.
@@ -71,6 +72,18 @@ All three are local to the VM.
   and the per-job limits are actually live rather than merely configured.
   The broker's socket is `/run/sbx/broker.sock` (mode 0660, group `sbxdesk`). That socket, bound into each job by the contract's
   `sandbox.bind`, is the only way a tool call leaves the desk, and no stub has a network at all.
+- **sbx-session-gate** (`/run/sbx-gate/gate.sock`): the one place a new session's firewall profile is forced. The bridge calls it
+  before starting Pi, and refuses to start a session if it cannot. Only the gate can read `/etc/sbxfw/tighten-token`, and the only
+  action it exposes is "make sure the session profile is active" — there is no endpoint that loosens anything.
+
+**One lane for every harness.** All broker callers share one serial lane: a job runs, `SBX_RESET_CMD` runs, then
+the next job starts. A call that arrives while a job is running waits in order for up to `SBX_QUEUE_WAIT_S`; if
+`SBX_QUEUE_MAX` callers are already waiting, or that wait expires, the broker answers `503` with
+`"error": "lane_busy"`, a `reason` of `queue_full` or `queue_timeout`, and the current depth, so the tool call
+fails instead of hanging. Raise both settings for more overlapping harnesses; lower them to fail fast.
+`GET /status` on the same socket reports `busy`, `queued`, `depth_max`, the last job, `"lane": "serial"` and the
+`reset` state (`ok`, `rc`, `at`). After a failed reset the next call retries it and, if that fails too, answers `503`
+`sandbox_not_reset` before running anything; a later successful reset reopens the lane.
 
 ## Adding a tool
 
@@ -92,6 +105,18 @@ Tools are not installable from the console. Add one by hand:
 
 The broker and `sbx-run` re-read their `tools.list` on each request, so list edits apply without a restart. A network
 tool still only reaches what the Firewall tab allows for the sandbox.
+
+## A second harness
+
+Point the harness's tool definitions at the desk:
+
+```sh
+python3 harness/toolsadapter/desk_tools.py --desk http://127.0.0.1:8080 openapi
+```
+
+`list` and `text` are the other output forms. The desk is the only executor: every call goes back to
+`POST /tools/{name}`, so the harness needs no tool code. Do not give the harness a shell — that gives up the contract, the
+sandbox and the account boundary at once; see `docs/HARNESS-ADMISSION.md`.
 
 ## Full mode: the sandbox on its own device (the strongest setup)
 
@@ -132,7 +157,9 @@ uses, with one extra verb. It then waits up to 60 s for the box to drop SSH and 
 empty request again (exit 2 = the tool channel is back). If either deadline passes it prints the reason to stderr and exits 1;
 the broker logs the failure. It clears RAM and tmpfs, not the box's disk. The box needs `sudo`, `/usr/local/sbin/sbx-reset` and
 the sudoers line; `provision-sbx.sh` installs all three. On a hand-built box, copy `sbx/sbx-channel` and `image/sbx-reset.sh`
-and add the sudoers line as `provision-sbx.sh` does.
+and add the sudoers line as `provision-sbx.sh` does. A box image built before this change has no channel: the reboot request
+then fails with an SSH exit status and the broker logs it, rather than reporting a reset that did not happen. Rebuild the box
+image with `provision-sbx.sh`, or install those three pieces by hand.
 
 **`sbx-vm-revert`: what it must be, and why it is not here.** Reverting a VM disk snapshot is a host-side QEMU operation: stop
 the sandbox VM, throw away its overlay (`build\run\sbx.qcow2`), re-create it from the built image
