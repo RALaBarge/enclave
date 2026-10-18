@@ -33,7 +33,9 @@ assert e.get("strict") is True, "not -strict"
 for k in ("sandbox", "seccomp", "resource_limits"):
     assert e.get(k) is True, k + " not enforced"
 assert e.get("root") is False, "running as root"
-assert e.get("user") == "deskbox", "user is %r, not deskbox" % e.get("user")
+# describeUser() in deskbox formats this as "name (uid N)", so compare the
+# account name, not the whole string.
+assert e.get("user", "").split(" ")[0] == "deskbox", "user is %r, not deskbox" % e.get("user")
 ' 2>/dev/null; then
     pass desk-posture "strict, sandboxed, seccomp, limits, user deskbox, not root"
   else
