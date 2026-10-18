@@ -144,7 +144,17 @@ the branch:
   returns `active`, so the test passes and the smoke check would fail.
 - **L.** `sync.py --deploy` follows a symlink in a directory owned by the tool-running account while deploy is documented
   as root.
-- **M.** A malformed POST (`Content-Length: abc`, or a JSON body that is a list) drops the connection instead of
+- **D.** The bridge file endpoints are fixed for the secret directories, on the resolved cwd *and* the resolved target. A
+  file the `pibridge` account can read elsewhere is still readable by any local caller who names its directory; a
+  `--cwd-root` allowlist is the real fix.
+- **E.** The broker socket is a general proxy: any caller that reaches it may name any tool in `tools.list`, including one
+  with `net`. The shipped stub only sends its own name, so this is a tool-code capability rather than a model one — but
+  "network:false is the boundary" is stronger than the code.
+- **F.** In lite mode a `net` tool shares the core's network namespace and reaches loopback (desk, bridge, console, Loom)
+  without touching the forward chain. `image/SETUP.md` and `docs/HARNESS-ADMISSION.md` say the forward chain filters it;
+  that holds in full mode only.
+- **N.** `harness/gate/session_gate.py` unlinked whatever was at its socket path, including a live one. Fixed with the same
+  connect probe as the broker. It was in `TODO.md` and missing from the first version of this report.- **M.** A malformed POST (`Content-Length: abc`, or a JSON body that is a list) drops the connection instead of
   answering 400.
 
 ## 6. Limits of this report
