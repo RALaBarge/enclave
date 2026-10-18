@@ -6,7 +6,8 @@ The local API listens on loopback only and has no login. A web page elsewhere ca
     GET    /health
     GET    /ui/                           the web UI (static files from --ui-dir; see ../ui)
     GET    /sessions                      POST /sessions {cwd, name?}          DELETE /sessions/{id}
-           (with --gate-socket, creating a session first has sbx-session-gate force the console's `session`
+           (cwd must resolve under one of the --cwd-root directories; see App/validate_cwd_root.
+            With --gate-socket, creating a session first has sbx-session-gate force the console's `session`
             firewall profile; if that fails the session is NOT started. The bridge cannot loosen it.)
     POST   /sessions/{id}/command         any Pi RPC command object; returns Pi's response record
     POST   /sessions/{id}/ui-response     fire-and-forget (extension_ui_response)
@@ -53,7 +54,7 @@ except ImportError:                 # a bare /opt/pi-bridge install ships only b
     REDACT = None
 import pairing as PR  # noqa: E402
 import peers as P  # noqa: E402
-from pibridge import Registry, RpcError  # noqa: E402
+from pibridge import Registry, RpcError, under_roots  # noqa: E402
 
 MAX_BODY = 1024 * 1024
 MAX_FILE = 8 * 1024 * 1024   # one upload/download; a larger file is refused, not streamed through
@@ -75,6 +76,10 @@ class Forbidden(Exception):
     """A path or origin the bridge refuses to touch."""
 
 
+class ConfigError(ValueError):
+    """A startup setting the bridge refuses to run with."""
+
+
 class LengthRequired(Exception):
     """An upload without Content-Length, which this API requires so the size is bounded before reading."""
 
@@ -83,7 +88,7 @@ class TooLarge(Exception):
     """A file over MAX_FILE, in either direction."""
 
 
-# Directories a session may not use as its cwd. The listener is loopback-only
+# Paths a session may not use as its cwd or reach through the file endpoints. The listener is loopback-only
 # and unauthenticated, so any local process may create a session; the file
 # endpoints serve whatever the session's cwd contains, as the bridge's own
 # account. Without this, `{"cwd": "/run/sbx"}` plus
@@ -93,9 +98,15 @@ class TooLarge(Exception):
 # It is a deny-list, so it narrows the obvious path rather than proving there
 # is none: a file the pibridge account can read elsewhere is still readable by
 # a local caller who names its directory.
+# The bridge home is split: state/ (sessions.json, FIFOs, identity and peer
+# keys) and the key files are protected, while work/ is the directory the
+# shipped unit allows sessions to run in. Protecting the parent instead would
+# make that root unusable; protecting these entries keeps ../state and
+# ../peers.json out of reach of the file endpoints.
 PROTECTED_ROOTS = (
     "/run/sbx", "/run/sbx-gate", "/etc/sbxfw", "/etc/sbx", "/etc/ssh",
-    "/etc/shadow", "/etc/sudoers", "/root", "/var/lib/pi-bridge",
+    "/etc/shadow", "/etc/sudoers", "/root", "/var/lib/pi-bridge/state",
+    "/var/lib/pi-bridge/identity.json", "/var/lib/pi-bridge/peers.json",
     "/var/lib/deskbox", "/var/lib/loom", "/proc", "/sys", "/dev", "/boot",
 )
 
@@ -107,6 +118,34 @@ def protected_root(path: str) -> bool:
         if p == r or p.startswith(r + os.sep):
             return True
     return False
+
+
+def validate_cwd_root(value: str) -> str:
+    """Resolve one --cwd-root and refuse a root that would expose the core's secrets.
+
+    A root must not be a filesystem root, must not be inside a protected path, and must not contain
+    one. The check is on the resolved path, the same form used for every later comparison.
+    """
+    root = os.path.realpath(os.path.expanduser(value))
+    if os.path.dirname(root) == root:
+        raise ConfigError("--cwd-root %s is the filesystem root (%s); choose a directory that holds only session work"
+                          % (value, root))
+    for protected in PROTECTED_ROOTS:
+        if under_roots(root, (os.path.realpath(protected),)):
+            raise ConfigError("--cwd-root %s resolves to %s, which is inside protected path %s; choose a root "
+                              "outside the directories that hold the core's secrets" % (value, root, protected))
+    for protected in PROTECTED_ROOTS:
+        real = os.path.realpath(protected)
+        if os.path.normcase(real) != os.path.normcase(root) and under_roots(real, (root,)):
+            raise ConfigError("--cwd-root %s resolves to %s, which contains protected path %s; choose a narrower root"
+                              % (value, root, protected))
+    return root
+
+
+def outside_roots_error(cwd: str, roots) -> str:
+    """The 403 body for a session cwd the caller has to move (or allow with another --cwd-root)."""
+    return ("%s is outside the bridge's allowed roots (%s); add --cwd-root if this location is intended"
+            % (cwd, ", ".join(roots)))
 
 
 def session_path(cwd: str, rel: str) -> tuple[str, str]:
@@ -446,11 +485,23 @@ class TurnRecorder:
 
 class App:
     def __init__(self, pi_cmd, peer_port=None, state_dir=None, name="bridge", gate=None,
-                 loom_url=None, loom_timeout=5.0):
+                 loom_url=None, loom_timeout=5.0, cwd_root=None):
+        # Fail closed: the cwd comes from whoever calls this loopback API, so the roots are required
+        # rather than a mode that can be switched off. A single path or a sequence of them is accepted.
+        values = [] if cwd_root is None else ([cwd_root] if isinstance(cwd_root, (str, os.PathLike)) else list(cwd_root))
+        if not values:
+            raise ConfigError("--cwd-root is required: every session cwd must be under one of the allowed roots "
+                              "(the flag is repeatable)")
+        roots = []
+        for value in values:
+            root = validate_cwd_root(value)
+            if root not in roots:
+                roots.append(root)
+        self.cwd_roots = tuple(roots)
         self.gate = gate          # unix socket of sbx-session-gate, or None
         self.ui_dir = None                # directory served at /ui/
         self.state_dir = state_dir or tempfile.mkdtemp(prefix="pi-bridge-")
-        self.reg = Registry(pi_cmd, self.state_dir)
+        self.reg = Registry(pi_cmd, self.state_dir, self.cwd_roots)
         self.peer_port = peer_port
         self.me = PR.load_identity(self.state_dir, name)
         self.store = PR.PeerStore(self.state_dir)
@@ -620,6 +671,8 @@ def make_handler(app: App):
                 raise ValueError("peer messaging is disabled; start the bridge with --peers")
 
         def _upload(self, s, rel):
+            if s.refused_reason:
+                raise Forbidden(s.refused_reason)
             target, shown = session_path(s.cwd, rel)
             raw_len = self.headers.get("Content-Length")
             if raw_len is None:
@@ -653,6 +706,8 @@ def make_handler(app: App):
             return self._json(201, {"path": shown, "bytes": n})
 
         def _download(self, s, rel):
+            if s.refused_reason:
+                raise Forbidden(s.refused_reason)
             target, _ = session_path(s.cwd, rel)
             if os.path.isdir(target):
                 raise ValueError("path is a directory")
@@ -685,7 +740,12 @@ def make_handler(app: App):
                     b = self._body()
                     if not b.get("cwd") or not os.path.isdir(b["cwd"]):
                         raise ValueError("cwd must be an existing directory")
-                    if protected_root(b["cwd"]):
+                    cwd = os.path.realpath(b["cwd"])
+                    if not under_roots(cwd, app.cwd_roots):
+                        return self._json(403, {"error": outside_roots_error(cwd, app.cwd_roots)})
+                    # Second line of defence: even a root that somehow contains a protected path
+                    # cannot host a session there.
+                    if protected_root(cwd):
                         return self._json(403, {"error": "that directory holds the core's secrets and cannot host a session"})
                     fw = None
                     if app.gate:
@@ -693,7 +753,7 @@ def make_handler(app: App):
                             fw = gate_lockdown(app.gate)
                         except FirewallError as e:
                             return self._json(503, {"error": "firewall lockdown failed, session not started: %s" % e})
-                    info = app.reg.create(b["cwd"], b.get("name")).info()
+                    info = app.reg.create(cwd, b.get("name")).info()
                     s = app.reg.get(info["id"])
                     if s is not None:
                         app.observe(s)
@@ -809,6 +869,9 @@ def main(argv=None) -> int:
     ap.add_argument("--pi-bin", default=os.environ.get("PI_BIN", "pi"))
     ap.add_argument("--pi-arg", action="append", default=[], help="extra argument for pi (repeatable)")
     ap.add_argument("--state-dir", default="~/.pi-bridge", help="identity, paired-peer keys and session records")
+    ap.add_argument("--cwd-root", action="append", default=[], metavar="DIR",
+                    help="a directory session cwds must resolve under (repeatable; required). Refused: /, a path "
+                         "inside a protected path, or a path containing one")
     ap.add_argument("--gate-socket", default=None,
                     help="sbx-session-gate socket; each new session first forces the session firewall profile, "
                          "and a session is not started if that fails")
@@ -822,6 +885,15 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     if args.loom_timeout <= 0:
         print("--loom-timeout must be greater than zero", file=sys.stderr)
+        return 2
+    if not args.cwd_root:
+        print("pi-bridge: refusing to start: --cwd-root is required; every session cwd must be under one of the "
+              "allowed roots (the flag is repeatable)", file=sys.stderr)
+        return 2
+    try:
+        cwd_roots = [validate_cwd_root(v) for v in args.cwd_root]
+    except ConfigError as e:
+        print("pi-bridge: refusing to start: %s" % e, file=sys.stderr)
         return 2
 
     host, _, port = args.listen.rpartition(":")
@@ -842,7 +914,7 @@ def main(argv=None) -> int:
     name = st["self"]["name"] if st else socket.gethostname().split(".")[0]
     app = App([args.pi_bin, "--mode", "rpc", *args.pi_arg], args.peer_port if args.peers else None,
               os.path.abspath(os.path.expanduser(args.state_dir)), name,
-              args.gate_socket, args.loom_url, args.loom_timeout)
+              args.gate_socket, args.loom_url, args.loom_timeout, cwd_root=cwd_roots)
     here = os.path.dirname(os.path.abspath(__file__))
     app.ui_dir = args.ui_dir or next((d for d in (os.path.join(here, "ui"), os.path.join(here, "..", "ui")) if os.path.isdir(d)), None)
     servers = [ThreadingHTTPServer((host, int(port)), make_handler(app))]

@@ -4,9 +4,9 @@ A small HTTP/SSE API in front of `pi --mode rpc` (one Pi process per session), p
 machines over Tailscale. The web UI in `../ui` is a client of these endpoints. Python stdlib only.
 
 ```
-python server.py --pi-bin /usr/local/bin/pi     # API on 127.0.0.1:9760
-python server.py --peers                        # also talk to your other machines over the tailnet
-python server.py --loom-url http://127.0.0.1:9741   # also log every settled turn to Loom
+python server.py --cwd-root /var/lib/pi-bridge/work --pi-bin /usr/local/bin/pi   # API on 127.0.0.1:9760
+python server.py --cwd-root /var/lib/pi-bridge/work --peers                      # also talk to your other machines
+python server.py --cwd-root /var/lib/pi-bridge/work --loom-url http://127.0.0.1:9741   # also log settled turns to Loom
 python -B -m unittest discover -s tests         # uses a fake Pi
 ```
 
@@ -27,17 +27,39 @@ API's own. For another machine, use an SSH tunnel.
 | `POST /sessions/{id}/files?path=rel` | raw body, `Content-Length` required, 8 MiB cap; returns `{path, bytes}` |
 | `GET /sessions/{id}/files?path=rel` | bytes from under the session's `cwd`, 8 MiB cap |
 
+## Session cwd roots (`--cwd-root`)
+
+`--cwd-root` is required and repeatable. Every session cwd is resolved with `realpath` and must be one of the roots or
+below one; the roots themselves are resolved once at startup and compared resolved everywhere after that. The bridge
+refuses to start without at least one root: it takes the cwd from its caller, so it is the component that must not
+trust it.
+
+Each root is also checked at startup. The bridge refuses a root that is `/`, that lies inside a protected path, or
+that contains one, and names the root and the rule that failed. The bridge's state directory and key files are
+protected; the `work` directory the shipped unit passes (`/var/lib/pi-bridge/work`) is its sibling and is allowed.
+
+`POST /sessions` with a cwd outside every root answers 403 with a message naming the roots and the flag, e.g.
+`/home/me/notes is outside the bridge's allowed roots (/var/lib/pi-bridge/work); add --cwd-root if this location is
+intended`. The UI shows that message. The existing protected-path checks stay as the second line of defence.
+
+A restored session is rechecked against the roots that are in force now. A record whose cwd no longer qualifies is
+not dropped: it stays in `GET /sessions` as `state: "refused"` with a `reason`, its commands answer 502, and its file
+endpoints answer 403. Adding the missing `--cwd-root` and restarting re-evaluates the record; `DELETE /sessions/{id}`
+removes it. The break is deliberate: a session created under a wider or implicit rule cannot be created or restored
+under a narrower one.
+
 ## Sessions across restarts
 
 `--state-dir` holds `sessions.json`, one small record per session: `id`, `cwd`, `name`, `pid`, `created_at`,
-`state_dir`, `state` (`alive` or `dead`), `exit_code`, and — while the session is alive — the paths of its
-FIFO RPC channel. The file is rewritten atomically (temporary file in the same directory, then `os.replace`)
-when a session is created, exits or is deleted.
+`state_dir`, `state` (`alive`, `dead`, or `refused` with a `reason`), `exit_code`, and — while the session is alive
+or refused — the paths of its FIFO RPC channel. The file is rewritten atomically (temporary file in the same
+directory, then `os.replace`) when a session is created, exits or is deleted.
 
-On start the registry rebuilds from that file. A Pi process that is still alive and answers a `get_state`
-round trip on its FIFOs is reattached: same process, same channel, no new Pi. If the process is gone, or the
-channel cannot be opened or does not answer, the session stays in the list as `dead` with its last known exit
-code, and commands to it answer 502. `DELETE /sessions/{id}` stops the process, removes its FIFOs and removes
+On start the registry rebuilds from that file. A record whose cwd is outside the current `--cwd-root` list comes back
+`refused` with its reason (see above) and is not reattached. For the rest, a Pi process that is still alive and
+answers a `get_state` round trip on its FIFOs is reattached: same process, same channel, no new Pi. If the process is
+gone, or the channel cannot be opened or does not answer, the session stays in the list as `dead` with its last known
+exit code, and commands to it answer 502. `DELETE /sessions/{id}` stops the process, removes its FIFOs and removes
 the record, so `GET /sessions` shows sessions from the previous run instead of forgetting them.
 
 The FIFO channel is what makes this possible with Pi's stdin/stdout RPC mode: the child keeps a read/write end

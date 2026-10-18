@@ -40,6 +40,21 @@ class RpcError(Exception):
     pass
 
 
+def under_roots(path: str, roots) -> bool:
+    """True when path's realpath is one of roots or below one.
+
+    `roots` are expected resolved (the CLI resolves --cwd-root once at startup and the registry stores
+    that form). Only the path being tested is resolved here, so a symlinked cwd counts as the directory
+    it really is and every later comparison uses the same form.
+    """
+    p = os.path.normcase(os.path.realpath(path))
+    for root in roots:
+        r = os.path.normcase(root)
+        if p == r or p.startswith(r + os.sep):
+            return True
+    return False
+
+
 def _atomic_json(path, obj) -> None:
     """Write one small JSON file in place: temp file in the same directory, then rename.
 
@@ -120,11 +135,17 @@ class Session:
         self._spawn(pi_cmd, channel)
 
     @classmethod
-    def from_record(cls, pi_cmd: list[str], rec: dict, state_dir: str | None) -> "Session":
+    def from_record(cls, pi_cmd: list[str], rec: dict, state_dir: str | None,
+                    cwd_roots=()) -> "Session":
         """Rebuild a session from its record. It is `dead` unless the old Pi is alive and answers its FIFOs.
 
-        The probe is a real RPC round trip (get_state), not just a pid check: a stale pid can be reused and
-        a live process is useless to the bridge if its channel cannot be reopened.
+        A cwd outside the current roots is `refused` instead: see below. Otherwise the probe is a real
+        RPC round trip (get_state), not just a pid check: a stale pid can be reused and a live process
+        is useless to the bridge if its channel cannot be reopened.
+
+        The cwd is checked against the current --cwd-root allowlist first. A record from a bridge that
+        allowed a wider root stays listed but is `refused`: it is not probed, not reattached, and its
+        record is not deleted. Adding the root is what brings it back on a later start.
         """
         s = cls.__new__(cls)
         s._init(str(rec["id"]), str(rec.get("cwd") or os.getcwd()), rec.get("name"),
@@ -132,6 +153,17 @@ class Session:
         s.reattached = True
         s.pid = rec.get("pid") if isinstance(rec.get("pid"), int) and not isinstance(rec.get("pid"), bool) else None
         ch = rec.get("channel") if isinstance(rec.get("channel"), dict) else {}
+        if not under_roots(s.cwd, cwd_roots):
+            # Keep the channel names so a later start with the root added can still reattach; this
+            # process only refuses to use them. Nothing is unlinked and the record is not removed.
+            s.channel = ({"in": ch["in"], "out": ch["out"]}
+                         if isinstance(ch.get("in"), str) and isinstance(ch.get("out"), str) else None)
+            s.refused_reason = ("session cwd %s is outside the bridge's allowed roots (%s); "
+                                "add --cwd-root if this location is intended"
+                                % (s.cwd, ", ".join(cwd_roots)))
+            s.dead_reason = s.refused_reason
+            s.exited = -1
+            return s
         if not _pid_alive(s.pid):
             # Liveness and a working channel decide this, not the recorded state: a process that survived
             # must be reattached even if an earlier start failed to reach it.
@@ -180,6 +212,7 @@ class Session:
         self.reattached = False
         self.removed = False
         self.dead_reason: str | None = None
+        self.refused_reason: str | None = None
         self.on_exit = None
         self._in_fd: int | None = None
         self._out_fd: int | None = None
@@ -512,25 +545,32 @@ class Session:
 
     def info(self) -> dict:
         alive = self.exited is None
-        return {"id": self.id, "name": self.name, "cwd": self.cwd, "created": self.created,
-                "alive": alive, "exit_code": None if self.exited in (None, -1) else self.exited,
-                "state": "alive" if alive else "dead", "pid": self.pid, "last_seq": self.last_seq()}
+        state = "refused" if self.refused_reason else ("alive" if alive else "dead")
+        out = {"id": self.id, "name": self.name, "cwd": self.cwd, "created": self.created,
+               "alive": alive, "exit_code": None if self.exited in (None, -1) else self.exited,
+               "state": state, "pid": self.pid, "last_seq": self.last_seq()}
+        if self.refused_reason:
+            out["reason"] = self.refused_reason
+        return out
 
     def record(self) -> dict:
         alive = self.exited is None
         rec = {"id": self.id, "cwd": self.cwd, "name": self.name, "pid": self.pid,
                "created_at": self.created, "state_dir": self.state_dir,
-               "state": "alive" if alive else "dead",
+               "state": "refused" if self.refused_reason else ("alive" if alive else "dead"),
                "exit_code": self.exited if self.exited not in (None, -1) else None}
-        if alive and self.channel:
+        if self.refused_reason:
+            rec["reason"] = self.refused_reason
+        if self.channel and (alive or self.refused_reason):
             rec["channel"] = dict(self.channel)
         return rec
 
 
 class Registry:
-    def __init__(self, pi_cmd: list[str], state_dir: str | None = None):
+    def __init__(self, pi_cmd: list[str], state_dir: str | None = None, cwd_roots=()):
         self.pi_cmd = pi_cmd
         self.state_dir = os.path.abspath(state_dir) if state_dir else None
+        self.cwd_roots = tuple(os.path.realpath(r) for r in cwd_roots)
         self.store = SessionStore(self.state_dir) if state_dir else None
         self.sessions: dict[str, Session] = {}
         self.lock = threading.Lock()
@@ -539,7 +579,7 @@ class Registry:
 
     def _restore(self) -> None:
         for rec in self.store.all():
-            s = Session.from_record(self.pi_cmd, rec, self.state_dir)
+            s = Session.from_record(self.pi_cmd, rec, self.state_dir, self.cwd_roots)
             s.state_dir = self.state_dir
             s.on_exit = self._persist
             with self.lock:

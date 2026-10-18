@@ -81,9 +81,10 @@ class Allow:
 class Node:
     """One bridge instance: local API, peer listener, own state dir."""
 
-    def __init__(self, tc, name, allow=True, pi_cmd=None, loom_url=None, loom_timeout=5.0):
+    def __init__(self, tc, name, allow=True, pi_cmd=None, loom_url=None, loom_timeout=5.0, cwd_root=None):
+        self.cwd_root = cwd_root or tempfile.gettempdir()
         self.app = S.App(pi_cmd or FAKE, peer_port=1, state_dir=tempfile.mkdtemp(), name=name,
-                         loom_url=loom_url, loom_timeout=loom_timeout)
+                         loom_url=loom_url, loom_timeout=loom_timeout, cwd_root=self.cwd_root)
         self.api = serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(self.app)))
         self.peer = P.make_peer_server("127.0.0.1", 0, self.app.me, self.app.store, self.app.inbox, self.app.nonces, Allow(allow))
         self.port = self.peer.server_address[1]
@@ -166,7 +167,7 @@ class Local(unittest.TestCase):
         self.assertEqual(req(self.base, "/sessions/%s/command" % sid, "POST", {"type": "get_state"})[0], 502)
 
     def test_peers_off_by_default(self):
-        app = S.App(FAKE, state_dir=tempfile.mkdtemp())
+        app = S.App(FAKE, state_dir=tempfile.mkdtemp(), cwd_root=tempfile.gettempdir())
         base = serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app)))
         c, r = req(base, "/peers")
         self.assertEqual(c, 400)
@@ -471,7 +472,8 @@ for line in sys.stdin.buffer:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
         sock.close()                                                    # nothing listens on that port now
-        app = S.App(self.pi, state_dir=tempfile.mkdtemp(), loom_url="http://127.0.0.1:%d" % port, loom_timeout=1.0)
+        app = S.App(self.pi, state_dir=tempfile.mkdtemp(), loom_url="http://127.0.0.1:%d" % port, loom_timeout=1.0,
+                    cwd_root=tempfile.gettempdir())
         self.addCleanup(app.reg.stop_all)
         srv = ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app))
         self.addCleanup(srv.shutdown)
@@ -570,7 +572,7 @@ class FirewallLockdown(unittest.TestCase):
     """Session start goes through the gate now; the bridge holds no token."""
 
     def make(self, gate=None):
-        app = S.App(FAKE, state_dir=tempfile.mkdtemp(), gate=gate)
+        app = S.App(FAKE, state_dir=tempfile.mkdtemp(), gate=gate, cwd_root=tempfile.gettempdir())
         self.addCleanup(app.reg.stop_all)
         return app, serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app)))
 
@@ -608,6 +610,110 @@ class FirewallLockdown(unittest.TestCase):
         self.assertNotIn("firewall", s)
 
 
+class CwdRoots(unittest.TestCase):
+    """--cwd-root is required and bounds both new session creation and restored records."""
+
+    def make(self, roots, state=None):
+        app = S.App(FAKE, state_dir=state or tempfile.mkdtemp(), cwd_root=roots)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app))
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(app.reg.stop_all)
+        return app, serve(srv)
+
+    def test_a_cwd_outside_the_roots_is_403(self):
+        root = tempfile.mkdtemp()
+        app, base = self.make(root)
+        outside = tempfile.gettempdir()
+        c, body = req(base, "/sessions", "POST", {"cwd": outside})
+        self.assertEqual(c, 403)
+        outer = os.path.realpath(outside)
+        self.assertEqual(body, {"error": S.outside_roots_error(outer, app.cwd_roots)})
+        self.assertIn("add --cwd-root", body["error"])
+        self.assertIn(os.path.realpath(root), body["error"])
+        self.assertEqual(app.reg.list(), [])
+
+    def test_a_cwd_under_a_root_is_201(self):
+        root = tempfile.mkdtemp()
+        nested = os.path.join(root, "project")
+        os.makedirs(nested)
+        app, base = self.make(root)
+        c, s = req(base, "/sessions", "POST", {"cwd": nested})
+        self.assertEqual(c, 201)
+        self.assertEqual(s["cwd"], os.path.realpath(nested))
+        self.assertEqual(req(base, "/sessions", "POST", {"cwd": root})[0], 201)   # the root itself is allowed too
+
+    def test_two_roots_both_work(self):
+        a, b = tempfile.mkdtemp(), tempfile.mkdtemp()
+        app, base = self.make([a, b])
+        for root in (a, b):
+            nested = os.path.join(root, "work")
+            os.makedirs(nested)
+            c, s = req(base, "/sessions", "POST", {"cwd": nested})
+            self.assertEqual(c, 201, root)
+            self.assertEqual(s["cwd"], os.path.realpath(nested))
+        self.assertEqual(req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})[0], 403)
+
+    def test_validation_refuses_the_filesystem_root_and_protected_paths(self):
+        with self.assertRaises(S.ConfigError) as cm:
+            S.validate_cwd_root("/")
+        self.assertIn("filesystem root", str(cm.exception))
+        for bad in ("/etc", "/var/lib", "/run", "/var/lib/pi-bridge"):        # root that contains a protected path
+            with self.assertRaises(S.ConfigError, msg=bad) as cm:
+                S.validate_cwd_root(bad)
+            self.assertIn("protected path", str(cm.exception), bad)
+        for bad in ("/etc/ssh/keys", "/var/lib/pi-bridge/state", "/run/sbx/work"):   # inside one
+            with self.assertRaises(S.ConfigError, msg=bad) as cm:
+                S.validate_cwd_root(bad)
+            self.assertIn("protected path", str(cm.exception), bad)
+        # The shipped unit's work directory is beside the protected state, not inside it.
+        self.assertEqual(S.validate_cwd_root("/var/lib/pi-bridge/work"), os.path.realpath("/var/lib/pi-bridge/work"))
+        self.assertFalse(S.protected_root("/var/lib/pi-bridge/work"))
+        self.assertTrue(S.protected_root("/var/lib/pi-bridge/state"))
+        work = os.path.realpath("/var/lib/pi-bridge/work")
+        self.assertEqual(S.session_path(work, "notes.txt")[0], os.path.join(work, "notes.txt"))
+
+    def test_no_root_is_a_startup_refusal(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            self.assertEqual(S.main([]), 2)
+        self.assertIn("--cwd-root is required", buf.getvalue())
+        with self.assertRaises(S.ConfigError):
+            S.App(FAKE, state_dir=tempfile.mkdtemp())
+
+    def test_a_restored_record_outside_the_roots_comes_back_refused(self):
+        state = tempfile.mkdtemp()
+        allowed = tempfile.mkdtemp()
+        outside = tempfile.mkdtemp()
+        first = S.App(FAKE, state_dir=state, name="restart", cwd_root=tempfile.gettempdir())
+        try:
+            sid = first.reg.create(outside, "outside").id
+        finally:
+            first.reg.stop_all()
+
+        app, base = self.make(allowed, state=state)
+        row = next(x for x in req(base, "/sessions")[1] if x["id"] == sid)       # kept in the list
+        self.assertEqual((row["alive"], row["exit_code"], row["state"]), (False, None, "refused"))
+        self.assertIn(os.path.realpath(outside), row["reason"])
+        self.assertIn(os.path.realpath(allowed), row["reason"])
+        self.assertIn("add --cwd-root", row["reason"])
+
+        c, body = req(base, "/sessions/%s/command" % sid, "POST", {"type": "get_state"})
+        self.assertEqual(c, 502)
+        self.assertIn("outside", body["error"])
+
+        files = "/sessions/%s/files?path=refused.txt" % sid
+        c, _, body = raw(base, files, "POST", b"x", {"Content-Type": "application/octet-stream"})
+        self.assertEqual(c, 403)
+        self.assertIn("outside", json.loads(body)["error"])
+        self.assertEqual(raw(base, files)[0], 403)
+        self.assertFalse(os.path.exists(os.path.join(outside, "refused.txt")))
+
+        with open(os.path.join(state, "sessions.json")) as f:
+            rec = next(x for x in json.load(f)["sessions"] if x["id"] == sid)
+        self.assertEqual(rec["state"], "refused")
+        self.assertIn("add --cwd-root", rec["reason"])
+
+
 @unittest.skipUnless(hasattr(os, "mkfifo"), "session reattach needs POSIX FIFOs")
 class Persistence(unittest.TestCase):
     """A bridge process dies; a new registry rebuilds from sessions.json."""
@@ -624,7 +730,7 @@ class Persistence(unittest.TestCase):
             "import json, sys, tempfile, time\n"
             "sys.path.insert(0, %r)\n"
             "import server as S\n"
-            "app = S.App(%r, state_dir=%r, name='restart')\n"
+            "app = S.App(%r, state_dir=%r, name='restart', cwd_root=tempfile.gettempdir())\n"
             "s = app.reg.create(tempfile.gettempdir(), 'persisted')\n"
             "with open(%r, 'w') as f:\n"
             "    json.dump({'id': s.id, 'pid': s.pid, 'channel': s.channel}, f)\n"
@@ -665,7 +771,7 @@ class Persistence(unittest.TestCase):
             return json.load(f)["sessions"]
 
     def reopen(self, state):
-        app = S.App(FAKE, state_dir=state, name="restart")
+        app = S.App(FAKE, state_dir=state, name="restart", cwd_root=tempfile.gettempdir())
         srv = ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app))
         self.addCleanup(srv.shutdown)
         self.addCleanup(app.reg.stop_all)
@@ -731,10 +837,10 @@ class Persistence(unittest.TestCase):
 
     def test_clean_shutdown_keeps_the_record_as_dead(self):
         state = tempfile.mkdtemp()
-        app = S.App(FAKE, state_dir=state, name="restart")
+        app = S.App(FAKE, state_dir=state, name="restart", cwd_root=tempfile.gettempdir())
         s = app.reg.create(tempfile.gettempdir(), "stopped")
         app.reg.stop_all()                                   # what SIGTERM does to the service
-        again = S.App(FAKE, state_dir=state, name="restart")
+        again = S.App(FAKE, state_dir=state, name="restart", cwd_root=tempfile.gettempdir())
         self.addCleanup(again.reg.stop_all)
         info = again.reg.get(s.id).info()
         self.assertEqual((info["alive"], info["state"]), (False, "dead"))
