@@ -27,7 +27,10 @@ Last updated 2026-10-18 (branch `desk-tools`). `main` is the last settled state;
   can no longer read the token at all. 19: the broker's serial lane is FIFO, bounded, observable at `GET /status`, and a failed reset
   gates the next caller instead of handing it an un-reset box. 20: `docs/HARNESS-ADMISSION.md`.
   Also on the branch: 7 Tailscale (pinned 1.104.1, hardened unit, no key in the image, the `tailscale0` peer rule in the console's
-  generator), 8 the per-tool `net` flag, 9 the reset hooks (`sbx-reboot-and-wait`, `sbx-channel`, `sbx-reset`).
+  generator), 8 the per-tool `net` flag, 9 the reset hooks (`sbx-reboot-and-wait`, `sbx-channel`, `sbx-reset`), 10 bridge session
+  persistence (FIFO stdio + `sessions.json`, real reattach after a `get_state` round trip; `KillMode=process` in the unit so
+  sessions outlive a restart) and file uploads/downloads with a resolved-path containment check, 6 the `rsync` tool (dry-run
+  default, sandbox-side allowlist, refused as a Pi extension because that would put a network primitive in `pibridge`).
   Not verified on a VM: this whole list needs an image rebuild and one smoke run.
 
 ## Tasks left, roughly in order
@@ -49,16 +52,14 @@ Last updated 2026-10-18 (branch `desk-tools`). `main` is the last settled state;
      base URL points at (also the raw feed for Loom). Redact `Authorization`; the real key stays server-side. Re-run goes through Pi (fork).
 5. **Loom:** merge `memgate-support` into `main`; add the `events`/`blobs` tables and wire `harness/redact/output_redactor.py`; then memgate
    (spec `Downloads\MEMGATE_SPEC.md`; settle window scoring, the sensitive flag versus auto-write, and the calibration harness first).
-6. **rsync tool for Pi** (harness-side extension: remote hosts, allowlist, dry-run first).
-10. **Bridge polish:** session persistence across restarts, file uploads.
 11. **Independent security review** of the gateway design and of the UI engine's sandboxing (a larger model or a human).
 12. Run the two-VM layout on Proxmox (isolated bridge for the sandbox VM). Not tried: Linux/KVM host build, VirtualBox/OVA, UEFI boot.
 13. Housekeeping: large temp files in the session scratchpad; delete the cosmic-comp and webamp forks and the old ai-stack and ORMCP repos on GitHub (then
-    the local clones); unpushed local branches `fw-profiles`, `gateway-firewall`, `session-lockdown`.
+    the local clones); unpushed local branches `fw-profiles`, `gateway-firewall`, `session-lockdown`, `desk-tools`.
 14. Open: keep enclave private (recommended; pinning on GitHub needs public, which first needs a secret/PII scan).
 
-Tasks 7, 8, 9 and 15–20 are done on branch `desk-tools` (see Done). Those numbers are not reused, so the references to them
-in `docs/HARNESS-ADMISSION.md`, `image/SETUP.md` and the commit messages still resolve.
+Tasks 4, 6, 7, 8, 9, 10 and 15–20 are done on branch `desk-tools` (see Done). Those numbers are not reused, so the references to
+them in `docs/HARNESS-ADMISSION.md`, `image/SETUP.md` and the commit messages still resolve.
 
 ## Decisions
 
