@@ -27,6 +27,20 @@ sys.path.insert(0, HERE)
 import sbx_broker  # noqa: E402
 
 OK_ENVELOPE = b'{"output": {}, "files": {}}'
+KEY = b"0123456789abcdef-test-key"
+_job_counter = [0]
+
+
+def signed(doc, key=KEY, now=None, job_id=None, attempt=1, caller=None):
+    """doc plus the job token the desk would have put in the job's environment."""
+    out = dict(doc)
+    _job_counter[0] += 1
+    job_id = job_id or "job-%d" % _job_counter[0]
+    caller = caller if caller is not None else out.get("caller", "")
+    ts = int(now if now is not None else time.time())
+    out.update({"job_id": job_id, "attempt": attempt, "ts": ts,
+                "mac": sbx_broker.job_token_mac(key, caller, job_id, attempt, ts)})
+    return out
 
 
 def ok_run(request, wall_timeout):
@@ -46,6 +60,11 @@ class BrokerTest(unittest.TestCase):
                        sbx_broker._reset_state)
         sbx_broker.TOOLLIST = self.tool_list
         sbx_broker.run_on_sbx = ok_run
+        self._saved_key = (sbx_broker.JOB_KEY_PATH, sbx_broker.used_tokens)
+        sbx_broker.JOB_KEY_PATH = os.path.join(self.tmp.name, "job.key")
+        with open(sbx_broker.JOB_KEY_PATH, "wb") as f:
+            f.write(KEY + b"\n")
+        sbx_broker.used_tokens = sbx_broker.UsedTokens()
         sbx_broker.RESET_CMD = ""
         sbx_broker._reset_state = {"ok": True, "rc": 0, "at": None}
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), sbx_broker.H)
@@ -58,6 +77,7 @@ class BrokerTest(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(5)
+        sbx_broker.JOB_KEY_PATH, sbx_broker.used_tokens = self._saved_key
         (sbx_broker.TOOLLIST, sbx_broker.run_on_sbx,
          sbx_broker.reset_sbx, sbx_broker.lane,
          sbx_broker.RESET_CMD, sbx_broker._run_reset,
@@ -68,7 +88,7 @@ class BrokerTest(unittest.TestCase):
         return sbx_broker.lane
 
     def post(self, timeout=10):
-        return self.post_body({"tool": "greet", "caller": "greet-sbx", "input": {}}, timeout)
+        return self.post_body(signed({"tool": "greet", "caller": "greet-sbx", "input": {}}), timeout)
 
     def post_body(self, doc, timeout=10):
         data = json.dumps(doc).encode()
@@ -122,7 +142,7 @@ class BrokerTest(unittest.TestCase):
         ]:
             with self.subTest(label):
                 before = len(ran)
-                code, body = self.post_body(doc)
+                code, body = self.post_body(signed(doc) if "caller" in doc and isinstance(doc["caller"], str) else doc)
                 self.assertEqual(code, want, body)
                 self.assertEqual(len(ran) - before, 1 if want == 200 else 0)
         self.assertEqual(ran, ["greet"])
@@ -133,10 +153,71 @@ class BrokerTest(unittest.TestCase):
         saved = sbx_broker.log
         sbx_broker.log = lines.append
         self.addCleanup(setattr, sbx_broker, "log", saved)
-        code, _ = self.post_body({"tool": "greet", "caller": "rsync-sbx", "input": {}})
+        code, _ = self.post_body(signed({"tool": "greet", "caller": "rsync-sbx", "input": {}}))
         self.assertEqual(code, 403)
         self.assertTrue(any(l.startswith("ALERT caller_mismatch") and "tool=greet" in l and "caller=rsync-sbx" in l
                             for l in lines), lines)
+
+    # -- the desk's token: what makes the caller something a job was given ---
+
+    def test_token_checks(self):
+        self.use_lane(1, 5)
+        ran = []
+
+        def record(request, wall_timeout):
+            ran.append(request["tool"])
+            return "ok", OK_ENVELOPE
+        sbx_broker.run_on_sbx = record
+        base = {"tool": "greet", "caller": "greet-sbx", "input": {}}
+        now = time.time()
+        for label, doc, want in [
+            ("a token the desk made", signed(base), 200),
+            ("a token made with another key", signed(base, key=b"another-key-0123456789"), 403),
+            ("a token made for another tool's caller",
+             dict(signed(base), mac=sbx_broker.job_token_mac(KEY, "rsync-sbx", "job-x", 1, int(now))), 403),
+            ("a token a minute past its life", signed(base, now=now - sbx_broker.TOKEN_MAX_AGE_S - 60), 403),
+            ("a token from the future", signed(base, now=now + sbx_broker.TOKEN_MAX_AGE_S + 60), 403),
+            ("no token at all", dict(base), 400),
+            ("an empty mac", dict(signed(base), mac=""), 400),
+            ("a mac that is not hex", dict(signed(base), mac="z" * 64), 403),
+            ("attempt as a string", dict(signed(base), attempt="1"), 400),
+        ]:
+            with self.subTest(label):
+                before = len(ran)
+                code, body = self.post_body(doc)
+                self.assertEqual(code, want, body)
+                self.assertEqual(len(ran) - before, 1 if want == 200 else 0)
+
+    def test_a_token_works_once(self):
+        self.use_lane(1, 5)
+        doc = signed({"tool": "greet", "caller": "greet-sbx", "input": {}}, job_id="job-once")
+        self.assertEqual(self.post_body(doc)[0], 200)
+        code, body = self.post_body(doc)
+        self.assertEqual((code, body.get("error")), (403, "token_replayed"))
+        # A retry is a new attempt with its own token.
+        retry = signed({"tool": "greet", "caller": "greet-sbx", "input": {}}, job_id="job-once", attempt=2)
+        self.assertEqual(self.post_body(retry)[0], 200)
+
+    def test_a_missing_key_refuses_everything(self):
+        self.use_lane(1, 5)
+        os.unlink(sbx_broker.JOB_KEY_PATH)
+        code, body = self.post()
+        self.assertEqual((code, body.get("error")), (500, "job_key_error"))
+
+    def test_the_key_is_created_once_and_kept(self):
+        path = os.path.join(self.tmp.name, "new.key")
+        sbx_broker.ensure_job_key(path, group="")
+        first = sbx_broker.read_job_key(path)
+        self.assertIsNotNone(first)
+        self.assertGreaterEqual(len(first), 16)
+        sbx_broker.ensure_job_key(path, group="")
+        self.assertEqual(sbx_broker.read_job_key(path), first)
+
+    def test_the_python_and_go_implementations_agree(self):
+        # cmd/agent-desk/jobtoken_test.go (TestJobTokenKnownVector) pins the same value.
+        self.assertEqual(
+            sbx_broker.job_token_mac(b"0123456789abcdef-secret", "greet-sbx", "job-1", 1, 1000),
+            "c9cc4c00384942a57393589f4d4b0e1af71045787e690e648ed8357aee7d5ff1")
 
     def test_the_shipped_stub_sends_its_contract_as_caller(self):
         # The broker now refuses a request without a matching caller, so a stub
@@ -146,6 +227,8 @@ class BrokerTest(unittest.TestCase):
             text = f.read()
         self.assertIn('caller = os.environ.get("DESKBOX_TOOL", "")', text)
         self.assertIn('"caller": caller', text)
+        for env in ("DESKBOX_JOB_ID", "DESKBOX_ATTEMPT", "DESKBOX_JOB_TS", "DESKBOX_JOB_MAC"):
+            self.assertIn(env, text)
 
     # -- malformed requests answer, they do not drop the connection ------
 

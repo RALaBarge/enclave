@@ -121,6 +121,14 @@ The stubs send `caller` and the broker refuses any request whose caller is not `
 an old broker with new stubs, or new stubs with an old broker, answers 403 or 400 for every call. Deploy
 `sbx-broker`, `sync.py --deploy` and the stubs from the same commit.
 
+`caller` alone is a claim the job writes. What makes it something the job was *given* is the desk's signature: the broker
+creates `/run/sbx/job.key` (0640, group `sbxdesk`, kept across a broker restart, new after every boot), `deskbox-run`
+starts the desk with `-job-key /run/sbx/job.key`, and the desk then puts `DESKBOX_JOB_TS` and `DESKBOX_JOB_MAC` (an HMAC
+over caller, job id, attempt and time) into each job's environment. The stub sends them; the broker recomputes the MAC,
+refuses one older than 5 minutes, and refuses a second use of the same (job, attempt) (`403 bad_token`,
+`403 token_replayed`, each logged `ALERT`). The key is never bound into a job. This needs the DeskBox binary built from a
+commit that has `-job-key` (see `DESKBOX_COMMIT`); an older desk starts jobs without a token and every call is refused.
+
 ### `rsync` allowlist
 
 `rsync` is listed as `rsync 120 net`; the sandbox image installs `rsync` and `openssh-client` (`image/provision-sbx.sh`). Its

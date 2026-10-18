@@ -61,7 +61,15 @@ try:
             if NAME_RE.match(name) and stat.S_ISREG(os.lstat(path).st_mode):
                 with open(path, "rb") as f:
                     files[name] = base64.b64encode(f.read()).decode()
-    body = json.dumps({"tool": tool, "caller": caller, "input": payload, "files": files}).encode()
+    # The desk's token for this run (agent-desk -job-key): HMAC over caller, job,
+    # attempt and time that the broker recomputes. Absent variables go as empty
+    # values and the broker refuses them; the stub never makes up a token.
+    doc = {"tool": tool, "caller": caller, "input": payload, "files": files,
+           "job_id": os.environ.get("DESKBOX_JOB_ID", ""),
+           "attempt": int(os.environ.get("DESKBOX_ATTEMPT", "0") or 0),
+           "ts": int(os.environ.get("DESKBOX_JOB_TS", "0") or 0),
+           "mac": os.environ.get("DESKBOX_JOB_MAC", "")}
+    body = json.dumps(doc).encode()
     conn = UnixConnection(SOCKET, timeout=CLIENT_TIMEOUT)
     try:
         conn.request("POST", "/run", body=body, headers={"Content-Type": "application/json"})

@@ -20,6 +20,7 @@ Sandbox stderr is discarded; error responses never contain sandbox text.
 """
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -60,7 +61,15 @@ RESET_CMD = os.environ.get("SBX_RESET_CMD", "")
 QUEUE_MAX = max(0, int(os.environ.get("SBX_QUEUE_MAX", "4")))
 QUEUE_WAIT_S = max(0.0, float(os.environ.get("SBX_QUEUE_WAIT_S", "60")))
 
+# The desk (agent-desk -job-key) signs every job it starts; the broker checks the
+# signature. The key lives where only the broker and the desk's group can read it.
+JOB_KEY_PATH = os.environ.get("SBX_JOB_KEY", "/run/sbx/job.key")
+JOB_KEY_GROUP = os.environ.get("SBX_JOB_KEY_GROUP", SOCKET_GROUP)
+TOKEN_MAX_AGE_S = int(os.environ.get("SBX_TOKEN_MAX_AGE_S", "300"))
+TOKEN_REMEMBER = 4096          # used (job, attempt) pairs kept to refuse a replay
+
 TOOL_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 FILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 # sbx-run exit code -> reason (sandbox stderr text is never trusted or kept)
 REASONS = {2: "bad_request", 3: "unknown_tool", 4: "stdout_too_big", 5: "tool_failed",
@@ -68,6 +77,84 @@ REASONS = {2: "bad_request", 3: "unknown_tool", 4: "stdout_too_big", 5: "tool_fa
            9: "sandbox_timeout", 10: "bad_output_files", 11: "request_too_big", 255: "ssh_failed"}
 # Worth a human looking at: the sandbox layer itself misbehaved, or the tool died on a signal.
 ALERT = {"bwrap_failed", "killed_by_signal", "ssh_failed", "bad_envelope"}
+
+
+def job_token_message(caller, job_id, attempt, ts):
+    """The byte string the desk MACs (cmd/agent-desk/jobtoken.go, jobTokenMessage)."""
+    return f"{caller}\n{job_id}\n{attempt}\n{ts}".encode()
+
+
+def job_token_mac(key, caller, job_id, attempt, ts):
+    return hmac.new(key, job_token_message(caller, job_id, attempt, ts), hashlib.sha256).hexdigest()
+
+
+def read_job_key(path=None):
+    """The shared key, or None if it is missing or too short to be a secret."""
+    try:
+        with open(path or JOB_KEY_PATH, "rb") as f:
+            key = f.read().strip()
+    except OSError:
+        return None
+    return key if len(key) >= 16 else None
+
+
+def ensure_job_key(path=None, group=None):
+    """Create the key if it is not there; never replace one that is.
+
+    Kept across a broker restart so a desk that already holds it keeps working;
+    on /run (tmpfs) it is new after every boot. 0640 in the desk's group: the
+    desk reads it per job, the sandbox never has it bound in.
+    """
+    path = path or JOB_KEY_PATH
+    if read_job_key(path) is not None:
+        return
+    key = os.urandom(32).hex().encode()
+    tmp = f"{path}.new"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o640)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(key + b"\n")
+        grp_name = JOB_KEY_GROUP if group is None else group
+        if grp_name:
+            import grp  # Unix-only
+            try:
+                os.chown(tmp, -1, grp.getgrnam(grp_name).gr_gid)
+            except KeyError:
+                log(f"WARN: job key group {grp_name} does not exist; the key keeps the broker's own group")
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+class UsedTokens:
+    """(job, attempt) pairs already presented, for as long as a token is valid."""
+
+    def __init__(self, limit=TOKEN_REMEMBER):
+        self.limit = limit
+        self._seen = {}
+        self._lock = threading.Lock()
+
+    def claim(self, job_id, attempt, ts, now):
+        """True the first time; False for a replay. Old entries are forgotten."""
+        with self._lock:
+            horizon = now - TOKEN_MAX_AGE_S
+            for k in [k for k, t in self._seen.items() if t < horizon]:
+                del self._seen[k]
+            k = (job_id, attempt)
+            if k in self._seen:
+                return False
+            if len(self._seen) >= self.limit:
+                del self._seen[min(self._seen, key=self._seen.get)]
+            self._seen[k] = ts
+            return True
+
+
+used_tokens = UsedTokens()
 
 
 def _utc_stamp(when=None):
@@ -358,6 +445,11 @@ class H(BaseHTTPRequestHandler):
             caller = req["caller"]
             if not isinstance(caller, str) or not TOOL_RE.match(caller):
                 raise ValueError
+            job_id, attempt, ts, mac = req["job_id"], req["attempt"], req["ts"], req["mac"]
+            if (not isinstance(job_id, str) or not JOB_ID_RE.match(job_id)
+                    or type(attempt) is not int or type(ts) is not int
+                    or not isinstance(mac, str) or len(mac) != 64):
+                raise ValueError
             inp = req.get("input", {})
             files = req.get("files", {})
             if not isinstance(files, dict) or len(files) > 16 or not all(
@@ -379,6 +471,21 @@ class H(BaseHTTPRequestHandler):
             # Both names matched TOOL_RE above, so they are safe to log.
             log(f"ALERT caller_mismatch tool={tool} caller={caller}")
             return self._err(403, "caller_mismatch")
+
+        # The desk's signature over (caller, job, attempt, time): what makes the
+        # caller above something a job was given instead of something it wrote.
+        key = read_job_key()
+        if key is None:
+            log("ALERT job key missing or too short; refusing every request")
+            return self._err(500, "job_key_error")
+        now = time.time()
+        if (not hmac.compare_digest(mac, job_token_mac(key, caller, job_id, attempt, ts))
+                or abs(now - ts) > TOKEN_MAX_AGE_S):
+            log(f"ALERT bad_token tool={tool} caller={caller}")
+            return self._err(403, "bad_token")
+        if not used_tokens.claim(job_id, attempt, ts, now):
+            log(f"ALERT token_replayed tool={tool} caller={caller} job={job_id}")
+            return self._err(403, "token_replayed")
 
         try:
             entry = toollist.load(TOOLLIST).get(tool)  # re-read: edits apply without restart
@@ -489,6 +596,7 @@ def open_socket(path):
 
 
 if __name__ == "__main__":
+    ensure_job_key()
     servers = []
     if SOCKET_PATH:
         servers.append((f"unix {SOCKET_PATH} (mode {SOCKET_MODE:04o})", open_socket(SOCKET_PATH)))

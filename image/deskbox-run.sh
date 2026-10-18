@@ -19,4 +19,6 @@ if [ ! -S "/run/user/$uid/bus" ]; then
   echo "no user bus for deskbox at /run/user/$uid/bus; run: loginctl enable-linger deskbox" >&2
   exit 1
 fi
-exec /usr/local/bin/agent-desk -addr 127.0.0.1:8080 -tools /opt/deskbox/tools -data /var/lib/deskbox -strict
+# -job-key: the desk signs every job it starts with the key the broker created in /run/sbx; the broker
+# refuses a request whose signature it cannot recompute. Read per job, so a broker restart is harmless.
+exec /usr/local/bin/agent-desk -addr 127.0.0.1:8080 -tools /opt/deskbox/tools -data /var/lib/deskbox -strict -job-key /run/sbx/job.key

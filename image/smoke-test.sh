@@ -222,9 +222,26 @@ check_greet_e2e() {
   if [ ! -x /opt/sbx/sbx-run ] || [ ! -x /opt/sbx/tools/greet/run ]; then
     skip greet-e2e "/opt/sbx/sbx-run or /opt/sbx/tools/greet not installed"; return
   fi
-  local body
+  # The broker wants the desk's signature. Root can read the key, so this signs one request the way the desk
+  # would for a greet-sbx job; a request without it must be refused, which is checked first.
+  local body req
+  if [ ! -r /run/sbx/job.key ]; then fail greet-e2e "/run/sbx/job.key is missing or unreadable"; return; fi
+  body=$(curl -sS --max-time 10 --unix-socket "$BROKER_SOCK" -H 'Content-Type: application/json' \
+          -d '{"tool":"greet","caller":"greet-sbx","input":{"name":"smoke-test"}}' "http://localhost/run" 2>&1)
+  if ! printf '%s' "$body" | grep -q '"error"'; then
+    fail greet-e2e "the broker accepted a request with no desk token: $(printf '%s' "$body" | head -c 160)"; return
+  fi
+  req=$(python3 - <<'PY'
+import hashlib, hmac, json, time
+key = open("/run/sbx/job.key", "rb").read().strip()
+job, ts = "smoke-%d" % time.time_ns(), int(time.time())
+msg = "greet-sbx\n%s\n1\n%d" % (job, ts)
+print(json.dumps({"tool": "greet", "caller": "greet-sbx", "input": {"name": "smoke-test"}, "job_id": job,
+                  "attempt": 1, "ts": ts, "mac": hmac.new(key, msg.encode(), hashlib.sha256).hexdigest()}))
+PY
+)
   body=$(curl -sS --max-time 40 --unix-socket "$BROKER_SOCK" -H 'Content-Type: application/json' \
-          -d '{"tool":"greet","caller":"greet-sbx","input":{"name":"smoke-test"}}' \
+          -d "$req" \
           "http://localhost/run" 2>&1) \
     || { fail greet-e2e "broker request failed: $(printf '%s' "$body" | head -c 200)"; return; }
   if printf '%s' "$body" | python3 -c \
