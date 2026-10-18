@@ -12,12 +12,13 @@ A loopback TCP listener would instead have meant giving each stub the host
 network namespace, which is the whole core's internet.
 
 Stdlib only. One job at a time (the sandbox is destroyed/reset per run).
+Callers wait in a bounded FIFO lane (SBX_QUEUE_MAX, SBX_QUEUE_WAIT_S); GET
+/status reports that lane.
 
 Nothing the sandbox sends back is logged except size, hash, and exit status.
 Sandbox stderr is discarded; error responses never contain sandbox text.
 """
 import base64
-import grp
 import hashlib
 import json
 import os
@@ -29,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +54,11 @@ MAX_TIMEOUT = int(os.environ.get("SBX_MAX_TIMEOUT", "120"))
 # Run after every job to destroy/reset the sandbox (e.g. revert snapshot,
 # reboot + wait). Empty = no reset. The sandbox is unusable until it returns.
 RESET_CMD = os.environ.get("SBX_RESET_CMD", "")
+# One sandbox lane: callers that arrive while a job runs wait in arrival
+# order, but only while fewer than QUEUE_MAX are already waiting and only for
+# QUEUE_WAIT_S seconds. Passing either bound answers 503 lane_busy.
+QUEUE_MAX = max(0, int(os.environ.get("SBX_QUEUE_MAX", "4")))
+QUEUE_WAIT_S = max(0.0, float(os.environ.get("SBX_QUEUE_WAIT_S", "60")))
 
 TOOL_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 FILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
@@ -61,7 +68,139 @@ REASONS = {2: "bad_request", 3: "unknown_tool", 4: "stdout_too_big", 5: "tool_fa
            9: "sandbox_timeout", 10: "bad_output_files", 11: "request_too_big", 255: "ssh_failed"}
 # Worth a human looking at: the sandbox layer itself misbehaved, or the tool died on a signal.
 ALERT = {"bwrap_failed", "killed_by_signal", "ssh_failed", "bad_envelope"}
-_lock = threading.Lock()  # one job at a time
+
+
+def _utc_stamp(when=None):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when))
+
+
+class LaneFull(Exception):
+    """The wait queue is at SBX_QUEUE_MAX; this caller was not admitted."""
+
+    def __init__(self, queued, depth_max):
+        self.queued = queued
+        self.depth_max = depth_max
+        super().__init__(f"lane busy: {queued} queued (max {depth_max})")
+
+
+class LaneTimeout(Exception):
+    """The caller waited SBX_QUEUE_WAIT_S and was not served."""
+
+    def __init__(self, queued, depth_max, wait_s):
+        self.queued = queued
+        self.depth_max = depth_max
+        self.wait_s = wait_s
+        super().__init__(f"lane busy: waited {wait_s:g}s ({queued} queued)")
+
+
+class SandboxNotReset(Exception):
+    """The previous reset failed and this call's retry did not fix it."""
+
+
+class SerialLane:
+    """One job at a time, with a bounded FIFO wait queue.
+
+    The lane stays held for the whole job, including any reset the job runs,
+    so the next job never starts on a sandbox in an unknown state. Callers are
+    served in arrival order; one is refused when depth_max callers are already
+    waiting, or when wait_s passes before it is served.
+    """
+
+    def __init__(self, depth_max, wait_s):
+        self.depth_max = max(0, int(depth_max))
+        self.wait_s = max(0.0, float(wait_s))
+        self._cv = threading.Condition()
+        self._tickets = deque()
+        self._busy = False
+        self._last = None
+
+    def status(self):
+        with self._cv:
+            return {"busy": self._busy, "queued": len(self._tickets),
+                    "depth_max": self.depth_max,
+                    "last": dict(self._last) if self._last else None,
+                    "lane": "serial"}
+
+    def run(self, tool, job):
+        """Run job() alone and return its status.
+
+        job() is called only when the lane is held, so anything it does
+        (including a reset) happens before the next caller can start. If it
+        raises SandboxNotReset, no job record is written: nothing ran.
+        """
+        ticket = object()
+        with self._cv:
+            if self._busy or self._tickets:
+                if len(self._tickets) >= self.depth_max:
+                    raise LaneFull(len(self._tickets), self.depth_max)
+                if self.wait_s <= 0:
+                    raise LaneTimeout(len(self._tickets), self.depth_max, self.wait_s)
+                self._tickets.append(ticket)
+                deadline = time.monotonic() + self.wait_s
+                while ticket in self._tickets:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._tickets.remove(ticket)
+                        raise LaneTimeout(len(self._tickets), self.depth_max, self.wait_s)
+                    self._cv.wait(remaining)
+            self._busy = True
+            started = time.time()
+        try:
+            status = job()
+        except SandboxNotReset:
+            self._handoff()
+            raise
+        except BaseException:
+            self._finish(tool, "error", started)
+            raise
+        self._finish(tool, status if isinstance(status, str) else "error", started)
+        return status
+
+    def _finish(self, tool, status, started):
+        with self._cv:
+            self._last = {"tool": tool, "status": status,
+                          "dur_s": round(time.time() - started, 3),
+                          "started_at": _utc_stamp(started)}
+            self._handoff_locked()
+
+    def _handoff(self):
+        with self._cv:
+            self._handoff_locked()
+
+    def _handoff_locked(self):
+        if self._tickets:
+            self._tickets.popleft()  # hand the lane to the oldest waiter
+            self._busy = True
+            self._cv.notify_all()
+        else:
+            self._busy = False
+
+
+lane = SerialLane(QUEUE_MAX, QUEUE_WAIT_S)
+
+# What the last reset did. A failed reset means the sandbox is in an unknown
+# state, so the next job is refused until a reset succeeds. "at" is null until
+# a reset has run. The lane is held whenever this is written.
+_reset_lock = threading.Lock()
+_reset_state = {"ok": True, "rc": 0, "at": None}
+
+
+def reset_status():
+    with _reset_lock:
+        return dict(_reset_state)
+
+
+def _record_reset(ok, rc):
+    with _reset_lock:
+        _reset_state["ok"] = bool(ok)
+        _reset_state["rc"] = int(rc)
+        _reset_state["at"] = _utc_stamp()
+
+
+def broker_status():
+    doc = lane.status()
+    doc["reset"] = reset_status()
+    return doc
 
 
 def log(msg):
@@ -138,11 +277,40 @@ def valid_envelope(raw):
         return False
 
 
+def _run_reset():
+    """Run the configured reset once; returns its exit status."""
+    return subprocess.run(RESET_CMD, shell=True, timeout=300).returncode
+
+
 def reset_sbx():
+    """Reset the sandbox and record whether it is safe for the next job.
+
+    Returns True when there is nothing to reset (lite mode, where each job
+    already gets a fresh bwrap) or when the command exits 0. A non-zero exit,
+    timeout or failure to start is recorded; the next job is then refused
+    until a reset succeeds. Called only while the lane is held.
+    """
     if not RESET_CMD:
-        return
-    r = subprocess.run(RESET_CMD, shell=True, timeout=300)
-    log(f"reset rc={r.returncode}")
+        return True
+    try:
+        rc = _run_reset()
+        ok = rc == 0
+        log(f"reset rc={rc}")
+    except subprocess.TimeoutExpired:
+        rc, ok = -1, False
+        log("reset timed out")
+    except Exception as e:
+        rc, ok = -1, False
+        log(f"reset could not run: {e}")
+    _record_reset(ok, rc)
+    return ok
+
+
+def ensure_reset():
+    """Called with the lane held: retry a failed reset once before the job."""
+    if reset_status()["ok"]:
+        return True
+    return reset_sbx()
 
 
 class H(BaseHTTPRequestHandler):
@@ -158,6 +326,18 @@ class H(BaseHTTPRequestHandler):
 
     def _err(self, code, why):
         self._send(code, json.dumps({"error": why}).encode())
+
+    def _lane_busy(self, reason, exc, wait_s=None):
+        body = {"error": "lane_busy", "reason": reason, "lane": "serial",
+                "busy": True, "queued": exc.queued, "depth_max": exc.depth_max}
+        if wait_s is not None:
+            body["wait_s"] = wait_s
+        self._send(503, json.dumps(body).encode())
+
+    def do_GET(self):
+        if self.path != "/status":
+            return self._err(404, "not_found")
+        self._send(200, json.dumps(broker_status()).encode())
 
     def do_POST(self):
         if self.path != "/run":
@@ -187,26 +367,53 @@ class H(BaseHTTPRequestHandler):
         timeout = min(entry["timeout_s"], MAX_TIMEOUT)
         network = bool(entry["network"])
 
-        started = time.time()
-        with _lock:
+        enqueued = time.time()
+        out = {}
+        job_started = []
+
+        def job():
+            job_started.append(time.time())
+            if not ensure_reset():  # the previous reset failed: heal or refuse
+                raise SandboxNotReset()
             try:
-                status, body = run_on_sbx(
+                out["status"], out["body"] = run_on_sbx(
                     {"tool": tool, "input": inp, "files": files, "timeout_s": timeout},
                     wall_timeout=timeout + 15)
             finally:
-                try:
-                    reset_sbx()
-                except Exception as e:  # reset failure must not hide the result
-                    log(f"reset failed: {e}")
+                reset_sbx()  # a failure is recorded and gates the next job
+            return out["status"]
+
+        try:
+            status = lane.run(tool, job)
+        except SandboxNotReset:
+            reset = reset_status()
+            log(f"SANDBOX NOT RESET tool={tool} rc={reset['rc']} at={reset['at']}")
+            return self._send(503, json.dumps(
+                {"error": "sandbox_not_reset", "reset": reset}).encode())
+        except LaneFull as q:
+            log(f"QUEUE FULL tool={tool} queued={q.queued} depth_max={q.depth_max}")
+            return self._lane_busy("queue_full", q)
+        except LaneTimeout as q:
+            log(f"QUEUE TIMEOUT tool={tool} queued={q.queued} depth_max={q.depth_max} wait_s={q.wait_s:g}")
+            return self._lane_busy("queue_timeout", q, q.wait_s)
+        body = out.get("body", b"")
+        waited = (job_started[0] - enqueued) if job_started else 0.0
         log(f"{'ALERT ' if status in ALERT else ''}tool={tool} net={int(network)} status={status} bytes={len(body)} "
             f"sha256={hashlib.sha256(body).hexdigest()[:16]} "
-            f"dur={time.time() - started:.1f}s")
+            f"dur={time.time() - enqueued:.1f}s wait={waited:.1f}s")
         if status == "ok":
             return self._send(200, body)
         return self._err(502, status)
 
 
-class UnixHTTPServer(socketserver.ThreadingUnixStreamServer):
+# Only constructed on Linux. The fallback base lets this module be imported on
+# a test host without AF_UNIX, where the queue and reset logic are tested
+# without ever opening a socket.
+_UnixBase = getattr(socketserver, "ThreadingUnixStreamServer",
+                    socketserver.ThreadingTCPServer)
+
+
+class UnixHTTPServer(_UnixBase):
     """A unix socket in front of the same handler.
 
     A unix socket has no peer address, so give the handler a stand-in for the
@@ -227,6 +434,7 @@ def open_socket(path):
     that path, refuse rather than delete a file the operator did not mean to
     lose.
     """
+    import grp  # Unix-only; kept out of the module import so tests can load it
     if os.path.exists(path):
         mode = os.lstat(path).st_mode
         if not stat.S_ISSOCK(mode):

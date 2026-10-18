@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""Tests for the broker's serial lane.
+
+Run from the repo root:
+    python -m unittest discover -s harness/broker -p "test_*.py" -v
+
+The broker is a script, not a package. This sets the settings it reads at
+import time, imports it from this directory, and replaces run_on_sbx with a
+stub so no SSH or sandbox is involved.
+"""
+import json
+import os
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+os.environ["SBX_HOST"] = "192.0.2.10"
+os.environ["SBX_KEY"] = os.path.join(HERE, "test-key")
+os.environ["SBX_RESET_CMD"] = ""
+sys.path.insert(0, HERE)
+import sbx_broker  # noqa: E402
+
+OK_ENVELOPE = b'{"output": {}, "files": {}}'
+
+
+def ok_run(request, wall_timeout):
+    return "ok", OK_ENVELOPE
+
+
+class BrokerTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.tool_list = os.path.join(self.tmp.name, "tools.list")
+        with open(self.tool_list, "w", encoding="utf-8") as f:
+            f.write("greet 5\n")
+        self._saved = (sbx_broker.TOOLLIST, sbx_broker.run_on_sbx,
+                       sbx_broker.reset_sbx, sbx_broker.lane,
+                       sbx_broker.RESET_CMD, sbx_broker._run_reset,
+                       sbx_broker._reset_state)
+        sbx_broker.TOOLLIST = self.tool_list
+        sbx_broker.run_on_sbx = ok_run
+        sbx_broker.RESET_CMD = ""
+        sbx_broker._reset_state = {"ok": True, "rc": 0, "at": None}
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), sbx_broker.H)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
+        self.addCleanup(self._stop)
+
+    def _stop(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(5)
+        (sbx_broker.TOOLLIST, sbx_broker.run_on_sbx,
+         sbx_broker.reset_sbx, sbx_broker.lane,
+         sbx_broker.RESET_CMD, sbx_broker._run_reset,
+         sbx_broker._reset_state) = self._saved
+
+    def use_lane(self, depth_max, wait_s):
+        sbx_broker.lane = sbx_broker.SerialLane(depth_max, wait_s)
+        return sbx_broker.lane
+
+    def post(self, timeout=10):
+        data = json.dumps({"tool": "greet", "input": {}}).encode()
+        req = urllib.request.Request(self.base + "/run", data=data, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def get_status(self):
+        with urllib.request.urlopen(self.base + "/status", timeout=5) as r:
+            return r.status, json.loads(r.read())
+
+    def post_async(self, results, key):
+        def call():
+            try:
+                results[key] = self.post()
+            except BaseException as e:  # surfaced by the caller's assertion
+                results[key] = ("EXC", repr(e))
+        t = threading.Thread(target=call, daemon=True)
+        t.start()
+        return t
+
+    def wait_for(self, predicate, what, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        self.fail(f"timed out waiting for {what}")
+
+    # -- /status ---------------------------------------------------------
+
+    def test_status_idle_shape(self):
+        self.use_lane(3, 5)
+        code, body = self.get_status()
+        self.assertEqual(code, 200)
+        self.assertEqual(set(body), {"busy", "queued", "depth_max", "last",
+                                     "lane", "reset"})
+        self.assertEqual(body, {"busy": False, "queued": 0, "depth_max": 3,
+                                "last": None, "lane": "serial",
+                                "reset": {"ok": True, "rc": 0, "at": None}})
+
+    def test_status_records_last_job(self):
+        self.use_lane(1, 5)
+        code, body = self.post()
+        self.assertEqual(code, 200)
+        self.assertEqual(body, {"output": {}, "files": {}})
+
+        code, body = self.get_status()
+        self.assertEqual(code, 200)
+        self.assertFalse(body["busy"])
+        self.assertEqual(body["queued"], 0)
+        self.assertEqual(body["depth_max"], 1)
+        last = body["last"]
+        self.assertEqual(set(last), {"tool", "status", "dur_s", "started_at"})
+        self.assertEqual(last["tool"], "greet")
+        self.assertEqual(last["status"], "ok")
+        self.assertIsInstance(last["dur_s"], float)
+        self.assertGreaterEqual(last["dur_s"], 0.0)
+        self.assertRegex(last["started_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+
+    # -- failed reset ----------------------------------------------------
+
+    def test_failed_reset_gates_the_next_job(self):
+        self.use_lane(2, 5)
+        sbx_broker.RESET_CMD = "reset"
+        rc = {"value": 1}
+        reset_calls = []
+
+        def fake_reset():
+            reset_calls.append(rc["value"])
+            return rc["value"]
+
+        sbx_broker._run_reset = fake_reset
+
+        # The job that was running when the reset failed is unaffected.
+        code, body = self.post()
+        self.assertEqual(code, 200)
+        self.assertEqual(body, {"output": {}, "files": {}})
+        code, status = self.get_status()
+        self.assertEqual(code, 200)
+        self.assertFalse(status["reset"]["ok"])
+        self.assertEqual(status["reset"]["rc"], 1)
+        self.assertRegex(status["reset"]["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(status["last"]["status"], "ok")
+        self.assertEqual(reset_calls, [1])
+
+        # The next job retries the reset; when that fails too, it is refused
+        # before run_on_sbx is called.
+        ran = []
+
+        def tracked_run(request, wall_timeout):
+            ran.append(1)
+            return "ok", OK_ENVELOPE
+
+        sbx_broker.run_on_sbx = tracked_run
+        code, body = self.post()
+        self.assertEqual(code, 503)
+        self.assertEqual(set(body), {"error", "reset"})
+        self.assertEqual(body["error"], "sandbox_not_reset")
+        self.assertFalse(body["reset"]["ok"])
+        self.assertEqual(body["reset"]["rc"], 1)
+        self.assertRegex(body["reset"]["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(ran, [])
+        self.assertEqual(reset_calls, [1, 1])
+
+        # A later successful reset lets the lane run jobs again.
+        rc["value"] = 0
+        code, body = self.post()
+        self.assertEqual(code, 200)
+        self.assertEqual(body, {"output": {}, "files": {}})
+        self.assertEqual(ran, [1])
+        code, status = self.get_status()
+        self.assertTrue(status["reset"]["ok"])
+        self.assertEqual(status["reset"]["rc"], 0)
+
+    # -- queue limits ----------------------------------------------------
+
+    def test_queue_full_answers_503_with_depth(self):
+        self.use_lane(1, 10)
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_run(request, wall_timeout):
+            started.set()
+            release.wait(10)
+            return "ok", OK_ENVELOPE
+
+        sbx_broker.run_on_sbx = blocking_run
+        results = {}
+        first = self.post_async(results, "first")
+        self.assertTrue(started.wait(5), "the first job did not start")
+        second = self.post_async(results, "second")
+        self.wait_for(lambda: self.get_status()[1]["queued"] == 1,
+                      "the second caller to queue")
+
+        code, body = self.post()
+        self.assertEqual(code, 503)
+        self.assertEqual(body, {"error": "lane_busy", "reason": "queue_full",
+                                "lane": "serial", "busy": True,
+                                "queued": 1, "depth_max": 1})
+
+        release.set()
+        first.join(10)
+        second.join(10)
+        self.assertFalse(first.is_alive() or second.is_alive())
+        self.assertEqual(results["first"][0], 200)
+        self.assertEqual(results["second"][0], 200)
+
+    def test_queue_wait_timeout_answers_503(self):
+        self.use_lane(2, 0.2)
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_run(request, wall_timeout):
+            started.set()
+            release.wait(10)
+            return "ok", OK_ENVELOPE
+
+        sbx_broker.run_on_sbx = blocking_run
+        results = {}
+        first = self.post_async(results, "first")
+        self.assertTrue(started.wait(5), "the first job did not start")
+
+        code, body = self.post(timeout=5)
+        self.assertEqual(code, 503)
+        self.assertEqual(body, {"error": "lane_busy", "reason": "queue_timeout",
+                                "lane": "serial", "busy": True, "queued": 0,
+                                "depth_max": 2, "wait_s": 0.2})
+
+        release.set()
+        first.join(10)
+        self.assertEqual(results["first"][0], 200)
+
+    def test_zero_depth_refuses_while_busy(self):
+        lane = self.use_lane(0, 5)
+        started = threading.Event()
+        release = threading.Event()
+
+        def job():
+            started.set()
+            release.wait(5)
+            return "ok"
+
+        first = threading.Thread(target=lambda: lane.run("greet", job), daemon=True)
+        first.start()
+        self.assertTrue(started.wait(5))
+        with self.assertRaises(sbx_broker.LaneFull) as caught:
+            lane.run("greet", lambda: "ok")
+        self.assertEqual((caught.exception.queued, caught.exception.depth_max), (0, 0))
+        release.set()
+        first.join(5)
+
+    # -- ordering and exclusion -----------------------------------------
+
+    def test_waiting_callers_served_in_order(self):
+        lane = self.use_lane(4, 10)
+        order = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def job(label):
+            def run():
+                if label == 1:
+                    started.set()
+                    release.wait(10)
+                order.append(label)
+                return "ok"
+            return run
+
+        first = threading.Thread(target=lambda: lane.run("greet", job(1)), daemon=True)
+        first.start()
+        self.assertTrue(started.wait(5), "the first job did not start")
+        waiters = []
+        for label in (2, 3, 4):
+            t = threading.Thread(target=lambda n=label: lane.run("greet", job(n)), daemon=True)
+            t.start()
+            waiters.append(t)
+        self.wait_for(lambda: lane.status()["queued"] == 3, "three waiters to queue")
+
+        release.set()
+        first.join(10)
+        for t in waiters:
+            t.join(10)
+        self.assertFalse(first.is_alive() or any(t.is_alive() for t in waiters))
+        self.assertEqual(order, [1, 2, 3, 4])
+
+    def test_one_at_a_time_under_concurrent_submissions(self):
+        self.use_lane(8, 10)
+        guard = threading.Lock()
+        state = {"active": 0, "max": 0, "resets": 0, "reset_overlap": 0}
+
+        def fake_run(request, wall_timeout):
+            with guard:
+                state["active"] += 1
+                state["max"] = max(state["max"], state["active"])
+            time.sleep(0.02)
+            with guard:
+                state["active"] -= 1
+            return "ok", OK_ENVELOPE
+
+        def fake_reset():
+            with guard:
+                state["resets"] += 1
+                if state["active"] != 0:
+                    state["reset_overlap"] += 1
+
+        sbx_broker.run_on_sbx = fake_run
+        sbx_broker.reset_sbx = fake_reset
+        results = {}
+        threads = [self.post_async(results, i) for i in range(8)]
+        for t in threads:
+            t.join(15)
+        self.assertFalse(any(t.is_alive() for t in threads))
+        self.assertEqual(len(results), 8)
+        self.assertTrue(all(code == 200 for code, _ in results.values()), results)
+        self.assertEqual(state["max"], 1)
+        self.assertEqual(state["resets"], 8)
+        self.assertEqual(state["reset_overlap"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
