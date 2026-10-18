@@ -234,14 +234,26 @@ check_greet_e2e() {
 }
 
 # The gate holds the only readable copy of the tighten-only token, and its socket is the only way in. Mode, group and
-# the token's unreadability to pibridge are the access control, so they are what gets checked.
+# the running bridge's real groups are the access control, so they are what gets checked. `runuser -u pibridge` would
+# not do for the last: it applies /etc/group, not the SupplementaryGroups= the unit gives the process.
 check_session_gate() {
-  local sock=/run/sbx-gate/gate.sock mode grp out
+  local sock=/run/sbx-gate/gate.sock mode grp out pid tokgid callgid groups
   if [ ! -S "$sock" ]; then fail session-gate "$sock missing"; return; fi
   mode=$(stat -c '%a' "$sock" 2>/dev/null); grp=$(stat -c '%G' "$sock" 2>/dev/null)
-  if [ "$mode" != 660 ] || [ "$grp" != sbxgate ]; then
-    fail session-gate "socket is ${mode:-?} ${grp:-?} (want 660 sbxgate)"; return
+  if [ "$mode" != 660 ] || [ "$grp" != sbxgatecall ]; then
+    fail session-gate "socket is ${mode:-?} ${grp:-?} (want 660 sbxgatecall)"; return
   fi
+  pid=$(systemctl show -p MainPID --value pi-bridge 2>/dev/null)
+  if [ -z "$pid" ] || [ "$pid" = 0 ] || [ ! -r "/proc/$pid/status" ]; then
+    fail session-gate "pi-bridge has no running main process to inspect"; return
+  fi
+  groups=" $(awk '/^Groups:/{for(i=2;i<=NF;i++)printf "%s ", $i}' "/proc/$pid/status") "
+  tokgid=$(stat -c '%g' /etc/sbxfw/tighten-token 2>/dev/null)
+  callgid=$(stat -c '%g' "$sock" 2>/dev/null)
+  case "$groups" in *" $tokgid "*)
+    fail session-gate "pi-bridge (pid $pid) is in the tighten token's group (gid $tokgid); only the gate should be"; return;; esac
+  case "$groups" in *" $callgid "*) ;;
+    *) fail session-gate "pi-bridge (pid $pid) is not in the socket's group (gid $callgid), so it cannot reach the gate"; return;; esac
   if runuser -u pibridge -- test -r /etc/sbxfw/tighten-token 2>/dev/null; then
     fail session-gate "pibridge can read the tighten token (only sbxgate should)"; return
   fi
@@ -249,7 +261,7 @@ check_session_gate() {
     || { fail session-gate "POST /lockdown failed: $(printf '%s' "$out" | head -c 160)"; return; }
   if printf '%s' "$out" | python3 -c \
       'import json,sys; d=json.load(sys.stdin); assert d.get("profile")=="session", d' 2>/dev/null; then
-    pass session-gate "socket 660 sbxgate, token unreadable to pibridge, lockdown -> session"
+    pass session-gate "socket 660 sbxgatecall, bridge outside the token group, lockdown -> session"
   else fail session-gate "unexpected answer: $(printf '%s' "$out" | head -c 160)"; fi
 }
 
