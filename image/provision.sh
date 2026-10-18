@@ -151,9 +151,11 @@ chmod 755 /opt/sbx/sbx-run /opt/sbx/tools/*/run
 
 # ---- session gate: the one place a new session's firewall profile is forced ----
 # Its own process so the guarantee has one implementation: with the lockdown
-# inside pi-bridge, a second harness in the core gets none at all. Group
-# pibridge does both jobs - read the tighten-only token, and own the socket the
-# bridge connects to. There is no verb that loosens anything.
+# inside pi-bridge, a second harness in the core gets none at all. Two groups:
+# sbxgate reads the tighten-only token and only the gate is in it; sbxgatecall
+# is on the socket and holds the bridge (via its unit) and the gate. There is no
+# verb that loosens anything.
+getent group sbxgatecall >/dev/null || groupadd -r sbxgatecall
 id sbxgate &>/dev/null || useradd --system --home /nonexistent --shell /usr/sbin/nologin sbxgate
 install -d /opt/sbx-gate
 install -m 644 "$ROOT/harness/gate/session_gate.py" /opt/sbx-gate/
@@ -236,7 +238,8 @@ install -m 755 "$HERE/sbx-regen-hostkeys.sh" /usr/local/sbin/sbx-regen-hostkeys
 [ -f /etc/sbx/broker.env ] || install -m 640 "$ROOT/harness/broker/broker.env.example" /etc/sbx/broker.env
 runuser -u sbxconsole -- env SBXC_ETC=/etc/sbxfw SBX_COMMON=/opt/sbx-console/common python3 /opt/sbx-console/sbx_console.py --init
 # The tighten-only token belongs to sbx-session-gate, which is the only thing that may call /api/fw/lockdown. It is NOT
-# readable by pibridge: the bridge asks the gate over its socket, and Pi has no route to the console's firewall API at all.
+# readable by pibridge: pibridge is in sbxgatecall (the socket), never in sbxgate (the token). The bridge asks the gate over
+# its socket, and Pi has no route to the console's firewall API at all.
 getent group sbxgate >/dev/null || groupadd -r sbxgate
 chgrp sbxgate /etc/sbxfw/tighten-token
 chmod 640 /etc/sbxfw/tighten-token
