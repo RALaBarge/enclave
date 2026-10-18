@@ -1,6 +1,10 @@
 [Unit]
 Description=pi-bridge (HTTP/SSE API over Pi's RPC mode; loopback only, peers off)
-After=network.target sbx-broker.service sbx-console.service
+After=network.target sbx-broker.service sbx-console.service sbx-session-gate.service
+# The gate, not this service, holds the tighten-only token and forces the
+# session profile. It is wanted rather than merely ordered: a bridge that
+# starts without a gate would create sessions on whatever profile is active.
+Wants=sbx-session-gate.service
 
 [Service]
 User=pibridge
@@ -9,7 +13,7 @@ Environment=HOME=/var/lib/pi-bridge PI_OFFLINE=1 PI_TELEMETRY=0 PI_SKIP_VERSION_
 # Root fetches the secrets before the service user's process exists (the token stays unreadable to Pi); "+" = run privileged.
 ExecStartPre=+/usr/local/bin/sbx-fetch-secrets
 EnvironmentFile=-/run/sbx/secrets.env
-ExecStart=/usr/bin/python3 -B /opt/pi-bridge/server.py --pi-bin /usr/local/bin/pi --listen 127.0.0.1:9760 --state-dir /var/lib/pi-bridge/state --firewall-token-file /etc/sbxfw/tighten-token
+ExecStart=/usr/bin/python3 -B /opt/pi-bridge/server.py --pi-bin /usr/local/bin/pi --listen 127.0.0.1:9760 --state-dir /var/lib/pi-bridge/state --gate-socket /run/sbx-gate/gate.sock
 Restart=on-failure
 NoNewPrivileges=yes
 ProtectSystem=strict

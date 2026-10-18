@@ -6,8 +6,8 @@ The local API listens on loopback only and has no login. A web page elsewhere ca
     GET    /health
     GET    /ui/                           the web UI (static files from --ui-dir; see ../ui)
     GET    /sessions                      POST /sessions {cwd, name?}          DELETE /sessions/{id}
-           (with --firewall-token-file, creating a session first makes the console switch to its `session`
-            firewall profile; if that fails the session is NOT started. The bridge can tighten, never loosen.)
+           (with --gate-socket, creating a session first has sbx-session-gate force the console's `session`
+            firewall profile; if that fails the session is NOT started. The bridge cannot loosen it.)
     POST   /sessions/{id}/command         any Pi RPC command object; returns Pi's response record
     POST   /sessions/{id}/ui-response     fire-and-forget (extension_ui_response)
     GET    /sessions/{id}/events?since=N  SSE, resumable via Last-Event-ID
@@ -33,6 +33,7 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
+from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -61,28 +62,49 @@ class FirewallError(Exception):
     pass
 
 
-def lockdown(console_url, token_file, timeout=8.0):
-    """Ask the console to make sure the `session` profile is active. Uses the tighten-only token: it can call this and nothing else."""
+class _UnixConnection(HTTPConnection):
+    """http.client over a unix socket: the session gate has no address."""
+
+    def __init__(self, path, timeout=10.0):
+        super().__init__("localhost", timeout=timeout)
+        self._path = path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self._path)
+        self.sock = sock
+
+
+def gate_lockdown(socket_path, timeout=10.0):
+    """Ask sbx-session-gate to force the `session` profile before a session starts.
+
+    The gate, not this bridge, holds the tighten-only token: one process owns
+    the guarantee, so a second harness in the core calls the same code instead
+    of growing its own copy of it. Unreachable gate is a refusal, never a
+    session that quietly starts on whatever profile happens to be active.
+    """
+    conn = _UnixConnection(socket_path, timeout=timeout)
     try:
-        token = open(token_file, encoding="utf-8").read().strip()
-        req = urllib.request.Request(console_url.rstrip("/") + "/api/fw/lockdown", data=b"{}", method="POST",
-                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = json.loads(e.read() or b"{}").get("error", "")
-        except ValueError:
-            pass
-        raise FirewallError("console answered %d%s" % (e.code, ": " + detail if detail else ""))
-    except (OSError, ValueError) as e:
-        raise FirewallError("%s: %s" % (type(e).__name__, e))
+        conn.request("POST", "/lockdown", body=b"{}", headers={"Content-Type": "application/json"})
+        r = conn.getresponse()
+        raw = r.read()
+    except OSError as e:
+        raise FirewallError("session gate unreachable at %s (%s)" % (socket_path, type(e).__name__))
+    finally:
+        conn.close()
+    try:
+        doc = json.loads(raw or b"{}")
+    except ValueError:
+        raise FirewallError("session gate answered with something that is not JSON")
+    if r.status != 200:
+        raise FirewallError("session gate answered %d%s" % (r.status, ": " + doc["error"] if doc.get("error") else ""))
+    return doc
 
 
 class App:
-    def __init__(self, pi_cmd, peer_port=None, state_dir=None, name="bridge", firewall=None):
-        self.firewall = firewall          # (console_url, tighten_token_file) or None
+    def __init__(self, pi_cmd, peer_port=None, state_dir=None, name="bridge", gate=None):
+        self.gate = gate          # unix socket of sbx-session-gate, or None
         self.ui_dir = None                # directory served at /ui/
         self.reg = Registry(pi_cmd)
         self.peer_port = peer_port
@@ -222,9 +244,9 @@ def make_handler(app: App):
                     if not b.get("cwd") or not os.path.isdir(b["cwd"]):
                         raise ValueError("cwd must be an existing directory")
                     fw = None
-                    if app.firewall:
+                    if app.gate:
                         try:
-                            fw = lockdown(*app.firewall)
+                            fw = gate_lockdown(app.gate)
                         except FirewallError as e:
                             return self._json(503, {"error": "firewall lockdown failed, session not started: %s" % e})
                     info = app.reg.create(b["cwd"], b.get("name")).info()
@@ -316,9 +338,9 @@ def main(argv=None) -> int:
     ap.add_argument("--pi-bin", default=os.environ.get("PI_BIN", "pi"))
     ap.add_argument("--pi-arg", action="append", default=[], help="extra argument for pi (repeatable)")
     ap.add_argument("--state-dir", default="~/.pi-bridge", help="identity and paired-peer keys")
-    ap.add_argument("--firewall-token-file", default=None,
-                    help="tighten-only token for the console; each new session first switches the firewall to its session profile")
-    ap.add_argument("--console-url", default="http://127.0.0.1:8787")
+    ap.add_argument("--gate-socket", default=None,
+                    help="sbx-session-gate socket; each new session first forces the session firewall profile, "
+                         "and a session is not started if that fails")
     ap.add_argument("--ui-dir", default=None, help="web UI files (default: ./ui or ../ui next to this file)")
     ap.add_argument("--peers", action="store_true", help="enable tailnet peer messaging")
     ap.add_argument("--peer-port", type=int, default=P.DEFAULT_PEER_PORT)
@@ -342,7 +364,7 @@ def main(argv=None) -> int:
     name = st["self"]["name"] if st else socket.gethostname().split(".")[0]
     app = App([args.pi_bin, "--mode", "rpc", *args.pi_arg], args.peer_port if args.peers else None,
               os.path.abspath(os.path.expanduser(args.state_dir)), name,
-              (args.console_url, args.firewall_token_file) if args.firewall_token_file else None)
+              args.gate_socket)
     here = os.path.dirname(os.path.abspath(__file__))
     app.ui_dir = args.ui_dir or next((d for d in (os.path.join(here, "ui"), os.path.join(here, "..", "ui")) if os.path.isdir(d)), None)
     servers = [ThreadingHTTPServer((host, int(port)), make_handler(app))]

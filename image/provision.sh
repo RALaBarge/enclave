@@ -147,6 +147,16 @@ install -m 755 "$ROOT/sbx/sbx-run" /opt/sbx/sbx-run
 cp -r "$ROOT/sbx/tools/." /opt/sbx/tools/
 # Uploads from a Windows build host lose Unix modes; tool entry points must be executable for sbx-run.
 chmod 755 /opt/sbx/sbx-run /opt/sbx/tools/*/run
+
+# ---- session gate: the one place a new session's firewall profile is forced ----
+# Its own process so the guarantee has one implementation: with the lockdown
+# inside pi-bridge, a second harness in the core gets none at all. Group
+# pibridge does both jobs - read the tighten-only token, and own the socket the
+# bridge connects to. There is no verb that loosens anything.
+id sbxgate &>/dev/null || useradd --system --home /nonexistent --shell /usr/sbin/nologin sbxgate
+install -d /opt/sbx-gate
+install -m 644 "$ROOT/harness/gate/session_gate.py" /opt/sbx-gate/
+install -m 644 "$ROOT/harness/systemd/sbx-session-gate.service" /etc/systemd/system/
 # ---- Bitwarden Secrets Manager CLI. The access token is NOT baked in: put it in /etc/sbx/bws-token by hand (see SETUP.md).
 tmpz=$(mktemp); curl -fsSL -o "$tmpz" "https://github.com/bitwarden/sdk-sm/releases/download/bws-v${BWS_VERSION}/bws-x86_64-unknown-linux-gnu-${BWS_VERSION}.zip"
 [ "${ALLOW_UNPINNED:-0}" = 1 ] || echo "${BWS_SHA256}  $tmpz" | sha256sum -c -
@@ -221,7 +231,7 @@ touch /etc/sbx/bws-token /etc/sbx/bws.env; chown root:root /etc/sbx/bws-token /e
 chgrp pibridge /etc/sbxfw/tighten-token
 chmod 640 /etc/sbxfw/tighten-token
 systemctl daemon-reload
-systemctl enable nftables sbx-console loom ollama pi-bridge deskbox
+systemctl enable nftables sbx-console loom ollama pi-bridge sbx-session-gate deskbox
 
 # ---- gateway for the separate sandbox box: private link on eth1 (10.77.0.1), forwarding on. The firewall forwards
 # nothing until the console allowlist says so. A one-NIC VM simply never brings eth1 up.

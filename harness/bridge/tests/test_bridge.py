@@ -1,5 +1,6 @@
 import json
 import os
+import socketserver
 import sys
 import tempfile
 import threading
@@ -205,43 +206,76 @@ class FakeConsole:
         self.url = "http://127.0.0.1:%d" % self.srv.server_address[1]
 
 
+class FakeGate:
+    """Stands in for sbx-session-gate: one unix socket, one action."""
+
+    def __init__(self, status=200, body=None):
+        self.calls = []
+        self.status = status
+        self.body = body if body is not None else {"profile": "session", "changed": True, "was": "build"}
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                outer.calls.append(self.path)
+                raw = json.dumps(outer.body).encode()
+                self.send_response(outer.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        self.path = os.path.join(tempfile.mkdtemp(), "gate.sock")
+        self.srv = socketserver.ThreadingUnixStreamServer(self.path, H)
+        self.srv.daemon_threads = True
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
 class FirewallLockdown(unittest.TestCase):
-    def make(self, console):
-        tok = os.path.join(tempfile.mkdtemp(), "tighten-token")
-        open(tok, "w").write("t-secret\n")
-        app = S.App(FAKE, state_dir=tempfile.mkdtemp(), firewall=(console.url, tok))
+    """Session start goes through the gate now; the bridge holds no token."""
+
+    def make(self, gate=None):
+        app = S.App(FAKE, state_dir=tempfile.mkdtemp(), gate=gate)
         self.addCleanup(app.reg.stop_all)
         return app, serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app)))
 
-    def test_session_start_tightens_first_and_reports_it(self):
-        con = FakeConsole(self)
-        app, base = self.make(con)
+    def test_session_start_forces_the_profile_first_and_reports_it(self):
+        gate = FakeGate()
+        self.addCleanup(gate.close)
+        app, base = self.make(gate.path)
         c, s = req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})
         self.assertEqual(c, 201)
         self.assertEqual(s["firewall"], {"profile": "session", "changed": True, "was": "build"})
-        path, auth, host = con.calls[0]
-        self.assertEqual((path, auth), ("/api/fw/lockdown", "Bearer t-secret"))
-        self.assertTrue(host.startswith("127.0.0.1:"))
+        self.assertEqual(gate.calls, ["/lockdown"])
 
-    def test_failed_lockdown_means_no_session(self):
-        for status in (409, 401, 500):
-            con = FakeConsole(self, status=status, body={"error": "nope"})
-            app, base = self.make(con)
+    def test_gate_refusal_means_no_session(self):
+        for status in (502, 500):
+            gate = FakeGate(status=status, body={"error": "nope"})
+            self.addCleanup(gate.close)
+            app, base = self.make(gate.path)
             c, r = req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})
             self.assertEqual(c, 503, status)
             self.assertIn("session not started", r["error"])
+            self.assertIn("nope", r["error"])
             self.assertEqual(app.reg.list(), [])
-        app = S.App(FAKE, state_dir=tempfile.mkdtemp(), firewall=("http://127.0.0.1:1", os.path.join(tempfile.mkdtemp(), "missing")))
-        self.addCleanup(app.reg.stop_all)
-        base = serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app)))
+
+    def test_unreachable_gate_is_a_refusal(self):
+        app, base = self.make(os.path.join(tempfile.mkdtemp(), "missing.sock"))
         c, r = req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})
-        self.assertEqual(c, 503)                                  # token file missing / console unreachable: fail closed
+        self.assertEqual(c, 503)
+        self.assertIn("unreachable", r["error"])
         self.assertEqual(app.reg.list(), [])
 
     def test_not_configured_means_no_call(self):
-        app = S.App(FAKE, state_dir=tempfile.mkdtemp())
-        self.addCleanup(app.reg.stop_all)
-        base = serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app)))
+        app, base = self.make()
         c, s = req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})
         self.assertEqual(c, 201)
         self.assertNotIn("firewall", s)

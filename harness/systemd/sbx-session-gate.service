@@ -1,0 +1,30 @@
+[Unit]
+Description=sbx-session-gate (the one place a new session's firewall profile is forced)
+After=network.target sbx-console.service
+Wants=sbx-console.service
+
+[Service]
+User=sbxgate
+# Primary group is the bridge's, and that one group does both jobs: it can read
+# the tighten-only token (root:pibridge 0640) and it is the group on the gate's
+# socket, so the bridge can connect and nothing else on the box can.
+Group=pibridge
+RuntimeDirectory=sbx-gate
+RuntimeDirectoryMode=0755
+Environment=SBX_GATE_SOCKET=/run/sbx-gate/gate.sock
+Environment=SBX_GATE_CONSOLE=http://127.0.0.1:8787
+Environment=SBX_GATE_TOKEN_FILE=/etc/sbxfw/tighten-token
+ExecStart=/usr/bin/python3 /opt/sbx-gate/session_gate.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadOnlyPaths=/etc/sbxfw
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
