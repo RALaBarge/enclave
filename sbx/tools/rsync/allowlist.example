@@ -11,8 +11,9 @@
 # The user and port come only from this file, never from the path the model writes.  No wildcards, no CIDR ranges,
 # no default: an empty, missing or malformed file permits no remote host.
 #
-# Use an IPv4 address if the job has no /etc/resolv.conf; sbx-run does not bind
-# one.  SSH expects id_ed25519 and known_hosts in this same directory.
+# A net tool's job gets /etc/resolv.conf bound in by sbx-run, so a hostname
+# resolves; an IPv4 address also works.  SSH expects id_ed25519 and known_hosts
+# in this same directory.
 #
 # backup = ryan@backup.example.com  /srv/backups
 # nas    = 10.0.0.10:22  /srv/share
