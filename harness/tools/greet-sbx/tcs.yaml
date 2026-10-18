@@ -23,10 +23,17 @@ output:
 
 allowed_side_effects:
   files: []
-  # The stub only talks to the loopback broker, but deskbox gives a network:true
-  # tool the host netns (no per-address filtering), so this is required. The
-  # stub is a pinned ~20 line file; keep it that way.
-  network: true
+  # No network: the stub reaches the broker over a unix socket that the desk
+  # binds in from `sandbox.bind` below. `network: true` would give this job the
+  # host netns and with it the core's whole internet, which is not what
+  # "call the broker" needs. The stub is a pinned ~90 line file; keep it that
+  # way.
+  network: false
+
+sandbox:
+  bind:
+    - src: /run/sbx/broker.sock          # sbx-broker's unix socket
+      dst: /deskbox/broker.sock          # where the stub looks for it
 
 execution:
   mode: queued

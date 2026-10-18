@@ -3,22 +3,43 @@
 symlink: the desk's bwrap only binds the tool's own directory). Pin with agent-desk -pin.
 
 Forwards the desk's stdin JSON plus any declared input files (/deskbox/in/*,
-base64) to the local sbx-broker, prints the tool's JSON, and writes returned
-files into /deskbox/out/. Tool name = DESKBOX_TOOL minus a trailing "-sbx".
-The desk still validates everything against tcs.yaml afterwards; the stub only
-refuses names/types the desk would refuse anyway.
+base64) to the local sbx-broker over the unix socket the desk binds into this
+sandbox, prints the tool's JSON, and writes returned files into /deskbox/out/.
+Tool name = DESKBOX_TOOL minus a trailing "-sbx". The desk still validates
+everything against tcs.yaml afterwards; the stub only refuses names/types the
+desk would refuse anyway.
+
+The socket, not TCP: this stub's contract says network:false, so there is no
+network namespace to reach a loopback port from, and none is wanted. The only
+route out of the job is the one path the contract declared.
 """
 import base64
+import http.client
 import json
 import os
 import re
+import socket
 import stat
 import sys
-import urllib.request
 
-BROKER = "http://127.0.0.1:8099/run"
+SOCKET = "/deskbox/broker.sock"
 IN_DIR, OUT_DIR = "/deskbox/in", "/deskbox/out"
 NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
+
+
+class UnixConnection(http.client.HTTPConnection):
+    """http.client over a unix socket; there is no address to resolve."""
+
+    def __init__(self, path, timeout=150):
+        super().__init__("localhost", timeout=timeout)
+        self._path = path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self._path)
+        self.sock = sock
+
 
 tool = os.environ.get("DESKBOX_TOOL", "")
 if tool.endswith("-sbx"):
@@ -33,11 +54,17 @@ try:
             if NAME_RE.match(name) and stat.S_ISREG(os.lstat(path).st_mode):
                 with open(path, "rb") as f:
                     files[name] = base64.b64encode(f.read()).decode()
-    req = urllib.request.Request(
-        BROKER, data=json.dumps({"tool": tool, "input": payload, "files": files}).encode(),
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=150) as r:
-        resp = json.load(r)
+    body = json.dumps({"tool": tool, "input": payload, "files": files}).encode()
+    conn = UnixConnection(SOCKET)
+    try:
+        conn.request("POST", "/run", body=body, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        raw = resp.read()
+        if resp.status != 200:
+            raise RuntimeError(f"broker status {resp.status}")
+    finally:
+        conn.close()
+    resp = json.loads(raw)
     for name, b64 in resp["files"].items():
         if not NAME_RE.match(name):
             raise ValueError("bad name")

@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """sbx-broker: runs on the trusted harness box.
 
-Accepts {"tool": ..., "input": {...}} on 127.0.0.1 from the *-sbx stub tools,
-runs the matching tool on the sandbox box over SSH (harness initiates, sandbox
-never connects back), and returns the tool's JSON stdout.
+Accepts {"tool": ..., "input": {...}} on a unix socket from the *-sbx stub
+tools, runs the matching tool on the sandbox box over SSH (harness initiates,
+sandbox never connects back), and returns the tool's JSON stdout.
+
+The socket is the point: every stub runs with no network at all (network:false
+in its contract) and the desk binds this one socket into the job's sandbox, so
+the stub's only route out is a tool call that the desk has already validated.
+A loopback TCP listener would instead have meant giving each stub the host
+network namespace, which is the whole core's internet.
 
 Stdlib only. One job at a time (the sandbox is destroyed/reset per run).
 
@@ -11,10 +17,14 @@ Nothing the sandbox sends back is logged except size, hash, and exit status.
 Sandbox stderr is discarded; error responses never contain sandbox text.
 """
 import base64
+import grp
 import hashlib
 import json
 import os
 import re
+import socket
+import socketserver
+import stat
 import subprocess
 import sys
 import threading
@@ -26,7 +36,10 @@ sys.path[:0] = [os.environ.get("SBX_COMMON", _here), os.path.join(_here, "..", "
 import toollist  # noqa: E402
 
 TOOLLIST = os.environ.get("SBX_TOOLLIST", "/etc/sbx/tools.list")
-LISTEN = os.environ.get("SBX_LISTEN", "127.0.0.1")
+SOCKET_PATH = os.environ.get("SBX_SOCKET", "/run/sbx/broker.sock")  # "" = no unix listener
+SOCKET_MODE = int(os.environ.get("SBX_SOCKET_MODE", "0660"), 8)
+SOCKET_GROUP = os.environ.get("SBX_SOCKET_GROUP", "sbxdesk")  # the desk's account is in this group
+LISTEN = os.environ.get("SBX_LISTEN", "")           # "" = no TCP listener (the default)
 PORT = int(os.environ.get("SBX_BROKER_PORT", "8099"))
 SBX_HOST = os.environ["SBX_HOST"]                      # e.g. 10.77.0.2
 SBX_USER = os.environ.get("SBX_USER", "sbx")
@@ -172,6 +185,7 @@ class H(BaseHTTPRequestHandler):
         if entry is None:
             return self._err(403, "unknown_tool")
         timeout = min(entry["timeout_s"], MAX_TIMEOUT)
+        network = bool(entry["network"])
 
         started = time.time()
         with _lock:
@@ -184,7 +198,7 @@ class H(BaseHTTPRequestHandler):
                     reset_sbx()
                 except Exception as e:  # reset failure must not hide the result
                     log(f"reset failed: {e}")
-        log(f"{'ALERT ' if status in ALERT else ''}tool={tool} status={status} bytes={len(body)} "
+        log(f"{'ALERT ' if status in ALERT else ''}tool={tool} net={int(network)} status={status} bytes={len(body)} "
             f"sha256={hashlib.sha256(body).hexdigest()[:16]} "
             f"dur={time.time() - started:.1f}s")
         if status == "ok":
@@ -192,6 +206,57 @@ class H(BaseHTTPRequestHandler):
         return self._err(502, status)
 
 
+class UnixHTTPServer(socketserver.ThreadingUnixStreamServer):
+    """A unix socket in front of the same handler.
+
+    A unix socket has no peer address, so give the handler a stand-in for the
+    one BaseHTTPRequestHandler expects to find on self.client_address.
+    """
+
+    daemon_threads = True
+
+    def get_request(self):
+        conn, _ = super().get_request()
+        return conn, ("", 0)
+
+
+def open_socket(path):
+    """Bind path, replacing a socket left behind by a dead broker.
+
+    Only a socket is reclaimed: if something that is not a socket sits at
+    that path, refuse rather than delete a file the operator did not mean to
+    lose.
+    """
+    if os.path.exists(path):
+        mode = os.lstat(path).st_mode
+        if not stat.S_ISSOCK(mode):
+            raise SystemExit(f"refusing to start: {path} exists and is not a socket")
+        os.unlink(path)  # stale: nothing is listening (we would not be starting otherwise)
+    srv = UnixHTTPServer(path, H)
+    # The socket is the gate: mode 0660 and only the desk's group, so a
+    # process that is not the desk cannot submit a job here. chgrp needs the
+    # broker to be a member of SOCKET_GROUP (SupplementaryGroups=sbxdesk in
+    # the unit) — chowning to a group it does not belong to is not permitted.
+    if SOCKET_GROUP:
+        try:
+            gid = grp.getgrnam(SOCKET_GROUP).gr_gid
+            os.chown(path, -1, gid)
+        except KeyError:
+            log(f"WARN: socket group {SOCKET_GROUP} does not exist; leaving the socket at the broker's own group")
+    os.chmod(path, SOCKET_MODE)
+    return srv
+
+
 if __name__ == "__main__":
-    log(f"sbx-broker on {LISTEN}:{PORT} -> {SBX_USER}@{SBX_HOST}")
-    ThreadingHTTPServer((LISTEN, PORT), H).serve_forever()
+    servers = []
+    if SOCKET_PATH:
+        servers.append((f"unix {SOCKET_PATH} (mode {SOCKET_MODE:04o})", open_socket(SOCKET_PATH)))
+    if LISTEN:
+        servers.append((f"tcp {LISTEN}:{PORT}", ThreadingHTTPServer((LISTEN, PORT), H)))
+    if not servers:
+        raise SystemExit("refusing to start: neither SBX_SOCKET nor SBX_LISTEN is set")
+
+    log(f"sbx-broker -> {SBX_USER}@{SBX_HOST} using {', '.join(name for name, _ in servers)}")
+    for _, srv in servers[1:]:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    servers[0][1].serve_forever()

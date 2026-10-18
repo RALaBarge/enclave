@@ -4,6 +4,15 @@ After=network-online.target
 
 [Service]
 User=sbxbroker
+# Membership only: the broker is the one thing that may chgrp its socket to
+# sbxdesk, and the desk is the only account in that group. Everything else
+# under /etc/sbx is unchanged — the key stays 0600 sbxbroker.
+SupplementaryGroups=sbxdesk
+# /run/sbx holds broker.sock. 0755 on the directory is deliberate: the desk
+# has to traverse it to bind the socket into a job's sandbox, and 0660 on the
+# socket itself is what limits who may connect.
+RuntimeDirectory=sbx
+RuntimeDirectoryMode=0755
 EnvironmentFile=/etc/sbx/broker.env
 ExecStart=/usr/bin/python3 /opt/sbx-broker/sbx_broker.py
 Restart=on-failure
