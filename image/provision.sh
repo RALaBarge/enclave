@@ -218,7 +218,9 @@ systemctl enable --now tailscaled
 # ---- pi-bridge: local HTTP/SSE API over Pi's RPC mode (loopback; Tailscale installed above, but the bridge starts without
 #      --peers, so peer messaging stays off until the operator opts in) ----
 id pibridge &>/dev/null || useradd --system --home /var/lib/pi-bridge --create-home --shell /usr/sbin/nologin pibridge
-install -d -o pibridge -g pibridge /var/lib/pi-bridge/work /var/lib/pi-bridge/state
+install -d -o pibridge -g pibridge /var/lib/pi-bridge/state
+# Session root: a sibling of the home, never inside it (the bridge protects the whole home).
+install -d -m 0700 -o pibridge -g pibridge /var/lib/pi-bridge-work
 install -d /opt/pi-bridge
 for f in pairing peers pibridge server; do install -m 644 "$ROOT/harness/bridge/$f.py" /opt/pi-bridge/; done
 # The bridge imports the redactor from ./redact next to itself (or ../redact in the

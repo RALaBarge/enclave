@@ -132,7 +132,7 @@ check_lockdown() {
   [ "$cur" = session ] || { skip session-lockdown "a build window is open; not touching it"; return; }
   curl -fsS --max-time 8 -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"active":"build","for_s":60}' \
       "$con/api/fw/profile" >/dev/null 2>&1 || { fail session-lockdown "could not open the test build window"; return; }
-  out=$(curl -sS --max-time 20 -H 'Content-Type: application/json' -d '{"cwd":"/var/lib/pi-bridge/work","name":"lockdown"}' "$br/sessions" 2>&1)
+  out=$(curl -sS --max-time 20 -H 'Content-Type: application/json' -d '{"cwd":"/var/lib/pi-bridge-work","name":"lockdown"}' "$br/sessions" 2>&1)
   sid=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
   after=$(active)
   [ -n "$sid" ] && curl -s --max-time 10 -X DELETE "$br/sessions/$sid" >/dev/null 2>&1
@@ -259,7 +259,7 @@ check_bridge() {
   if ! curl -fsS --max-time 5 "$api/health" 2>/dev/null | grep -q '"app": "pi-bridge"'; then
     fail pi-bridge "GET /health failed on $api"; return
   fi
-  sid=$(curl -fsS --max-time 10 -H 'Content-Type: application/json' -d '{"cwd":"/var/lib/pi-bridge/work","name":"smoke"}' \
+  sid=$(curl -fsS --max-time 10 -H 'Content-Type: application/json' -d '{"cwd":"/var/lib/pi-bridge-work","name":"smoke"}' \
           "$api/sessions" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
   if [ -z "$sid" ]; then fail pi-bridge "could not create a session"; return; fi
   out=$(curl -sS --max-time 40 -H 'Content-Type: application/json' -d '{"type":"get_state"}' "$api/sessions/$sid/command" 2>&1)

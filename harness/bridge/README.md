@@ -4,9 +4,9 @@ A small HTTP/SSE API in front of `pi --mode rpc` (one Pi process per session), p
 machines over Tailscale. The web UI in `../ui` is a client of these endpoints. Python stdlib only.
 
 ```
-python server.py --cwd-root /var/lib/pi-bridge/work --pi-bin /usr/local/bin/pi   # API on 127.0.0.1:9760
-python server.py --cwd-root /var/lib/pi-bridge/work --peers                      # also talk to your other machines
-python server.py --cwd-root /var/lib/pi-bridge/work --loom-url http://127.0.0.1:9741   # also log settled turns to Loom
+python server.py --cwd-root /var/lib/pi-bridge-work --pi-bin /usr/local/bin/pi   # API on 127.0.0.1:9760
+python server.py --cwd-root /var/lib/pi-bridge-work --peers                      # also talk to your other machines
+python server.py --cwd-root /var/lib/pi-bridge-work --loom-url http://127.0.0.1:9741   # also log settled turns to Loom
 python -B -m unittest discover -s tests         # uses a fake Pi
 ```
 
@@ -35,11 +35,12 @@ refuses to start without at least one root: it takes the cwd from its caller, so
 trust it.
 
 Each root is also checked at startup. The bridge refuses a root that is `/`, that lies inside a protected path, or
-that contains one, and names the root and the rule that failed. The bridge's state directory and key files are
-protected; the `work` directory the shipped unit passes (`/var/lib/pi-bridge/work`) is its sibling and is allowed.
+that contains one, and names the root and the rule that failed. The bridge's home, `/var/lib/pi-bridge`
+(its state and whatever Pi keeps under `$HOME`), is protected as a whole; the root the shipped unit passes,
+`/var/lib/pi-bridge-work`, is a sibling directory, not a subdirectory, so no exception is needed.
 
 `POST /sessions` with a cwd outside every root answers 403 with a message naming the roots and the flag, e.g.
-`/home/me/notes is outside the bridge's allowed roots (/var/lib/pi-bridge/work); add --cwd-root if this location is
+`/home/me/notes is outside the bridge's allowed roots (/var/lib/pi-bridge-work); add --cwd-root if this location is
 intended`. The UI shows that message. The existing protected-path checks stay as the second line of defence.
 
 A restored session is rechecked against the roots that are in force now. A record whose cwd no longer qualifies is

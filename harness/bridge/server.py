@@ -98,15 +98,14 @@ class TooLarge(Exception):
 # It is a deny-list, so it narrows the obvious path rather than proving there
 # is none: a file the pibridge account can read elsewhere is still readable by
 # a local caller who names its directory.
-# The bridge home is split: state/ (sessions.json, FIFOs, identity and peer
-# keys) and the key files are protected, while work/ is the directory the
-# shipped unit allows sessions to run in. Protecting the parent instead would
-# make that root unusable; protecting these entries keeps ../state and
-# ../peers.json out of reach of the file endpoints.
+# /var/lib/pi-bridge is the bridge account's HOME: its state (sessions.json,
+# identity and peer keys) and whatever Pi keeps under $HOME/.pi (auth, config,
+# extensions). The whole directory is protected, with no exception for a
+# subdirectory; the shipped unit's session root is the sibling
+# /var/lib/pi-bridge-work instead.
 PROTECTED_ROOTS = (
     "/run/sbx", "/run/sbx-gate", "/etc/sbxfw", "/etc/sbx", "/etc/ssh",
-    "/etc/shadow", "/etc/sudoers", "/root", "/var/lib/pi-bridge/state",
-    "/var/lib/pi-bridge/identity.json", "/var/lib/pi-bridge/peers.json",
+    "/etc/shadow", "/etc/sudoers", "/root", "/var/lib/pi-bridge",
     "/var/lib/deskbox", "/var/lib/loom", "/proc", "/sys", "/dev", "/boot",
 )
 

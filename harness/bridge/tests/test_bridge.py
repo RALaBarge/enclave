@@ -661,15 +661,18 @@ class CwdRoots(unittest.TestCase):
             with self.assertRaises(S.ConfigError, msg=bad) as cm:
                 S.validate_cwd_root(bad)
             self.assertIn("protected path", str(cm.exception), bad)
-        for bad in ("/etc/ssh/keys", "/var/lib/pi-bridge/state", "/run/sbx/work"):   # inside one
+        for bad in ("/etc/ssh/keys", "/var/lib/pi-bridge/state", "/var/lib/pi-bridge/work", "/run/sbx/work"):   # inside one
             with self.assertRaises(S.ConfigError, msg=bad) as cm:
                 S.validate_cwd_root(bad)
             self.assertIn("protected path", str(cm.exception), bad)
-        # The shipped unit's work directory is beside the protected state, not inside it.
-        self.assertEqual(S.validate_cwd_root("/var/lib/pi-bridge/work"), os.path.realpath("/var/lib/pi-bridge/work"))
-        self.assertFalse(S.protected_root("/var/lib/pi-bridge/work"))
-        self.assertTrue(S.protected_root("/var/lib/pi-bridge/state"))
-        work = os.path.realpath("/var/lib/pi-bridge/work")
+        # The shipped unit's root is a sibling of the bridge's home, not inside it: nothing under
+        # $HOME (state, keys, Pi's own config) is exempted.
+        self.assertEqual(S.validate_cwd_root("/var/lib/pi-bridge-work"), os.path.realpath("/var/lib/pi-bridge-work"))
+        self.assertFalse(S.protected_root("/var/lib/pi-bridge-work"))
+        for home_path in ("/var/lib/pi-bridge", "/var/lib/pi-bridge/state", "/var/lib/pi-bridge/.pi",
+                          "/var/lib/pi-bridge/work"):
+            self.assertTrue(S.protected_root(home_path), home_path)
+        work = os.path.realpath("/var/lib/pi-bridge-work")
         self.assertEqual(S.session_path(work, "notes.txt")[0], os.path.join(work, "notes.txt"))
 
     def test_no_root_is_a_startup_refusal(self):

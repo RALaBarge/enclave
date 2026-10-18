@@ -12,12 +12,12 @@ User=pibridge
 # gate: connect to /run/sbx-gate/gate.sock, nothing else. The gate holds the
 # token; this process does not and cannot read it.
 SupplementaryGroups=sbxgate
-WorkingDirectory=/var/lib/pi-bridge/work
+WorkingDirectory=/var/lib/pi-bridge-work
 Environment=HOME=/var/lib/pi-bridge PI_OFFLINE=1 PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1
 # Root fetches the secrets before the service user's process exists (the token stays unreadable to Pi); "+" = run privileged.
 ExecStartPre=+/usr/local/bin/sbx-fetch-secrets
 EnvironmentFile=-/run/sbx/secrets.env
-ExecStart=/usr/bin/python3 -B /opt/pi-bridge/server.py --pi-bin /usr/local/bin/pi --cwd-root /var/lib/pi-bridge/work --listen 127.0.0.1:9760 --state-dir /var/lib/pi-bridge/state --gate-socket /run/sbx-gate/gate.sock
+ExecStart=/usr/bin/python3 -B /opt/pi-bridge/server.py --pi-bin /usr/local/bin/pi --cwd-root /var/lib/pi-bridge-work --listen 127.0.0.1:9760 --state-dir /var/lib/pi-bridge/state --gate-socket /run/sbx-gate/gate.sock
 # Sessions survive a restart of this unit. The default KillMode=control-group
 # would take every Pi down with the bridge, which makes the session records
 # pointless; with `process` the children keep running and the restarted bridge
@@ -32,7 +32,7 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
-ReadWritePaths=/var/lib/pi-bridge
+ReadWritePaths=/var/lib/pi-bridge /var/lib/pi-bridge-work
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 
