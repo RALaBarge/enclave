@@ -105,6 +105,18 @@ for name in tools:
         problems.extend(contract_problems(tcs))
         stub = os.path.join(ROOT, "harness", "stub", "run.py")
         copy = os.path.join(hdir, "run.py")
+        # Read the copy's own number before the drift comparison blanks it.
+        # This runs every time, not in an `else` after the drift test: the two
+        # questions are independent, and burying the second one in an `else` is
+        # how it stopped running in the first place.
+        if check_only and os.path.isfile(copy):
+            want = stub_timeout(tcs)
+            m = re.search(r"^CLIENT_TIMEOUT = (\d+)$", open(copy, encoding="utf-8").read(), re.M)
+            have = int(m.group(1)) if m else 0
+            if have < want:
+                problems.append(
+                    f"stub timeout short:  {os.path.relpath(copy, ROOT)} is {have}s, needs "
+                    f">= {want}s (queue wait + tool budget + reset + margin; run `python sync.py`)")
         if not check_only:
             shutil.copyfile(stub, copy)
             # Size the stub's client timeout to the broker's own worst case:
