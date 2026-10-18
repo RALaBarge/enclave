@@ -21,9 +21,9 @@ import rsync_tool as R  # noqa: E402
 
 ALLOW = """\
 # a comment, then three named hosts
-backup = ryan@backup.example.com
-nas = 10.0.0.10:22
-plain = files.example.com
+backup = ryan@backup.example.com /srv
+nas = 10.0.0.10:22 /srv
+plain = files.example.com /srv
 """
 
 
@@ -65,9 +65,24 @@ class Base(unittest.TestCase):
 class AllowlistParsing(unittest.TestCase):
     def test_parses_name_user_host_port(self):
         entries = R.parse_allowlist(ALLOW)
-        self.assertEqual(entries["backup"], R.HostEntry("backup", "backup.example.com", "ryan", None))
-        self.assertEqual(entries["nas"], R.HostEntry("nas", "10.0.0.10", None, 22))
-        self.assertEqual(entries["plain"], R.HostEntry("plain", "files.example.com", None, None))
+        self.assertEqual(entries["backup"], R.HostEntry("backup", "backup.example.com", "ryan", None, "/srv"))
+        self.assertEqual(entries["nas"], R.HostEntry("nas", "10.0.0.10", None, 22, "/srv"))
+        self.assertEqual(entries["plain"], R.HostEntry("plain", "files.example.com", None, None, "/srv"))
+
+    def test_the_path_prefix_is_required_and_must_be_a_clean_directory(self):
+        for line in ("x = host.example.com",                  # no prefix: the old format
+                     "x = host.example.com srv",             # relative
+                     "x = host.example.com ~/data",
+                     "x = host.example.com /srv/../etc",
+                     "x = host.example.com /srv//a",
+                     "x = host.example.com /srv/./a",
+                     "x = host.example.com /",               # bounds nothing
+                     "x = host.example.com /srv /extra"):
+            with self.assertRaises(R.AllowlistError, msg=line):
+                R.parse_allowlist(line + "\n")
+
+    def test_a_trailing_slash_on_the_prefix_is_normalised(self):
+        self.assertEqual(R.parse_allowlist("x = host.example.com /srv/data/\n")["x"].prefix, "/srv/data")
 
     def test_comments_and_blank_lines_ignored(self):
         self.assertEqual(R.parse_allowlist("# only a comment\n\n   \n"), {})
@@ -324,6 +339,33 @@ class ArgumentBuilding(unittest.TestCase):
         argv = R.build_argv("/tmp/a", "host:/srv/a", False, 2222)
         ssh = argv[argv.index("-e") + 1]
         self.assertIn("-p 2222", ssh)
+
+
+class PathPrefix(Base):
+    def test_paths_outside_the_prefix_are_refused_before_rsync(self):
+        for dest in ("backup:/etc/passwd", "backup:/home/ryan/.ssh/authorized_keys", "backup:/srvx/a",
+                     "backup:/srv/../etc/passwd", "backup:/srv/a/../../etc", "backup://etc/passwd"):
+            report, runner = self.call(destination=dest, apply=True)
+            self.assertFalse(report["ok"], dest)
+            self.assertEqual(report["reason"], "path_not_allowed", dest)
+            self.assertEqual(runner.calls, [], dest)
+
+    def test_paths_inside_the_prefix_are_allowed_and_normalised(self):
+        for dest, want in (("backup:/srv", "ryan@backup.example.com:/srv"),
+                           ("backup:/srv/a/b", "ryan@backup.example.com:/srv/a/b"),
+                           ("backup:/srv/a/../b", "ryan@backup.example.com:/srv/b")):
+            report, runner = self.call(destination=dest)
+            self.assertTrue(report["ok"], dest)
+            self.assertEqual(report["command"][-1], want)
+
+    def test_a_trailing_slash_survives_because_rsync_reads_it(self):
+        report, _ = self.call(destination="backup:/srv/a/")
+        self.assertEqual(report["command"][-1], "ryan@backup.example.com:/srv/a/")
+
+    def test_the_prefix_applies_to_a_remote_source_too(self):
+        report, runner = self.call(source="nas:/etc/shadow", destination="/deskbox/out")
+        self.assertEqual(report["reason"], "path_not_allowed")
+        self.assertEqual(runner.calls, [])
 
 
 class RsyncResult(Base):

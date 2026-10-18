@@ -122,12 +122,18 @@ allowlist is a file in the tool's own directory on the sandbox side: `/opt/sbx/t
 `/deskbox/tool/allowlist`). Start from `allowlist.example` and keep one entry per line:
 
 ```text
-# <name> = [user@]<host>[:port]
-backup = ryan@backup.example.com
-nas = 10.0.0.10:22
+# <name> = [user@]<host>[:port]  /absolute/prefix
+backup = ryan@backup.example.com  /srv/backups
+nas = 10.0.0.10:22  /srv/share
 ```
 
-A remote source or destination is written `<name>:<path>`; the name must match an entry exactly, and the user and port come
+The path prefix is required. A remote path must be that directory or below it (compared after `normpath`, so `..` cannot
+climb out), otherwise the call is refused as `path_not_allowed` before rsync runs. An entry without a prefix, with a
+relative one, or with `/` makes the whole file invalid, and an invalid file permits nothing. The prefix bounds what the
+caller can name, not what the remote holds: a symlink under the prefix on the remote still leads where it leads, so point
+it at a directory you control.
+
+A remote source or destination is written `<name>:<absolute path>`; the name must match an entry exactly, and the user and port come
 only from this file. There are no wildcards, CIDR ranges or default entry: an empty, missing or malformed allowlist permits
 no remote host. The local side is limited to `/deskbox/in`, `/deskbox/out` and `/tmp`, so the job cannot upload the allowlist
 or the SSH key from its own tool directory. The call runs `rsync --dry-run` unless it sets `"apply": true`. SSH reads

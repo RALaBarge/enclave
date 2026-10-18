@@ -3,15 +3,16 @@
 # as /deskbox/tool/allowlist) and edit the entries.  The tool reads only
 # `allowlist`; this .example file is a template and is never read.
 #
-#   <name> = [user@]<host>[:port]
+#   <name> = [user@]<host>[:port]  /absolute/prefix
 #
-# The source or destination names a remote side as <name>:<path>.  The name
-# must match an entry below exactly.  The user and port come only from this
-# file, never from the path the model writes.  No wildcards, no CIDR ranges,
+# The source or destination names a remote side as <name>:<absolute path>.  The
+# name must match an entry below exactly, and the path must be the entry's
+# prefix or below it (a missing, relative or "/" prefix makes the file invalid).
+# The user and port come only from this file, never from the path the model writes.  No wildcards, no CIDR ranges,
 # no default: an empty, missing or malformed file permits no remote host.
 #
 # Use an IPv4 address if the job has no /etc/resolv.conf; sbx-run does not bind
 # one.  SSH expects id_ed25519 and known_hosts in this same directory.
 #
-# backup = ryan@backup.example.com
-# nas    = 10.0.0.10:22
+# backup = ryan@backup.example.com  /srv/backups
+# nas    = 10.0.0.10:22  /srv/share

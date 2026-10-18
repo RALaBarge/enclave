@@ -39,7 +39,8 @@ has network" and "the stub has network" are different jobs in this repo.
 Allowlist: a remote side is written ``<name>:<path>`` where ``<name>`` is an
 entry in ``/opt/sbx/tools/rsync/allowlist`` on the sandbox box (inside the job
 it is ``/deskbox/tool/allowlist``).  An entry is
-``<name> = [user@]<host>[:port]``.  Names match exactly; the user and port come
+``<name> = [user@]<host>[:port] /absolute/prefix``; the prefix is required and a
+remote path must be it or below it.  Names match exactly; the user and port come
 only from the file, never from the model's path.  There are no wildcards, no
 CIDR ranges and no default entry: an empty, missing or malformed allowlist
 permits no remote host.  Local paths must be absolute and are limited to the
@@ -112,6 +113,7 @@ class HostEntry:
     host: str
     user: str | None = None
     port: int | None = None
+    prefix: str = "/"          # remote paths must be this directory or below it
 
 
 @dataclass(frozen=True)
@@ -136,7 +138,7 @@ def parse_allowlist(text, source="<allowlist>"):
         name, sep, value = line.partition("=")
         if not sep:
             raise AllowlistError(
-                f"{source}:{lineno}: expected '<name> = [user@]<host>[:port]'"
+                f"{source}:{lineno}: expected '<name> = [user@]<host>[:port] /absolute/prefix'"
             )
         name, value = name.strip(), value.strip()
         if not name or not value:
@@ -150,6 +152,23 @@ def parse_allowlist(text, source="<allowlist>"):
         if any(ch in value for ch in WILDCARDS):
             raise AllowlistError(
                 f"{source}:{lineno}: wildcards are not permitted in {value!r}"
+            )
+
+        fields = value.split()
+        if len(fields) != 2:
+            raise AllowlistError(
+                f"{source}:{lineno}: expected '[user@]<host>[:port] /absolute/prefix' "
+                f"(the path prefix is required: the allowlist bounds the remote path, not just the host)"
+            )
+        value, prefix = fields
+        if not prefix.startswith("/") or posixpath.normpath(prefix) != prefix.rstrip("/"):
+            raise AllowlistError(
+                f"{source}:{lineno}: bad path prefix {prefix!r} (absolute, normalised, no '..')"
+            )
+        prefix = posixpath.normpath(prefix)
+        if prefix == "/":
+            raise AllowlistError(
+                f"{source}:{lineno}: a prefix of '/' bounds nothing; name the directory this entry may touch"
             )
 
         user = None
@@ -178,7 +197,7 @@ def parse_allowlist(text, source="<allowlist>"):
             raise AllowlistError(
                 f"{source}:{lineno}: bad host {host!r} (an exact name or IPv4 address; no wildcards or ranges)"
             )
-        entries[name] = HostEntry(name=name, host=host, user=user, port=port)
+        entries[name] = HostEntry(name=name, host=host, user=user, port=port, prefix=prefix)
     return entries
 
 
@@ -256,8 +275,21 @@ def resolve_remote(endpoint, entries):
             "host_not_allowed",
             f"{endpoint.name!r} is not in the rsync allowlist (permitted names: {known})",
         )
-    prefix = f"{entry.user}@{entry.host}" if entry.user else entry.host
-    return f"{prefix}:{endpoint.path}", entry
+    # normpath resolves "a/../b" lexically, so the check below sees the path the
+    # remote shell will. The remote may still hold symlinks under the prefix;
+    # the prefix bounds what the caller can name, not what the remote contains.
+    path = posixpath.normpath(endpoint.path)
+    if path.startswith("//"):          # POSIX keeps a leading "//" distinct
+        path = "/" + path.lstrip("/")
+    if path != entry.prefix and not path.startswith(entry.prefix + "/"):
+        raise Refusal(
+            "path_not_allowed",
+            f"remote path {endpoint.path!r} is outside the prefix {entry.prefix!r} allowed for {entry.name!r}",
+        )
+    if endpoint.path.endswith("/") and path != "/":
+        path += "/"                    # rsync reads a trailing slash as "the contents of"
+    host = f"{entry.user}@{entry.host}" if entry.user else entry.host
+    return f"{host}:{path}", entry
 
 
 def build_argv(source_arg, destination_arg, apply, port=None):
