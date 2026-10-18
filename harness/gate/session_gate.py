@@ -34,7 +34,7 @@ from http.server import BaseHTTPRequestHandler
 
 SOCKET = os.environ.get("SBX_GATE_SOCKET", "/run/sbx-gate/gate.sock")
 SOCKET_MODE = int(os.environ.get("SBX_GATE_SOCKET_MODE", "0660"), 8)
-SOCKET_GROUP = os.environ.get("SBX_GATE_SOCKET_GROUP", "pibridge")
+SOCKET_GROUP = os.environ.get("SBX_GATE_SOCKET_GROUP", "sbxgate")
 CONSOLE = os.environ.get("SBX_GATE_CONSOLE", "http://127.0.0.1:8787").rstrip("/")
 TOKEN_FILE = os.environ.get("SBX_GATE_TOKEN_FILE", "/etc/sbxfw/tighten-token")
 TIMEOUT = float(os.environ.get("SBX_GATE_TIMEOUT", "8"))

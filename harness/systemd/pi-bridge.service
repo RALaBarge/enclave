@@ -8,6 +8,10 @@ Wants=sbx-session-gate.service
 
 [Service]
 User=pibridge
+# Membership of sbxgate is the whole of this account's access to the session
+# gate: connect to /run/sbx-gate/gate.sock, nothing else. The gate holds the
+# token; this process does not and cannot read it.
+SupplementaryGroups=sbxgate
 WorkingDirectory=/var/lib/pi-bridge/work
 Environment=HOME=/var/lib/pi-bridge PI_OFFLINE=1 PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1
 # Root fetches the secrets before the service user's process exists (the token stays unreadable to Pi); "+" = run privileged.

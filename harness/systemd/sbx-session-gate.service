@@ -5,11 +5,13 @@ Wants=sbx-console.service
 
 [Service]
 User=sbxgate
-# Primary group is the bridge's, and that one group does both jobs: it can read
-# the tighten-only token (root:sbxgate 0640) and it is the group on the gate's
-# socket, so the bridge can connect and nothing else on the box can.
-Group=pibridge
-SupplementaryGroups=sbxgate
+# Its own group, not the bridge's. Two groups, two permissions: `sbxgate` reads
+# the tighten-only token (root:sbxgate 0640) and owns the socket, and the
+# bridge is a member of `sbxgate` so it can connect. The gate is deliberately
+# not in `pibridge`, so it cannot read /run/sbx/secrets.env - the process that
+# may force a firewall profile has no business holding model keys.
+Group=sbxgate
+SupplementaryGroups=
 RuntimeDirectory=sbx-gate
 RuntimeDirectoryMode=0755
 Environment=SBX_GATE_SOCKET=/run/sbx-gate/gate.sock

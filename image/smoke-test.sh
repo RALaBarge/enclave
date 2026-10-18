@@ -239,8 +239,8 @@ check_session_gate() {
   local sock=/run/sbx-gate/gate.sock mode grp out
   if [ ! -S "$sock" ]; then fail session-gate "$sock missing"; return; fi
   mode=$(stat -c '%a' "$sock" 2>/dev/null); grp=$(stat -c '%G' "$sock" 2>/dev/null)
-  if [ "$mode" != 660 ] || [ "$grp" != pibridge ]; then
-    fail session-gate "socket is ${mode:-?} ${grp:-?} (want 660 pibridge)"; return
+  if [ "$mode" != 660 ] || [ "$grp" != sbxgate ]; then
+    fail session-gate "socket is ${mode:-?} ${grp:-?} (want 660 sbxgate)"; return
   fi
   if runuser -u pibridge -- test -r /etc/sbxfw/tighten-token 2>/dev/null; then
     fail session-gate "pibridge can read the tighten token (only sbxgate should)"; return
@@ -249,7 +249,7 @@ check_session_gate() {
     || { fail session-gate "POST /lockdown failed: $(printf '%s' "$out" | head -c 160)"; return; }
   if printf '%s' "$out" | python3 -c \
       'import json,sys; d=json.load(sys.stdin); assert d.get("active")=="session", d' 2>/dev/null; then
-    pass session-gate "socket 660 pibridge, token unreadable to pibridge, lockdown -> session"
+    pass session-gate "socket 660 sbxgate, token unreadable to pibridge, lockdown -> session"
   else fail session-gate "unexpected answer: $(printf '%s' "$out" | head -c 160)"; fi
 }
 

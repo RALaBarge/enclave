@@ -14,8 +14,8 @@ and the broker's log. The service accounts sit around those things:
 
 | Account | Created by | What it can reach, from the code |
 |---|---|---|
-| `pibridge` | `image/provision.sh` (`useradd` for `pibridge`) | `127.0.0.1:9760`; its children inherit `/run/sbx/secrets.env` (`root:pibridge 0640`); connects to `/run/sbx-gate/gate.sock` (`0660` group `pibridge`) but cannot read `/etc/sbxfw/tighten-token` (`0640` group `sbxgate`); writes `/var/lib/pi-bridge` |
-| `sbxgate` | `image/provision.sh` | `/run/sbx-gate/gate.sock`; reads `/etc/sbxfw/tighten-token` and may call `/api/fw/lockdown` and nothing else |
+| `pibridge` | `image/provision.sh` (`useradd` for `pibridge`) | `127.0.0.1:9760`; its children inherit `/run/sbx/secrets.env` (`root:pibridge 0640`); is in group `sbxgate`, which is what lets it connect to `/run/sbx-gate/gate.sock` (`0660` group `sbxgate`) but cannot read `/etc/sbxfw/tighten-token` (`0640` group `sbxgate`); writes `/var/lib/pi-bridge` |
+| `sbxgate` | `image/provision.sh` | `/run/sbx-gate/gate.sock`; reads `/etc/sbxfw/tighten-token` and may call `/api/fw/lockdown` and nothing else. Not in `pibridge`, so it cannot read `/run/sbx/secrets.env` |
 | `sbxbroker` | `image/provision.sh`, `image/setup-lite.sh` | the broker listener; `/etc/sbx/id_ed25519` (`0600`); SSH to the sandbox forced command; `RuntimeDirectory=sbx` in its unit |
 | `deskbox` | `image/provision.sh`, `harness/systemd/deskbox.service` | `127.0.0.1:8080` (`-strict`); `/opt/deskbox/tools` at `0700`; `/var/lib/deskbox`; group `sbxdesk`, which is the group on the broker socket |
 | `sbxconsole` | `image/provision.sh` | `127.0.0.1:8787`; `CAP_NET_ADMIN`; reads and writes `/etc/sbxfw` and `/etc/sbx` |
@@ -68,7 +68,7 @@ What a process in the core can reach, whatever its account:
 - `127.0.0.1:8787` (console): bearer token. `token` is `0640` group `sbxconsole`; `tighten-token` is `0640` group `sbxgate` and
   is accepted only on `/api/fw/lockdown` (`console/sbx_console.py`). A `pibridge` process cannot read it: the bridge reaches the
   lockdown through `sbx-session-gate`'s socket instead (`harness/gate/session_gate.py`).
-- `/run/sbx-gate/gate.sock` (session gate): `0660` group `pibridge`, so the bridge's account may connect and nothing else in the
+- `/run/sbx-gate/gate.sock` (session gate): `0660` group `sbxgate`, so the bridge's account may connect and nothing else in the
   core may. The gate exposes `lockdown` and no verb that loosens.
 - `127.0.0.1:9741` (Loom): no authentication on any route; the loopback bind is the only access control (`image/provision.sh`,
   noting it of Loom's source, not verified against `LOOM_COMMIT`). `11434` (Ollama) has no token configured either.
