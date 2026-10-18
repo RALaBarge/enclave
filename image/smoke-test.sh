@@ -65,6 +65,19 @@ check_listeners() {
   if [ "$count" -eq 0 ]; then fail listeners "ss reported no TCP listeners (unexpected)"
   elif [ -n "$offenders" ]; then fail listeners "non-loopback listeners:$offenders"
   else pass listeners "$count TCP listeners, all loopback"; fi
+
+  # The broker is a unix socket now. Its mode and group are the access control,
+  # and the old TCP port must be closed: a broker still listening on :8099 is
+  # reachable by any local account, which is the thing the socket replaced.
+  if [ ! -S "$BROKER_SOCK" ]; then fail broker-socket "$BROKER_SOCK missing"; else
+    local mode grp
+    mode=$(stat -c '%a' "$BROKER_SOCK" 2>/dev/null); grp=$(stat -c '%G' "$BROKER_SOCK" 2>/dev/null)
+    if [ "$mode" != 660 ] || [ "$grp" != sbxdesk ]; then
+      fail broker-socket "$BROKER_SOCK is ${mode:-?} ${grp:-?} (want 660 sbxdesk)"
+    elif curl -fsS --max-time 2 "http://127.0.0.1:${SBX_BROKER_PORT:-8099}/status" >/dev/null 2>&1; then
+      fail broker-socket "a TCP listener answered on :${SBX_BROKER_PORT:-8099}"
+    else pass broker-socket "0660 sbxdesk, no TCP listener"; fi
+  fi
 }
 
 # This host is the sandbox's gateway: input and forward default-drop, masquerade for sandbox traffic, own output open.
