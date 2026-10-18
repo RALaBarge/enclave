@@ -23,6 +23,54 @@ API's own. For another machine, use an SSH tunnel.
 | `POST /sessions/{id}/ui-response` | answer an extension UI request |
 | `GET /sessions/{id}/events?since=N` | SSE, resumable via `Last-Event-ID` (last 5000 events kept) |
 | `GET /sessions/{id}/stderr` | last 200 stderr lines |
+| `POST /sessions/{id}/files?path=rel` | raw body, `Content-Length` required, 8 MiB cap; returns `{path, bytes}` |
+| `GET /sessions/{id}/files?path=rel` | bytes from under the session's `cwd`, 8 MiB cap |
+
+## Sessions across restarts
+
+`--state-dir` holds `sessions.json`, one small record per session: `id`, `cwd`, `name`, `pid`, `created_at`,
+`state_dir`, `state` (`alive` or `dead`), `exit_code`, and — while the session is alive — the paths of its
+FIFO RPC channel. The file is rewritten atomically (temporary file in the same directory, then `os.replace`)
+when a session is created, exits or is deleted.
+
+On start the registry rebuilds from that file. A Pi process that is still alive and answers a `get_state`
+round trip on its FIFOs is reattached: same process, same channel, no new Pi. If the process is gone, or the
+channel cannot be opened or does not answer, the session stays in the list as `dead` with its last known exit
+code, and commands to it answer 502. `DELETE /sessions/{id}` stops the process, removes its FIFOs and removes
+the record, so `GET /sessions` shows sessions from the previous run instead of forgetting them.
+
+The FIFO channel is what makes this possible with Pi's stdin/stdout RPC mode: the child keeps a read/write end
+of each FIFO, so it does not see EOF when the bridge process dies. Three consequences:
+
+* POSIX only. On Windows the bridge uses anonymous pipes, a restart cannot reattach, and old records come back
+  `dead`.
+* `stop` signals a session (SIGTERM, then SIGKILL) instead of closing its stdin, because closing the bridge's
+  end is not EOF for a child that holds the other end.
+* Events the Pi wrote while no bridge was reading are consumed while checking that the channel works; the
+  event ring lived in the old bridge process anyway, so a reattached session starts with an empty one.
+
+A restart of the shipped systemd unit is not the case this helps: the default `KillMode=control-group` stops
+the Pi processes along with the bridge, so those sessions come back `dead`. Reattachment covers the bridge
+process dying while its children keep running (a crash under a supervisor that does not kill the group).
+
+## Files
+
+Both routes are scoped to the session's `cwd`; `path` is relative and either separator is accepted.
+
+* `POST /sessions/{id}/files?path=rel` takes the raw body. `Content-Length` is required (411 without it) and a
+  body over 8 MiB is refused before reading (413). Missing parent directories are created. It returns
+  `201 {"path": "notes/a.txt", "bytes": n}` with the normalised relative path. The write is not atomic: a
+  connection that ends early leaves the partial file.
+* `GET /sessions/{id}/files?path=rel` returns the bytes as `application/octet-stream`; over 8 MiB is 413, a
+  missing file 404, a directory 400.
+
+Refused with 403: absolute paths (`/x`, `C:\x`, `\\server\share`), any `..` component, and any path whose
+`realpath` falls outside the session's real `cwd` — so neither a symlinked directory nor a symlinked file can
+be used to read or write outside it. The containment check and the open are separate system calls, so a
+process that can rewrite the session's filesystem during a request could still win that race. The bridge is
+loopback-only; this is not a sandbox.
+
+Host and Origin checks apply to both routes like every other local route.
 
 ## Peers (`--peers`)
 

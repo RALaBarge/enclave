@@ -12,6 +12,8 @@ The local API listens on loopback only and has no login. A web page elsewhere ca
     POST   /sessions/{id}/ui-response     fire-and-forget (extension_ui_response)
     GET    /sessions/{id}/events?since=N  SSE, resumable via Last-Event-ID
     GET    /sessions/{id}/stderr
+    POST   /sessions/{id}/files?path=rel  raw body (Content-Length required, 8 MiB cap) -> {path, bytes}
+    GET    /sessions/{id}/files?path=rel  bytes of a file under the session's cwd (8 MiB cap)
   with --peers:
     GET    /peers                         tailnet nodes, which run a bridge, which are paired
     POST   /peers/{node}/send             {text, to_session?, from_session?}   (pairs on first contact)
@@ -44,7 +46,52 @@ import peers as P  # noqa: E402
 from pibridge import Registry, RpcError  # noqa: E402
 
 MAX_BODY = 1024 * 1024
+MAX_FILE = 8 * 1024 * 1024   # one upload/download; a larger file is refused, not streamed through
+READ_CHUNK = 64 * 1024
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+class Forbidden(Exception):
+    """A path or origin the bridge refuses to touch."""
+
+
+class LengthRequired(Exception):
+    """An upload without Content-Length, which this API requires so the size is bounded before reading."""
+
+
+class TooLarge(Exception):
+    """A file over MAX_FILE, in either direction."""
+
+
+def session_path(cwd: str, rel: str) -> tuple[str, str]:
+    """(absolute resolved path, normalised relative path) for a file under a session's cwd.
+
+    Absolute paths and any `..` component are refused before joining. The joined path is then resolved
+    with realpath() and checked again: that is what stops a symlink inside the cwd (as a directory or as
+    the file itself) from reaching outside it. realpath() also normalises the final path used for open(),
+    so the check and the use agree. A race remains between the check and open().
+    """
+    if not isinstance(rel, str) or not rel.strip():
+        raise ValueError("path is required")
+    if "\x00" in rel:
+        raise ValueError("path contains a NUL byte")
+    norm = rel.replace("\\", "/")           # accept Windows-style separators from a browser
+    if norm.startswith("/") or os.path.isabs(rel) or os.path.splitdrive(norm)[0] or re.match(r"^[A-Za-z]:", norm):
+        raise Forbidden("absolute paths are not allowed")
+    parts = [p for p in norm.split("/") if p not in ("", ".")]
+    if not parts:
+        raise ValueError("path is required")
+    if ".." in parts:
+        raise Forbidden("'..' is not allowed in a path")
+    root = os.path.realpath(cwd)
+    target = os.path.realpath(os.path.join(root, *parts))
+    try:
+        inside = os.path.commonpath([root, target])
+    except ValueError:                      # different drives on Windows
+        inside = None
+    if inside is None or os.path.normcase(inside) != os.path.normcase(root):
+        raise Forbidden("path leaves the session directory")
+    return target, "/".join(parts)
 
 
 def host_only(hostport: str) -> str:
@@ -106,9 +153,9 @@ class App:
     def __init__(self, pi_cmd, peer_port=None, state_dir=None, name="bridge", gate=None):
         self.gate = gate          # unix socket of sbx-session-gate, or None
         self.ui_dir = None                # directory served at /ui/
-        self.reg = Registry(pi_cmd)
-        self.peer_port = peer_port
         self.state_dir = state_dir or tempfile.mkdtemp(prefix="pi-bridge-")
+        self.reg = Registry(pi_cmd, self.state_dir)
+        self.peer_port = peer_port
         self.me = PR.load_identity(self.state_dir, name)
         self.store = PR.PeerStore(self.state_dir)
         self.inbox = P.Inbox()
@@ -187,6 +234,12 @@ def make_handler(app: App):
                 self._dispatch(method, u.path.rstrip("/") or "/", parse_qs(u.query))
             except KeyError as e:
                 self._json(404, {"error": str(e).strip("'")})
+            except Forbidden as e:
+                self._json(403, {"error": str(e)})
+            except LengthRequired as e:
+                self._json(411, {"error": str(e)})
+            except TooLarge as e:
+                self._json(413, {"error": str(e)})
             except RpcError as e:
                 self._json(502, {"error": str(e)})
             except (ValueError, TypeError) as e:
@@ -232,6 +285,61 @@ def make_handler(app: App):
             if app.peer_port is None:
                 raise ValueError("peer messaging is disabled; start the bridge with --peers")
 
+        def _upload(self, s, rel):
+            target, shown = session_path(s.cwd, rel)
+            raw_len = self.headers.get("Content-Length")
+            if raw_len is None:
+                raise LengthRequired("Content-Length is required")
+            try:
+                n = int(raw_len)
+            except ValueError:
+                raise ValueError("bad Content-Length")
+            if n < 0:
+                raise ValueError("bad Content-Length")
+            if n > MAX_FILE:
+                raise TooLarge("file is larger than %d bytes" % MAX_FILE)
+            if os.path.isdir(target):
+                raise ValueError("path is a directory")
+            parent = os.path.dirname(target)
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError as e:
+                raise ValueError("cannot create directory: %s" % e)
+            left = n
+            try:
+                with open(target, "wb") as f:
+                    while left:
+                        chunk = self.rfile.read(min(READ_CHUNK, left))
+                        if not chunk:
+                            raise ValueError("request body ended early")
+                        f.write(chunk)
+                        left -= len(chunk)
+            except OSError as e:
+                raise ValueError("cannot write %s: %s" % (shown, e))
+            return self._json(201, {"path": shown, "bytes": n})
+
+        def _download(self, s, rel):
+            target, _ = session_path(s.cwd, rel)
+            if os.path.isdir(target):
+                raise ValueError("path is a directory")
+            if not os.path.isfile(target):
+                raise KeyError("no such file")
+            try:
+                if os.path.getsize(target) > MAX_FILE:
+                    raise TooLarge("file is larger than %d bytes" % MAX_FILE)
+                with open(target, "rb") as f:
+                    raw = f.read(MAX_FILE + 1)
+            except OSError as e:
+                raise ValueError("cannot read file: %s" % e)
+            if len(raw) > MAX_FILE:            # the file grew between the size check and the read
+                raise TooLarge("file is larger than %d bytes" % MAX_FILE)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(raw)
+
         def _dispatch(self, m, p, q):
             if p == "/health" and m == "GET":
                 return self._json(200, {"ok": True, "app": P.APP, "version": P.VERSION, "instance": app.me["instance"],
@@ -256,6 +364,19 @@ def make_handler(app: App):
             mm = re.fullmatch(r"/sessions/" + SID, p)
             if mm and m == "DELETE":
                 return self._json(200, {"removed": app.reg.remove(mm.group(1))})
+            mm = re.fullmatch(r"/sessions/" + SID + r"/files", p)
+            if mm:
+                s = self._session(mm.group(1))
+                rel = (q.get("path") or [""])[0]
+                if m == "POST":
+                    try:
+                        return self._upload(s, rel)
+                    except (Forbidden, LengthRequired, TooLarge, ValueError):
+                        # The body was not consumed, so this connection cannot be reused for another request.
+                        self.close_connection = True
+                        raise
+                if m == "GET":
+                    return self._download(s, rel)
             mm = re.fullmatch(r"/sessions/" + SID + r"/(command|ui-response|events|stderr)", p)
             if mm:
                 s, what = self._session(mm.group(1)), mm.group(2)
@@ -337,7 +458,7 @@ def main(argv=None) -> int:
     ap.add_argument("--listen", default="127.0.0.1:9760")
     ap.add_argument("--pi-bin", default=os.environ.get("PI_BIN", "pi"))
     ap.add_argument("--pi-arg", action="append", default=[], help="extra argument for pi (repeatable)")
-    ap.add_argument("--state-dir", default="~/.pi-bridge", help="identity and paired-peer keys")
+    ap.add_argument("--state-dir", default="~/.pi-bridge", help="identity, paired-peer keys and session records")
     ap.add_argument("--gate-socket", default=None,
                     help="sbx-session-gate socket; each new session first forces the session firewall profile, "
                          "and a session is not started if that fails")

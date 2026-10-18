@@ -1,12 +1,16 @@
+import http.client
 import json
 import os
+import signal
 import socketserver
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -34,6 +38,33 @@ def serve(server):
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return "http://127.0.0.1:%d" % server.server_address[1]
+
+
+def raw(base, path, method="GET", data=None, headers=None, timeout=15):
+    """Like req(), but leaves the body as bytes (uploads and downloads are not JSON)."""
+    r = urllib.request.Request(base + path, data=data, method=method, headers=headers or {})
+    try:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            return resp.status, resp.headers, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def wait_for(pred, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return False
 
 
 class Allow:
@@ -136,6 +167,109 @@ class Local(unittest.TestCase):
         c, r = req(base, "/peers")
         self.assertEqual(c, 400)
         self.assertIn("disabled", r["error"])
+
+
+class Files(unittest.TestCase):
+    """POST/GET /sessions/{id}/files, scoped to the session's cwd."""
+
+    def setUp(self):
+        self.n = Node(self, "files")
+        self.base = self.n.api
+        self.cwd = tempfile.mkdtemp()
+        c, s = req(self.base, "/sessions", "POST", {"cwd": self.cwd})
+        self.assertEqual(c, 201)
+        self.sid = s["id"]
+
+    def files(self, rel):
+        return "/sessions/%s/files?path=%s" % (self.sid, urllib.parse.quote(rel, safe=""))
+
+    def put(self, rel, data, headers=None):
+        h = {"Content-Type": "application/octet-stream"}
+        h.update(headers or {})
+        return raw(self.base, self.files(rel), "POST", data, h)
+
+    def get(self, rel, headers=None):
+        return raw(self.base, self.files(rel), headers=headers)
+
+    def test_upload_then_download(self):
+        body = b"hello files\n"
+        c, _, r = self.put("notes/hello.txt", body)
+        self.assertEqual(c, 201)
+        self.assertEqual(json.loads(r), {"path": "notes/hello.txt", "bytes": len(body)})
+        with open(os.path.join(self.cwd, "notes", "hello.txt"), "rb") as f:
+            self.assertEqual(f.read(), body)
+        c, h, got = self.get("notes/hello.txt")
+        self.assertEqual((c, got), (200, body))
+        self.assertEqual(h["Content-Type"], "application/octet-stream")
+        self.assertEqual(int(h["Content-Length"]), len(body))
+        # A second write replaces the file; the size reported is the new body's.
+        c, _, r = self.put("notes/hello.txt", b"second")
+        self.assertEqual((c, json.loads(r)["bytes"]), (201, 6))
+        self.assertEqual(self.get("notes/hello.txt")[2], b"second")
+
+    def test_paths_outside_the_session_are_refused(self):
+        parent_escape = os.path.join(os.path.dirname(self.cwd), "escape.txt")
+        for rel in ("../escape.txt", "notes/../../escape.txt", "/etc/passwd", "..\\escape.txt",
+                    "C:\\Windows\\win.ini"):
+            c, _, body = self.put(rel, b"x")
+            self.assertIn(c, (400, 403), (rel, body))
+            c, _, _ = self.get(rel)
+            self.assertIn(c, (400, 403), rel)
+        self.assertFalse(os.path.exists(parent_escape))
+
+    def test_symlink_escapes_are_refused(self):
+        outside = tempfile.mkdtemp()
+        secret = os.path.join(outside, "secret.txt")
+        with open(secret, "wb") as f:
+            f.write(b"secret")
+        try:
+            os.symlink(outside, os.path.join(self.cwd, "link"))
+            os.symlink(secret, os.path.join(self.cwd, "leaf"))
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not available here")
+        self.assertEqual(self.put("link/new.txt", b"x")[0], 403)
+        self.assertFalse(os.path.exists(os.path.join(outside, "new.txt")))
+        self.assertEqual(self.get("link/secret.txt")[0], 403)
+        self.assertEqual(self.put("leaf", b"overwrite")[0], 403)
+        self.assertEqual(self.get("leaf")[0], 403)
+        with open(secret, "rb") as f:
+            self.assertEqual(f.read(), b"secret")
+
+    def test_missing_files_and_bad_requests(self):
+        self.assertEqual(raw(self.base, "/sessions/%s/files" % self.sid)[0], 400)      # no path
+        self.assertEqual(self.get("nope.txt")[0], 404)
+        self.assertEqual(raw(self.base, "/sessions/aaaaaaaaaaaa/files?path=x")[0], 404)
+        os.makedirs(os.path.join(self.cwd, "dir"))
+        self.assertEqual(self.get("dir")[0], 400)
+        self.assertEqual(self.put("dir", b"x")[0], 400)
+
+    def test_host_and_origin_checks_apply(self):
+        self.assertEqual(self.put("x.txt", b"x", {"Host": "evil.example"})[0], 403)
+        self.assertEqual(self.get("x.txt", {"Host": "evil.example"})[0], 403)
+        self.assertEqual(self.put("x.txt", b"x", {"Origin": "https://evil.example"})[0], 403)
+
+    def _headers_only_post(self, path, headers):
+        conn = http.client.HTTPConnection(self.base.split("//")[1], timeout=10)
+        try:
+            conn.putrequest("POST", path)
+            for k, v in headers.items():
+                conn.putheader(k, v)
+            conn.endheaders()
+            r = conn.getresponse()
+            return r.status, r.read()
+        finally:
+            conn.close()
+
+    def test_content_length_is_required_and_capped(self):
+        c, _ = self._headers_only_post(self.files("x.txt"), {"Connection": "close"})
+        self.assertEqual(c, 411)
+        c, _ = self._headers_only_post(self.files("big.bin"),
+                                       {"Content-Length": str(S.MAX_FILE + 1), "Connection": "close"})
+        self.assertEqual(c, 413)
+        self.assertFalse(os.path.exists(os.path.join(self.cwd, "big.bin")))
+        with open(os.path.join(self.cwd, "huge.bin"), "wb") as f:
+            f.truncate(S.MAX_FILE + 1)          # sparse; only its size matters
+        self.assertEqual(self.get("huge.bin")[0], 413)
 
 
 class Ui(unittest.TestCase):
@@ -279,6 +413,141 @@ class FirewallLockdown(unittest.TestCase):
         c, s = req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})
         self.assertEqual(c, 201)
         self.assertNotIn("firewall", s)
+
+
+@unittest.skipUnless(hasattr(os, "mkfifo"), "session reattach needs POSIX FIFOs")
+class Persistence(unittest.TestCase):
+    """A bridge process dies; a new registry rebuilds from sessions.json."""
+
+    def start_bridge_in_a_child(self):
+        """Create one session from a separate process, then let the caller kill that process.
+
+        A real SIGKILL is what makes this a restart test: the record on disk says "alive", and the Pi
+        child survives because its FIFO stdio does not go away with the bridge.
+        """
+        state = tempfile.mkdtemp()
+        ready = os.path.join(state, "ready.json")
+        script = (
+            "import json, sys, tempfile, time\n"
+            "sys.path.insert(0, %r)\n"
+            "import server as S\n"
+            "app = S.App(%r, state_dir=%r, name='restart')\n"
+            "s = app.reg.create(tempfile.gettempdir(), 'persisted')\n"
+            "with open(%r, 'w') as f:\n"
+            "    json.dump({'id': s.id, 'pid': s.pid, 'channel': s.channel}, f)\n"
+            "time.sleep(60)\n"
+        ) % (os.path.dirname(HERE), FAKE, state, ready)
+        p = subprocess.Popen([sys.executable, "-B", "-c", script],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self._stop_child, p)
+        if not wait_for(lambda: self._read_json(ready) is not None):
+            p.kill()
+            self.fail("child bridge did not create a session")
+        d = self._read_json(ready)
+        self.addCleanup(self._kill, d["pid"])
+        return state, p, d
+
+    @staticmethod
+    def _read_json(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _kill(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    def _stop_child(self, p):
+        if p.poll() is None:
+            p.kill()
+        p.wait(5)
+
+    def records(self, state):
+        with open(os.path.join(state, "sessions.json")) as f:
+            return json.load(f)["sessions"]
+
+    def reopen(self, state):
+        app = S.App(FAKE, state_dir=state, name="restart")
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app))
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(app.reg.stop_all)
+        return app, serve(srv)
+
+    def test_restart_reattaches_a_live_pi(self):
+        state, child, d = self.start_bridge_in_a_child()
+        child.kill()
+        child.wait(5)
+        self.assertTrue(pid_alive(d["pid"]))                # the Pi outlived the bridge
+
+        app, base = self.reopen(state)
+        s = app.reg.get(d["id"])
+        self.assertIsNotNone(s)                             # it did not silently vanish
+        self.assertEqual((s.info()["alive"], s.info()["state"], s.info()["pid"]), (True, "alive", d["pid"]))
+        self.assertEqual([x["id"] for x in req(base, "/sessions")[1]], [d["id"]])
+
+        c, r = req(base, "/sessions/%s/command" % d["id"], "POST", {"type": "prompt", "message": "after restart"})
+        self.assertEqual((c, r["success"]), (200, True))
+        msgs = req(base, "/sessions/%s/command" % d["id"], "POST", {"type": "get_messages"})[1]["data"]["messages"]
+        self.assertEqual(msgs[0]["text"], "after restart")   # the reattached process is really the old Pi
+
+        rec = next(x for x in self.records(state) if x["id"] == d["id"])
+        self.assertEqual(rec["state"], "alive")
+        self.assertEqual(rec["pid"], d["pid"])
+        for key in ("cwd", "name", "created_at", "state_dir", "channel"):
+            self.assertIn(key, rec)
+        self.assertEqual(os.path.realpath(rec["state_dir"]), os.path.realpath(state))
+
+        self.assertEqual(req(base, "/sessions/%s" % d["id"], "DELETE")[0], 200)
+        self.assertEqual(req(base, "/sessions")[1], [])
+        self.assertEqual(self.records(state), [])            # deleting removes the record
+        self.assertTrue(wait_for(lambda: not pid_alive(d["pid"])))   # and stops the Pi it described
+        for fifo in rec["channel"].values():
+            self.assertFalse(os.path.exists(fifo))
+
+    def test_restart_lists_a_session_whose_pi_died(self):
+        state, child, d = self.start_bridge_in_a_child()
+        child.kill()
+        child.wait(5)
+        os.kill(d["pid"], signal.SIGKILL)
+        self.assertTrue(wait_for(lambda: not pid_alive(d["pid"])))
+
+        app, base = self.reopen(state)
+        s = app.reg.get(d["id"])
+        self.assertIsNotNone(s)
+        self.assertEqual((s.info()["alive"], s.info()["state"], s.info()["pid"]), (False, "dead", d["pid"]))
+        listed = req(base, "/sessions")[1]
+        self.assertEqual([(x["id"], x["alive"], x["state"]) for x in listed], [(d["id"], False, "dead")])
+        c, r = req(base, "/sessions/%s/command" % d["id"], "POST", {"type": "get_state"})
+        self.assertEqual(c, 502)
+        self.assertIn("gone", r["error"])
+
+        rec = next(x for x in self.records(state) if x["id"] == d["id"])
+        self.assertEqual(rec["state"], "dead")
+        self.assertNotIn("channel", rec)                     # an unusable channel is not advertised
+        for fifo in d["channel"].values():
+            self.assertFalse(os.path.exists(fifo))
+        self.assertEqual(req(base, "/sessions/%s" % d["id"], "DELETE")[0], 200)
+        self.assertEqual(req(base, "/sessions")[1], [])
+        self.assertEqual(self.records(state), [])
+
+
+    def test_clean_shutdown_keeps_the_record_as_dead(self):
+        state = tempfile.mkdtemp()
+        app = S.App(FAKE, state_dir=state, name="restart")
+        s = app.reg.create(tempfile.gettempdir(), "stopped")
+        app.reg.stop_all()                                   # what SIGTERM does to the service
+        again = S.App(FAKE, state_dir=state, name="restart")
+        self.addCleanup(again.reg.stop_all)
+        info = again.reg.get(s.id).info()
+        self.assertEqual((info["alive"], info["state"]), (False, "dead"))
+        rec = next(x for x in self.records(state) if x["id"] == s.id)
+        self.assertEqual(rec["state"], "dead")
+        self.assertNotIn("channel", rec)
 
 
 class Peering(unittest.TestCase):

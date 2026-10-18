@@ -14,6 +14,14 @@ Environment=HOME=/var/lib/pi-bridge PI_OFFLINE=1 PI_TELEMETRY=0 PI_SKIP_VERSION_
 ExecStartPre=+/usr/local/bin/sbx-fetch-secrets
 EnvironmentFile=-/run/sbx/secrets.env
 ExecStart=/usr/bin/python3 -B /opt/pi-bridge/server.py --pi-bin /usr/local/bin/pi --listen 127.0.0.1:9760 --state-dir /var/lib/pi-bridge/state --gate-socket /run/sbx-gate/gate.sock
+# Sessions survive a restart of this unit. The default KillMode=control-group
+# would take every Pi down with the bridge, which makes the session records
+# pointless; with `process` the children keep running and the restarted bridge
+# reattaches to them over their FIFOs (requiring a real get_state reply before
+# it calls one alive). `systemctl stop pi-bridge` therefore leaves the Pi
+# processes up by design — delimit them with `systemctl kill -s TERM pi-bridge`
+# or by deleting the sessions through the API.
+KillMode=process
 Restart=on-failure
 NoNewPrivileges=yes
 ProtectSystem=strict
