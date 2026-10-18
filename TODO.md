@@ -29,7 +29,7 @@ Last updated 2026-10-18 (branch `desk-tools`). `main` is the last settled state;
   Also on the branch: 7 Tailscale (pinned 1.104.1, hardened unit, no key in the image, the `tailscale0` peer rule in the console's
   generator), 8 the per-tool `net` flag, 9 the reset hooks (`sbx-reboot-and-wait`, `sbx-channel`, `sbx-reset`), 10 bridge session
   persistence (FIFO stdio + `sessions.json`, real reattach after a `get_state` round trip; `KillMode=process` in the unit so
-  sessions outlive a restart) and file uploads/downloads with a resolved-path containment check, 6 the `rsync` tool (dry-run
+  sessions outlive a restart) file uploads/downloads with a resolved-path containment check, 6 the `rsync` tool (dry-run
   default, sandbox-side allowlist, refused as a Pi extension because that would put a network primitive in `pibridge`).
   Not verified on a VM: this whole list needs an image rebuild and one smoke run.
 
@@ -46,12 +46,10 @@ Last updated 2026-10-18 (branch `desk-tools`). `main` is the last settled state;
    - **Firewall console as a module:** built (branch `worktree-agent-aab33566b7ec07002`, not merged). It needs the bridge to proxy `/fw/...` with the
      console token, which would let Pi edit its own firewall rules. Needs a design where Pi cannot reach the proxy.
    - Directories: add `GET /dirs` so folders without sessions appear. Inspector: a bridge endpoint that forks into a new session.
-4. **Log everything to Loom from the bridge.** Loom keeps only the last user message and first assistant reply per `/log` call, so tool calls and
-   thinking never get in. The bridge sees every Pi event and can post after each `agent_settled`.
-   - **Request inspector raw view:** Pi's RPC does not expose the provider request. Likely route: a recording proxy in the bridge that Pi's provider
-     base URL points at (also the raw feed for Loom). Redact `Authorization`; the real key stays server-side. Re-run goes through Pi (fork).
 5. **Loom:** merge `memgate-support` into `main`; add the `events`/`blobs` tables and wire `harness/redact/output_redactor.py`; then memgate
    (spec `Downloads\MEMGATE_SPEC.md`; settle window scoring, the sensitive flag versus auto-write, and the calibration harness first).
+   - **Request inspector raw view:** Pi's RPC does not expose the provider request. Likely route: a recording proxy in the bridge that Pi's provider
+     base URL points at (also the raw feed for Loom). Redact `Authorization`; the real key stays server-side. Re-run goes through Pi (fork).
 11. **Independent security review** of the gateway design and of the UI engine's sandboxing (a larger model or a human).
 12. Run the two-VM layout on Proxmox (isolated bridge for the sandbox VM). Not tried: Linux/KVM host build, VirtualBox/OVA, UEFI boot.
 13. Housekeeping: large temp files in the session scratchpad; delete the cosmic-comp and webamp forks and the old ai-stack and ORMCP repos on GitHub (then
