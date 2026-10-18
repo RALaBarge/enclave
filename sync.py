@@ -79,9 +79,17 @@ for name in tools:
         problems.append(f"missing contract:     {os.path.relpath(hdir, ROOT)}/tcs.yaml")
     else:
         problems.extend(contract_problems(os.path.relpath(tcs, ROOT)))
+        stub = os.path.join(ROOT, "harness", "stub", "run.py")
+        copy = os.path.join(hdir, "run.py")
         if not check_only:
-            shutil.copyfile(os.path.join(ROOT, "harness", "stub", "run.py"),
-                            os.path.join(hdir, "run.py"))
+            shutil.copyfile(stub, copy)
+        elif not os.path.isfile(copy) or open(copy, "rb").read() != open(stub, "rb").read():
+            # A copy that has drifted from the stub is a tool running edited
+            # code that nobody reviewed as a stub change. --check is what CI
+            # runs, so it has to notice.
+            problems.append(
+                f"stub out of date:    {os.path.relpath(copy, ROOT)} differs from "
+                f"harness/stub/run.py (run `python sync.py`)")
 
 hroot = os.path.join(ROOT, "harness", "tools")
 for d in sorted(os.listdir(hroot)):
