@@ -1,6 +1,6 @@
 # Enclave: status, tasks, decisions
 
-Last updated 2026-10-16. `main` is the last settled state; work happens on short-lived branches.
+Last updated 2026-10-18. `main` is the last settled state; work happens on short-lived branches.
 
 ## Done
 
@@ -49,6 +49,16 @@ Last updated 2026-10-16. `main` is the last settled state; work happens on short
     the local clones); unpushed local branches `fw-profiles`, `gateway-firewall`, `session-lockdown`.
 14. Open: keep enclave private (recommended; pinning on GitHub needs public, which first needs a secret/PII scan).
 
+Tools/desk track (15–20; 15–17 before 6. Nothing is served by the desk until 15 lands):
+
+15. **Run DeskBox as a service and deploy tools into it.** Today the binary is installed and `/opt/deskbox/tools` is empty: no unit, no `.env`, and nothing copies `harness/tools/<name>-sbx/` there — `sync.py` only writes the stub into the repo, and SETUP.md deploys `tools.list` and `sbx/tools/<name>` only. Add a `deskbox.service` (`-strict`; the image has bwrap and systemd-run), a `deskbox.yaml`/`.env` with `-tools /opt/deskbox/tools`, and a `sync.py` deploy step that installs the stub, the `tcs.yaml` and its `integrity.run_sha256` pin. Smoke test: `GET /` reports `strict: true, sandbox: true, seccomp: true`, and a `greet-sbx` call returns through desk → stub → broker → sandbox.
+   - **Its own account.** `deskbox` (system user, `nologin`), owning `/opt/deskbox/tools` at 0700 and `/var/lib/deskbox`, `User=deskbox` in the unit, `NoNewPrivileges=yes`/`ProtectSystem=strict`/`CapabilityBoundingSet=` like the other four services, and no read on `/run/sbx/secrets.env` or `/etc/sbx/id_ed25519`. This is what makes the run-script permission a real boundary: while the desk and Pi share `pibridge`, `chmod 700` means nothing because the owner is both. It does not gate the broker — loopback accepts any uid — so pair it with task 16 (group-owned socket, `root:deskbox 0660`), or Pi still calls `:8099` around the desk.
+16. **Broker on a unix socket, stubs `network: false`.** Every `-sbx` stub declares `network: true` only because it posts to `127.0.0.1:8099`, and DeskBox's `network: true` is all-or-nothing host egress — so the desk's own job has the core's full internet, which is the one path where the core firewall has no say. Needs: broker listening on a stream socket, the stub talking to it over `http.client` (urllib has no unix-socket transport), and a DeskBox feature to bind a host path into the job's bwrap, since today only declared `in/` files and the tool's own dir are bound. Until then the contract in `harness/tools/*-sbx/tcs.yaml` overstates what the sandbox holds.
+17. **Harness → tools adapter, generated from `GET /tools`.** MCP declined (see Decisions); the replacement is one small adapter per harness that reads `/tools` (already JSON Schema) and emits that harness's tool definitions. Do Pi first, then the second harness reuses it — this is what keeps "no per-harness tool code" true without MCP.
+18. **Session gate out of pi-bridge.** Firewall-profile forcing and the tighten-only token live in the bridge, so any other harness in the core gets no lockdown at all. Extract into one small service any bridge calls; then `pi-bridge` is session gate + tool adapter + UI shim, and harness #2 doesn't get its own copy of the lockdown guarantee to get wrong.
+19. **One sandbox lane.** `sbx-broker` holds a global lock and runs `SBX_RESET_CMD` after every job, so N harnesses serialize on one sandbox. Decide before harness #2: accept serialization, or a small pool (which needs the reset hooks from task 9, still unshipped).
+20. **Write down what a harness must lose to be admitted.** The desk is a contract/audit/durability layer, not a jail: anything in the core can reach `127.0.0.1:8099` and `/etc/sbx/id_ed25519` directly, so enforcement is the VM split. Admitting a harness means its built-in exec tools (bash/read/write/edit) are disabled and rerouted through the desk — per-harness removal work, not a plugin-parity check. Write the criterion before counting a second harness as cheap.
+
 ## Decisions
 
 Made (2026-10-15):
@@ -66,6 +76,13 @@ Made (2026-10-15):
 | DeskBox licence | MIT (decided Oct 15; DeskBox relicensed in `e6fd82f`, pin updated) |
 | NAS sync | `robocopy /MIR`; no rsync install |
 | Request inspector re-run | Through Pi: fork the session at the step and run the edited request in the fork |
+
+Made (2026-10-18):
+
+| Decision | Answer |
+|---|---|
+| MCP | Declined. It does not move the enforcement floor — that is contract + bwrap + the VM split, all below the protocol. Against that it makes the tool surface dynamic prompt text served at runtime instead of pinned files (`integrity.run_sha256`), and makes "trust a stranger's tool server" one config line in a core that holds keys. Harness adapters generate from `GET /tools` instead (task 17). If MCP is ever revisited: one long-lived server on a unix socket, never stdio-per-client, which would fork the desk into one instance per harness session. |
+| Where tools live | On disk under `sbx/tools/<name>/run` + `harness/tools/<name>-sbx/tcs.yaml`, with the desk as the only executor. "Agents refer to them directly" must mean a generated tool definition that calls the desk, not the agent exec'ing the run script — the latter drops the contract and the sandbox at once. |
 
 Still open:
 
