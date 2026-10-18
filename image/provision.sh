@@ -121,6 +121,7 @@ install -m 755 "$HERE/artifacts/tcs-shim" /usr/bin/tcs-shim    # shimmed tools e
 python3 "$ROOT/sync.py" --deploy /opt/deskbox/tools
 chown -R deskbox:deskbox /opt/deskbox/tools
 install -m 644 "$ROOT/harness/systemd/deskbox.service" /etc/systemd/system/
+install -m 755 "$HERE/deskbox-run.sh" /usr/local/bin/deskbox-run
 # The desk runs -strict, and its per-job memory/task limits go through
 # `systemd-run --user --scope`: that needs this account's own session bus to
 # exist without a login, which is what linger buys.
