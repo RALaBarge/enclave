@@ -16,10 +16,21 @@ td{padding:6px;border-top:1px solid var(--bd);word-break:break-word}
 
 let sessions = [], err = "";
 
+// A refused session is one the bridge will not reattach: its cwd is outside the
+// --cwd-root list, so it is listed rather than silently dropped. Say that in
+// the row, with the reason underneath, so the operator sees "add a root"
+// instead of a bare "exited null".
+const stateCell = (s) => {
+  if (s.state === "refused") {
+    return ["td", { c: "bad" }, ["div", {}, "refused"], ["div", { c: "mut" }, s.reason || ""]];
+  }
+  return ["td", { c: s.alive ? "ok" : "bad" }, s.alive ? "running" : "exited " + s.exit_code];
+};
+
 const row = (s) => ["tr", {},
   ["td", {}, s.name || ["span", { c: "mut" }, "(unnamed)"]],
   ["td", { c: "mono" }, s.cwd],
-  ["td", { c: s.alive ? "ok" : "bad" }, s.alive ? "running" : "exited " + s.exit_code],
+  stateCell(s),
   ["td", {}, ["button", { c: "p", on: "open", d: s.id, disabled: !s.alive }, "Open"], " ",
     ["button", { c: "d", on: "remove", d: s.id }, "Remove"]]];
 
