@@ -76,6 +76,11 @@ All three are local to the VM.
   before starting Pi, and refuses to start a session if it cannot. Only the gate can read `/etc/sbxfw/tighten-token`, and the only
   action it exposes is "make sure the session profile is active" — there is no endpoint that loosens anything.
 
+The bridge can also log each settled turn to Loom: start it with `--loom-url http://127.0.0.1:9741` (off by default, and the
+shipped unit does not set it). Each turn goes to `/log` as one assistant message holding the assistant text, the tool calls and
+results, and any Pi event the bridge does not recognise. One message is deliberate: `/log` stores only the last user message and
+the first assistant content, so splitting the transcript across messages would record turns that never happened.
+
 **One lane for every harness.** All broker callers share one serial lane: a job runs, `SBX_RESET_CMD` runs, then
 the next starts. A call arriving while a job runs waits in order for up to `SBX_QUEUE_WAIT_S`; if `SBX_QUEUE_MAX`
 callers already wait, or that wait expires, the broker answers `503` (`lane_busy`, with `queued`/`depth_max`) instead

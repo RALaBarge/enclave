@@ -216,6 +216,10 @@ id pibridge &>/dev/null || useradd --system --home /var/lib/pi-bridge --create-h
 install -d -o pibridge -g pibridge /var/lib/pi-bridge/work /var/lib/pi-bridge/state
 install -d /opt/pi-bridge
 for f in pairing peers pibridge server; do install -m 644 "$ROOT/harness/bridge/$f.py" /opt/pi-bridge/; done
+# The bridge imports the redactor from ./redact next to itself (or ../redact in the
+# repo). Without the file, --loom-url refuses to post rather than storing raw text.
+install -d /opt/pi-bridge/redact
+install -m 644 "$ROOT/harness/redact/output_redactor.py" /opt/pi-bridge/redact/
 install -d /opt/pi-bridge/ui/modules
 for f in index.html view.js host.js worker.js modules/modules.json modules/sessions.js modules/chat.js modules/dirs.js modules/tree.js modules/inspect.js; do install -m 644 "$ROOT/harness/ui/$f" "/opt/pi-bridge/ui/$f"; done
 install -m 644 "$ROOT/harness/systemd/pi-bridge.service" /etc/systemd/system/

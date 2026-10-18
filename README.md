@@ -46,7 +46,7 @@ Then follow `image/SETUP.md`. On the core: `sudo sbx-mode box`, `sudo sbx-smoke-
 
 ```
 python console/test_console.py                           # 32 tests
-python -B -m unittest discover -s harness/bridge/tests    # 24 tests
+python -B -m unittest discover -s harness/bridge/tests    # 39 tests
 python -B -m unittest discover -s harness/gate            # 6 tests, Linux (AF_UNIX + grp)
 bash console/test_netns.sh                               # 28 checks, real nftables, throwaway namespaces (WSL/Linux, root)
 ```

@@ -6,6 +6,7 @@ machines over Tailscale. The web UI in `../ui` is a client of these endpoints. P
 ```
 python server.py --pi-bin /usr/local/bin/pi     # API on 127.0.0.1:9760
 python server.py --peers                        # also talk to your other machines over the tailnet
+python server.py --loom-url http://127.0.0.1:9741   # also log every settled turn to Loom
 python -B -m unittest discover -s tests         # uses a fake Pi
 ```
 
@@ -71,6 +72,44 @@ process that can rewrite the session's filesystem during a request could still w
 loopback-only; this is not a sandbox.
 
 Host and Origin checks apply to both routes like every other local route.
+
+## Loom (`--loom-url`)
+
+Off by default. With `--loom-url http://127.0.0.1:9741`, each settled turn is POSTed once to Loom's
+`POST /log`; `--loom-timeout` (default 5 s) bounds each attempt. A per-session recorder reads the same event ring
+the SSE relay serves, so no SSE client has to be connected for a turn to be logged.
+
+The body is exactly the shape `/log` accepts:
+
+```json
+{
+  "request": {"messages": [{"role": "user", "content": "read the notes"}]},
+  "response": {"choices": [{"message": {"role": "assistant",
+    "content": "Looking at the notes.\ntool: read {\"path\":\"notes.txt\"}\ntool result: read: hello\nunknown event pi_future_event: {\"type\":\"pi_future_event\",\"detail\":{\"n\":1}}"}}]},
+  "metadata": {"conversation_id": "0a1b2c3d4e5f", "provider": "pi", "session_name": "work",
+               "cwd": "/home/sbx/work", "turn_index": 1}
+}
+```
+
+* **The user message** is the last `prompt`/`steer` text the bridge saw for that session (or a `user` message
+  replayed in Pi's events), cut at 16,000 characters. Only that one message is sent; `/log` keeps just the last
+  user entry anyway.
+* **The assistant content is the whole turn, in one message.** Loom's `/log` stores exactly two texts: the last
+  user message and the first assistant `content`; it has no field for tool calls. The recorder therefore renders
+  the transcript as assistant text first, then one line per `tool_execution_start`/`tool_execution_end`
+  (bounded argument and result summaries), then one line per event type this bridge does not know yet
+  (`unknown event <type>: {...}`, bounded JSON). Keeping it all in one assistant message is deliberate: sending
+  tool and unknown-event lines as separate messages would make `/log` store turns that never happened.
+* **Bounds.** Tool argument/result summaries and unknown-event lines are cut at 500–600 characters; the
+  transcript at 120,000.
+* **Redaction.** Before posting, both texts go through `../redact/output_redactor.py` (secret patterns, encoded
+  variants and the high-entropy sweep; its PII patterns are left off so ordinary names and addresses still reach
+  memory). If the redactor raises, the turn is not sent — failing closed beats storing an uninspected secret.
+  It is loaded from `../redact` when the bridge runs from the repo; an install that copies only `server.py` must
+  copy that module beside it (or into `redact/`), otherwise `--loom-url` warns at startup and sends nothing.
+* **Best effort.** One attempt per turn, no retries. A refusal or timeout never touches the session or its SSE
+  stream; the first failure prints one line to stderr and later failures for that session stay silent. Loom is
+  loopback-only and `/log` has no authentication, so keep `--loom-url` pointed at localhost.
 
 ## Peers (`--peers`)
 

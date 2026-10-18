@@ -1,7 +1,10 @@
+import contextlib
 import http.client
+import io
 import json
 import os
 import signal
+import socket
 import socketserver
 import subprocess
 import sys
@@ -78,8 +81,9 @@ class Allow:
 class Node:
     """One bridge instance: local API, peer listener, own state dir."""
 
-    def __init__(self, tc, name, allow=True):
-        self.app = S.App(FAKE, peer_port=1, state_dir=tempfile.mkdtemp(), name=name)
+    def __init__(self, tc, name, allow=True, pi_cmd=None, loom_url=None, loom_timeout=5.0):
+        self.app = S.App(pi_cmd or FAKE, peer_port=1, state_dir=tempfile.mkdtemp(), name=name,
+                         loom_url=loom_url, loom_timeout=loom_timeout)
         self.api = serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(self.app)))
         self.peer = P.make_peer_server("127.0.0.1", 0, self.app.me, self.app.store, self.app.inbox, self.app.nonces, Allow(allow))
         self.port = self.peer.server_address[1]
@@ -311,6 +315,195 @@ class Ui(unittest.TestCase):
         self.assertEqual(self.get("/ui/", {"Host": "evil.example"})[0], 403)
         self.n.app.ui_dir = None
         self.assertEqual(self.get("/ui/")[0], 404)
+
+
+class FakeLoom:
+    """Stands in for Loom's POST /log: records each body, answers with a chosen status."""
+
+    def __init__(self, tc, status=200):
+        outer = self
+        self.posts, self.status = [], status
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                outer.posts.append((self.path, json.loads(self.rfile.read(n) or b"{}")))
+                raw = b'{"id": "x", "stored": true}'
+                self.send_response(outer.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.srv.daemon_threads = True
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        tc.addCleanup(self.srv.shutdown)
+        self.url = "http://127.0.0.1:%d" % self.srv.server_address[1]
+
+
+class LoomLogging(unittest.TestCase):
+    """The bridge posts one turn per settle, in the shape Loom's /log actually stores."""
+
+    # A Pi that produces every shape the recorder has to handle in one turn: streaming assistant
+    # text, a tool call and result, and an event type the bridge does not know.
+    PI = r'''
+import json
+import sys
+
+msgs = []
+
+def out(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin.buffer:
+    cmd = json.loads(line)
+    t, cid = cmd.get("type"), cmd.get("id")
+    if t == "prompt":
+        msgs.append({"role": "user", "text": cmd["message"]})
+        out({"type": "response", "id": cid, "command": t, "success": True})
+        out({"type": "agent_start"})
+        out({"type": "message_update", "assistantMessageEvent": {"delta": "Looking at "}})
+        out({"type": "message_update", "assistantMessageEvent": {"delta": "the notes."}})
+        out({"type": "tool_execution_start", "toolName": "read", "args": {"path": "notes.txt"}})
+        out({"type": "tool_execution_end", "toolName": "read", "output": "hello from the file", "isError": False})
+        out({"type": "pi_future_event", "detail": {"n": 1}})
+        out({"type": "agent_settled"})
+    elif t == "get_messages":
+        out({"type": "response", "id": cid, "command": t, "success": True, "data": {"messages": msgs}})
+    elif t == "get_state":
+        out({"type": "response", "id": cid, "command": t, "success": True, "data": {"model": "scripted"}})
+    else:
+        out({"type": "response", "id": cid, "command": t, "success": False, "error": "unknown " + str(t)})
+'''
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(tempfile.mkdtemp(), "scripted_pi.py")
+        with open(path, "w") as f:
+            f.write(cls.PI)
+        cls.pi = [sys.executable, "-B", path]
+
+    def setUp(self):
+        self.loom = FakeLoom(self)
+        self.n = Node(self, "loom", pi_cmd=self.pi, loom_url=self.loom.url, loom_timeout=1.0)
+        self.base = self.n.api
+        self.cwd = tempfile.mkdtemp()
+        c, s = req(self.base, "/sessions", "POST", {"cwd": self.cwd, "name": "work"})
+        self.assertEqual(c, 201)
+        self.sid = s["id"]
+
+    def prompt(self, text):
+        return req(self.base, "/sessions/%s/command" % self.sid, "POST", {"type": "prompt", "message": text})
+
+    def wait_posts(self, n):
+        self.assertTrue(wait_for(lambda: len(self.loom.posts) >= n, 8), self.loom.posts)
+        return self.loom.posts
+
+    def read_until_settled(self, since):
+        resp = urllib.request.urlopen(self.base + "/sessions/%s/events?since=%d" % (self.sid, since), timeout=10)
+        seen = []
+        try:
+            while True:
+                line = resp.readline().decode()
+                if line.startswith("data: "):
+                    seen.append(json.loads(line[6:]))
+                    if seen[-1]["type"] == "agent_settled":
+                        return seen
+        finally:
+            resp.close()
+
+    def test_settle_posts_one_turn_with_text_tools_and_unknown_events(self):
+        self.assertEqual(self.prompt("read the notes")[0], 200)
+        (path, body), = self.wait_posts(1)
+        self.assertEqual(path, "/log")
+        self.assertEqual(body["request"], {"messages": [{"role": "user", "content": "read the notes"}]})
+        content = body["response"]["choices"][0]["message"]["content"]
+        self.assertIn("Looking at the notes.", content)
+        self.assertIn("tool: read", content)
+        self.assertIn("notes.txt", content)
+        self.assertIn("tool result: read", content)
+        self.assertIn("hello from the file", content)
+        self.assertIn("unknown event pi_future_event", content)          # not dropped silently
+        self.assertLess(content.index("Looking at the notes."), content.index("tool: read"))
+        self.assertLess(content.index("tool: read"), content.index("tool result: read"))
+        self.assertLess(content.index("tool result: read"), content.index("unknown event"))
+        self.assertEqual(set(body), {"request", "response", "metadata"})
+        self.assertEqual(body["metadata"], {
+            "conversation_id": self.sid,
+            "provider": "pi",
+            "session_name": "work",
+            "cwd": self.cwd,
+            "turn_index": 1,
+        })
+        self.assertEqual(len(self.loom.posts), 1)                        # one settle, one turn
+
+    def test_each_turn_uses_the_last_user_message_seen(self):
+        for n, text in enumerate(("first", "second"), 1):
+            self.assertEqual(self.prompt(text)[0], 200)
+            self.wait_posts(n)
+        self.assertEqual([b["request"]["messages"][0]["content"] for _, b in self.loom.posts], ["first", "second"])
+        self.assertEqual([b["metadata"]["turn_index"] for _, b in self.loom.posts], [1, 2])
+
+    def test_loom_500_is_logged_once_and_the_session_keeps_working(self):
+        self.loom.status = 500
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            for n, text in enumerate(("one", "two"), 1):
+                self.assertEqual(self.prompt(text)[0], 200)
+                self.wait_posts(n)
+            self.assertTrue(wait_for(lambda: "Loom at" in buf.getvalue(), 5), buf.getvalue())
+        self.assertEqual(buf.getvalue().count("Loom at"), 1)             # once per session, not per turn
+        self.assertEqual(req(self.base, "/sessions/%s/command" % self.sid, "POST", {"type": "get_state"})[0], 200)
+
+        since = self.n.app.reg.get(self.sid).last_seq()                 # the SSE relay still sees new turns
+        self.assertEqual(self.prompt("three")[0], 200)
+        self.assertEqual([e["type"] for e in self.read_until_settled(since)],
+                         ["agent_start", "message_update", "message_update", "tool_execution_start",
+                          "tool_execution_end", "pi_future_event", "agent_settled"])
+
+    def test_closed_port_is_logged_once_and_the_session_keeps_working(self):
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()                                                    # nothing listens on that port now
+        app = S.App(self.pi, state_dir=tempfile.mkdtemp(), loom_url="http://127.0.0.1:%d" % port, loom_timeout=1.0)
+        self.addCleanup(app.reg.stop_all)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app))
+        self.addCleanup(srv.shutdown)
+        base = serve(srv)
+        sid = req(base, "/sessions", "POST", {"cwd": tempfile.mkdtemp()})[1]["id"]
+        buf = io.StringIO()
+        rec = app.recorders[sid]
+        with contextlib.redirect_stderr(buf):
+            for expected, text in ((1, "one"), (2, "two")):
+                self.assertEqual(req(base, "/sessions/%s/command" % sid, "POST", {"type": "prompt", "message": text})[0], 200)
+                self.assertTrue(wait_for(lambda: rec.failures >= expected, 8), rec.failures)
+            self.assertTrue(wait_for(lambda: "Loom at" in buf.getvalue(), 5), buf.getvalue())
+        self.assertEqual(buf.getvalue().count("Loom at"), 1)
+        self.assertEqual(req(base, "/sessions")[1][0]["alive"], True)
+        self.assertEqual(req(base, "/sessions/%s/command" % sid, "POST", {"type": "get_state"})[0], 200)
+
+    def test_no_loom_url_means_no_recorder_and_no_outbound_call(self):
+        off = Node(self, "off", pi_cmd=self.pi)
+        base = off.api
+        sid = req(base, "/sessions", "POST", {"cwd": tempfile.mkdtemp()})[1]["id"]
+        self.assertIsNone(off.app.loom_url)
+        self.assertEqual(off.app.recorders, {})
+        self.assertEqual(req(base, "/sessions/%s/command" % sid, "POST", {"type": "prompt", "message": "hi"})[0], 200)
+        self.assertTrue(wait_for(lambda: off.app.reg.get(sid).last_seq() >= 7, 5))
+        self.assertEqual(off.app.recorders, {})                          # nothing was set up to call out
+
+    def test_secrets_are_redacted_before_posting(self):
+        secret = "sk-ant-api03-" + "A" * 25
+        self.assertEqual(self.prompt("use " + secret)[0], 200)
+        (_, body), = self.wait_posts(1)
+        self.assertNotIn(secret, json.dumps(body))
+        self.assertIn("[ANTHROPIC_API_KEY_REDACTED]", body["request"]["messages"][0]["content"])
 
 
 class FakeConsole:
