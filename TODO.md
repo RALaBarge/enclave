@@ -29,9 +29,13 @@ Last updated 2026-10-18 (branch `desk-tools`). `main` is the last settled state;
   Also on the branch: 7 Tailscale (pinned 1.104.1, hardened unit, no key in the image, the `tailscale0` peer rule in the console's
   generator), 8 the per-tool `net` flag, 9 the reset hooks (`sbx-reboot-and-wait`, `sbx-channel`, `sbx-reset`), 10 bridge session
   persistence (FIFO stdio + `sessions.json`, real reattach after a `get_state` round trip; `KillMode=process` in the unit so
-  sessions outlive a restart) file uploads/downloads with a resolved-path containment check, 6 the `rsync` tool (dry-run
-  default, sandbox-side allowlist, refused as a Pi extension because that would put a network primitive in `pibridge`).
-  Not verified on a VM: this whole list needs an image rebuild and one smoke run.
+  sessions outlive a restart) and file uploads/downloads with a resolved-path containment check, 6 the `rsync` tool (dry-run
+  default, sandbox-side allowlist, refused as a Pi extension because that would put a network primitive in `pibridge`), 4 Loom
+  logging (`--loom-url`, one assistant message per turn with tool and unknown-event lines, redaction first and fail-closed).
+  Verified on Linux (WSL, real bwrap + seccomp, deskbox built from the pin): a tool declaring `sandbox.bind` reached a host unix
+  socket from inside the job and returned its reply with `network: false` in force; the same tool with the bind removed failed to
+  connect; a bind with `dst: /etc/passwd` was refused at load. Every other suite is green here (gate 6, bridge 39, adapter 25,
+  broker 11, rsync 52, console 32). Not verified on a VM: this whole list needs an image rebuild and one smoke run.
 
 ## Tasks left, roughly in order
 
