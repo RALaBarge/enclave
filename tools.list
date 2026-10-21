@@ -5,6 +5,10 @@
 #        network tool can reach is still decided by the core's firewall. The
 #        console writes a timeout explicitly; `name net` is also accepted.
 #
+# Never give `net` to a tool that runs code it is handed: an interpreter, a shell,
+# a test runner, a build or a package manager. That is code execution plus an
+# exit, and this file is where the review that prevents it happens.
+#
 # Disable a tool by commenting it out:  # off: name [timeout_seconds] [net]
 #
 # Add a tool:

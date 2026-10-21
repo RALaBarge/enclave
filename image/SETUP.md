@@ -36,7 +36,9 @@
 This VM is the sandbox's **gateway**. The rules apply to traffic the sandbox sends *through* this VM (arriving on `eth1`, the private
 link). The fresh install forwards **nothing**. This VM's own traffic is not restricted by them.
 
-**Two profiles, one active at a time.** `session` is what the agent may reach while it works (for example your LLM API host).
+**Two profiles, one active at a time.** `session` is what the sandbox may reach while the agent works, and it starts and should usually stay empty. The model is
+called from this VM, not from the sandbox, so the sandbox never needs your LLM API host: every allowed host is somewhere a
+tool can send data.
 `build` is wider, for installing things (package registries, git hosts). Each profile has an **allow list** and a **block list**; a block
 always wins over an allow, so you can allow a whole range and carve out one host (say the cloud metadata address). In the **Firewall** tab:
 
@@ -49,7 +51,6 @@ always wins over an allow, so you can allow a whole range and carve out one host
 
 | Example allow        | Port | Why                         |
 |----------------------|------|-----------------------------|
-| your LLM API host    | 443  | model calls (session profile) |
 | `pypi.org`, `github.com` | 443 | installing packages (build profile) |
 | your DNS resolver    | 53   | the sandbox asks this VM for DNS; the first resolver listed answers (shared by both profiles) |
 
