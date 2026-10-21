@@ -92,6 +92,33 @@ def _pid_alive(pid) -> bool:
     return True
 
 
+# Pi is started with everything that could give it tools or instructions switched off. These flags were checked
+# against PI_VERSION; the bridge refuses to start with any other Pi (server.main), so an upgrade is re-checked on purpose.
+PI_VERSION = "1.2.0"
+PI_LOCKDOWN = (
+    "--offline", "--no-builtin-tools", "--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates",
+    "--no-themes", "--no-approve", "--no-context-files",
+)
+# Pi gets these variables and nothing else from the bridge's environment: the provider keys, Pi's own settings
+# and what a process needs to run.
+PI_ENV_NAMES = frozenset(("PATH", "HOME", "LANG", "LC_ALL", "TZ"))
+
+
+def pi_env(environ=os.environ) -> dict:
+    return {k: v for k, v in environ.items() if k in PI_ENV_NAMES or k.startswith("PI_") or k.endswith("_API_KEY")}
+
+
+def _started_as(pid, pi_cmd) -> bool:
+    """True when pid's argv ends with pi_cmd's arguments. argv[0] is not compared: a script's interpreter replaces it."""
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            argv = f.read().decode("utf-8", "replace").split("\0")[:-1]
+    except OSError:
+        return False
+    want = list(pi_cmd[1:])
+    return len(argv) > len(want) and argv[len(argv) - len(want):] == want
+
+
 class SessionStore:
     """The session records under --state-dir: one JSON file, read once, rewritten atomically on change."""
 
@@ -170,6 +197,9 @@ class Session:
             reason = "pi process %s is gone" % s.pid
         elif not (isinstance(ch.get("in"), str) and isinstance(ch.get("out"), str)):
             reason = "no rpc channel survived"
+        elif not _started_as(s.pid, pi_cmd):
+            # Typically a Pi from before the lockdown flags: it keeps running, but nothing talks to it.
+            reason = "pi process %s was not started with this bridge's arguments; stop it" % s.pid
         else:
             try:
                 s._attach_fifo(ch["in"], ch["out"])
@@ -231,7 +261,7 @@ class Session:
     def _spawn_pipe(self, pi_cmd: list[str]) -> None:
         self._pipe = True
         self.proc = subprocess.Popen(
-            pi_cmd, cwd=self.cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+            pi_cmd, cwd=self.cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, env=pi_env(),
         )
         self.pid = self.proc.pid
         self._in_fd = self.proc.stdin.fileno()
@@ -264,7 +294,7 @@ class Session:
             out_rdwr = os.open(out_path, os.O_RDWR)
             out_read = os.open(out_path, os.O_RDONLY)
             self.proc = subprocess.Popen(
-                pi_cmd, cwd=self.cwd, stdin=in_rdwr, stdout=out_rdwr, stderr=subprocess.PIPE, bufsize=0,
+                pi_cmd, cwd=self.cwd, stdin=in_rdwr, stdout=out_rdwr, stderr=subprocess.PIPE, bufsize=0, env=pi_env(),
             )
         except BaseException:
             for fd in (in_rdwr, in_write, out_rdwr, out_read):

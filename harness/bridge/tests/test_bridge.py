@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 sys.dont_write_bytecode = True
 import pairing as PR  # noqa: E402
 import peers as P  # noqa: E402
+import pibridge as B  # noqa: E402
 import server as S  # noqa: E402
 
 FAKE = [sys.executable, "-B", os.path.join(HERE, "fake_pi.py")]
@@ -174,6 +175,21 @@ class Local(unittest.TestCase):
             self.assertIn("not allowed", body["error"])
         self.assertEqual(req(self.base, "/sessions/%s/command" % sid, "POST", {"type": "get_state"})[0], 200)
         self.assertEqual(S.COMMANDS & {"bash", "abort_bash", "export_html", "switch_session"}, set())
+
+    def test_pi_lockdown(self):
+        self.assertEqual(B.pi_env({"PATH": "/bin", "OPENROUTER_API_KEY": "k", "PI_OFFLINE": "1",
+                                   "SBX_GATE_TOKEN": "t", "INVOCATION_ID": "x"}),
+                         {"PATH": "/bin", "OPENROUTER_API_KEY": "k", "PI_OFFLINE": "1"})
+        manifest = os.path.join(HERE, "..", "..", "..", "image", "manifest.env")
+        with open(manifest) as f:
+            self.assertIn("PI_VERSION=%s\n" % B.PI_VERSION, f.read())
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertTrue(B._started_as(child.pid, ["x", "-c", "import time; time.sleep(30)"]))
+            self.assertFalse(B._started_as(child.pid, ["x", "-c", "import time; time.sleep(30)", "--offline"]))
+        finally:
+            child.kill()
+            child.wait()
 
     def test_peers_off_by_default(self):
         app = S.App(FAKE, state_dir=tempfile.mkdtemp(), cwd_root=tempfile.gettempdir())

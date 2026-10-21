@@ -34,6 +34,7 @@ import os
 import re
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -54,7 +55,7 @@ except ImportError:                 # a bare /opt/pi-bridge install ships only b
     REDACT = None
 import pairing as PR  # noqa: E402
 import peers as P  # noqa: E402
-from pibridge import Registry, RpcError, under_roots  # noqa: E402
+from pibridge import PI_LOCKDOWN, PI_VERSION, Registry, RpcError, pi_env, under_roots  # noqa: E402
 
 MAX_BODY = 1024 * 1024
 MAX_FILE = 8 * 1024 * 1024   # one upload/download; a larger file is refused, not streamed through
@@ -878,7 +879,6 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--listen", default="127.0.0.1:9760")
     ap.add_argument("--pi-bin", default=os.environ.get("PI_BIN", "pi"))
-    ap.add_argument("--pi-arg", action="append", default=[], help="extra argument for pi (repeatable)")
     ap.add_argument("--state-dir", default="~/.pi-bridge", help="identity, paired-peer keys and session records")
     ap.add_argument("--cwd-root", action="append", default=[], metavar="DIR",
                     help="a directory session cwds must resolve under (repeatable; required). Refused: /, a path "
@@ -907,6 +907,16 @@ def main(argv=None) -> int:
         print("pi-bridge: refusing to start: %s" % e, file=sys.stderr)
         return 2
 
+    try:
+        got = subprocess.run([args.pi_bin, "--version"], capture_output=True, text=True, timeout=60,
+                             env=pi_env()).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        got = "unknown (%s)" % e
+    if got != PI_VERSION:
+        print("pi-bridge: refusing to start: %s is Pi %s, the lockdown flags were checked against %s"
+              % (args.pi_bin, got, PI_VERSION), file=sys.stderr)
+        return 2
+
     host, _, port = args.listen.rpartition(":")
     host = host_only(host) if host.startswith("[") else host
     if host not in ("127.0.0.1", "localhost", "::1"):
@@ -923,7 +933,7 @@ def main(argv=None) -> int:
             print("tailscale is not running (state=%s)" % st["state"], file=sys.stderr)
             return 2
     name = st["self"]["name"] if st else socket.gethostname().split(".")[0]
-    app = App([args.pi_bin, "--mode", "rpc", *args.pi_arg], args.peer_port if args.peers else None,
+    app = App([args.pi_bin, "--mode", "rpc", *PI_LOCKDOWN], args.peer_port if args.peers else None,
               os.path.abspath(os.path.expanduser(args.state_dir)), name,
               args.gate_socket, args.loom_url, args.loom_timeout, cwd_root=cwd_roots)
     here = os.path.dirname(os.path.abspath(__file__))

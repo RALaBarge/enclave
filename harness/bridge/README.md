@@ -20,7 +20,7 @@ API's own. For another machine, use an SSH tunnel.
 | `GET /health` | |
 | `GET /ui/` | the web UI (`../ui`, see its README) |
 | `GET/POST /sessions`, `DELETE /sessions/{id}` | create with `{cwd, name?}` |
-| `POST /sessions/{id}/command` | any Pi RPC command (`prompt`, `steer`, `abort`, `get_messages`, `fork`, ...); returns Pi's response |
+| `POST /sessions/{id}/command` | a Pi RPC command from the allowlist `COMMANDS` in `server.py` (`prompt`, `steer`, `abort`, `get_messages`, `fork`, ...; never `bash`); returns Pi's response |
 | `POST /sessions/{id}/ui-response` | answer an extension UI request |
 | `GET /sessions/{id}/events?since=N` | SSE, resumable via `Last-Event-ID` (last 5000 events kept) |
 | `GET /sessions/{id}/stderr` | last 200 stderr lines |

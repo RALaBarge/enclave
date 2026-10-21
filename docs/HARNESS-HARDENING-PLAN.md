@@ -82,9 +82,10 @@ pi --mode rpc --offline
   `codemode`); explicit `-e` paths still load, so the desk extension is the only one. `--tools` is an allowlist on top, so
   any tool that slips in by another route is still not exposed. `--no-approve` ignores project-local `.pi/` files in the cwd.
 - `--no-context-files` stops `AGENTS.md` in a workspace from becoming instructions. Drop it only if you want repo context files.
-- `--pi-arg` stays for harmless extras, but the bridge refuses any extra argument that touches tools, extensions, approval,
-  MCP or skills (`-t/--tools`, `-e/--extension`, `-a/--approve`, `--exclude-tools`, `--skill`, ...) and fails closed.
-- **Version check at startup:** the bridge compares `pi --version` with `PI_VERSION` from the manifest and exits if they differ.
+- `--pi-arg` is deleted rather than filtered: nothing in the image passed one, so there is no extra argument to vet.
+- A restarted bridge reattaches only a Pi whose argv ends with the arguments it would launch now, so a Pi started before
+  the lockdown is never driven again.
+- **Version check at startup:** the bridge compares `pi --version` with `PI_VERSION` in `pibridge.py` (a test pins it to the manifest) and exits if they differ.
   These flags were checked against 1.2.0, so a Pi upgrade has to be re-checked deliberately. One comparison, no parsing of help text.
 - The flags are one constant list in `pibridge.py`, and the extra-argument refusal is a set lookup.
 
