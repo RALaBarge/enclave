@@ -1,7 +1,7 @@
 # sbx-console (Enclave console)
 
 Local control panel for Enclave's sandbox gateway: **Firewall** (nftables gateway for the sandbox's traffic),
-**Tools** (health of what's in `tools.list`, enable/disable, timeouts, network opt-in) and **Settings** (broker env, lite/full mode).
+**Tools** (health of what's in `tools.list`, enable/disable, timeouts; the network flag is shown, and set only by editing `tools.list`) and **Settings** (broker env, lite/full mode).
 Stdlib Python, one static page, no framework. Binds `127.0.0.1:8787`; every API call needs the bearer token.
 
 Tools are deliberately **not** installable from the UI. Adding one means writing sandbox code, a contract and a
