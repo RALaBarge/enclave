@@ -200,14 +200,18 @@ def _split(addrs):
     return v4, v6
 
 
-def _daddr_rules(addrs, proto, port, comment, direction="daddr"):
-    v4, v6 = _split(addrs)
+def _daddr_rules(addrs, proto, port, comment, direction="daddr", log=False):
+    """Accept rules. With log, each is preceded by a rate-limited log rule (journald, prefix sbxfw-accept): an
+    exfiltration goes to a host that is allowed, so the drop log alone would never show it. Only new connections
+    reach these rules; established traffic is accepted earlier."""
     c = f' comment "{comment}"' if comment else ""
     lines = []
-    if v4:
-        lines.append(f"ip {direction} {{ {', '.join(v4)} }} {proto} dport {port} accept{c}")
-    if v6:
-        lines.append(f"ip6 {direction} {{ {', '.join(v6)} }} {proto} dport {port} accept{c}")
+    for fam, a in zip(("ip", "ip6"), _split(addrs)):
+        if a:
+            m = f"{fam} {direction} {{ {', '.join(a)} }} {proto} dport {port}"
+            if log:
+                lines.append(f'{m} limit rate 10/second log prefix "sbxfw-accept: "')
+            lines.append(f"{m} accept{c}")
     return lines
 
 
@@ -247,13 +251,13 @@ def render_ruleset(policy, resolver=resolve):
             fwd += [sb + ln for ln in _block_rules(v4 + v6, r["proto"], r["port"], r["comment"])]
         for ip in policy["dns"]:
             for proto in ("udp", "tcp"):
-                fwd += [sb + ln for ln in _daddr_rules([ip], proto, 53, "dns")]
+                fwd += [sb + ln for ln in _daddr_rules([ip], proto, 53, "dns", log=True)]
         for r in prof["allow"]:
             v4, v6 = resolver(r["host"])
             if not v4 and not v6:
                 warns.append(f"{r['host']}: did not resolve, rule skipped")
                 continue
-            fwd += [sb + ln for ln in _daddr_rules(v4 + v6, r["proto"], r["port"], r["comment"])]
+            fwd += [sb + ln for ln in _daddr_rules(v4 + v6, r["proto"], r["port"], r["comment"], log=True)]
         # The sandbox asks this host for DNS; redirect to the first resolver of each family.
         v4, v6 = _split(policy["dns"])
         for fam, addrs in (("ip", v4), ("ip6", v6)):

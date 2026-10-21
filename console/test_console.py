@@ -82,6 +82,10 @@ class Firewall(unittest.TestCase):
         self.assertIn('ip daddr { 104.18.2.115, 104.18.3.115 } tcp dport 443 accept comment "llm api"', text)
         self.assertIn("ip6 daddr { 2606:4700::6812:273 } tcp dport 443 accept", text)
         self.assertEqual(w, [])
+        # every accepted sandbox forward is logged first, rate-limited, on its own rule so the limit never decides
+        m = 'ip daddr { 104.18.2.115, 104.18.3.115 } tcp dport 443'
+        self.assertLess(text.index(m + ' limit rate 10/second log prefix "sbxfw-accept: "'), text.index(m + " accept"))
+        self.assertIn('ip daddr { 1.1.1.1 } udp dport 53 limit rate 10/second log prefix "sbxfw-accept: "', text)
 
     # ---- profiles, block list, instant apply ------------------------------------------------------------
     def test_block_rules_come_first_and_win(self):

@@ -55,7 +55,8 @@ always wins over an allow, so you can allow a whole range and carve out one host
 | your DNS resolver    | 53   | the sandbox asks this VM for DNS; the first resolver listed answers (shared by both profiles) |
 
 Hostnames resolve when you click Apply. CDN hosts rotate IPs, so re-apply if a service stops working. Blocks are logged to the Blocked
-attempts table like any other drop. If the console is down when a build window ends, it switches back to session as soon as it starts;
+attempts table like any other drop. Every new connection the sandbox makes through an allow or DNS rule is logged too, so an
+exfiltration to an allowed host leaves a trace: `journalctl -k --grep sbxfw-accept` (rate-limited to 10 per second). If the console is down when a build window ends, it switches back to session as soon as it starts;
 until then the build rules stay in force.
 
 ## Pi, Loom, DeskBox
