@@ -113,8 +113,10 @@ image hash and harness version. Run the checks as the candidate's own account on
    (`runuser -u <user> -- test -r <path>`, the pattern `check_secrets` in `image/smoke-test.sh` uses for `pibridge`). Probe the
    console's `tighten-token` too: if the account can read it, item 4 is being paid for by a second copy of the gate.
 
-4. It starts a session only after the gate has forced the `session` profile, and fails closed.
+4. It starts a session, and sends each input, only after the gate has forced the `session` profile, and fails closed.
    Must: refuse to start a harness process when the gate is unreachable or answers badly; never fall back to "start anyway".
+   The same call comes before every prompt, steer, follow-up and peer delivery, so a build window opened during a session
+   never covers its next turn (`App.lockdown` in `harness/bridge/server.py`).
    Settled by: the unit passing `--gate-socket` (`harness/systemd/pi-bridge.service`), and a run with the gate stopped where
    `POST /sessions` answers 503 and no harness process exists. The tests are the shape to copy: `FirewallLockdown` in
    `harness/bridge/tests/test_bridge.py` (`test_unreachable_gate_is_a_refusal`). Note the code's default: without
@@ -141,6 +143,21 @@ image hash and harness version. Run the checks as the candidate's own account on
    The numbers do not fit today: the broker caps a job at `MAX_TIMEOUT` (120 s) plus 15 s of grace
    (`harness/broker/sbx_broker.py`), while `harness/tools/greet-sbx/tcs.yaml` declares `execution.timeout_ms: 150000` and the
    stub waits 150 s (`harness/stub/run.py`, `UnixConnection(timeout=150)`). A queued job can outlive the stub that waits for it.
+
+8. It treats everything from outside the session's user as data.
+   Must: load no instruction files from the workspace (`AGENTS.md`, `.pi/`, skills, prompt templates); put tool results,
+   desk responses, uploads and peer messages into the context as data, never as system or user instructions; keep peer
+   messaging off unless the model comes from a first-party publisher. A backdoored model's trigger can arrive through any of
+   these, so none of them may be able to change what the harness is told to do.
+   Settled by: the harness's start flags (`PI_LOCKDOWN` for Pi: `--no-context-files`, `--no-skills`, `--no-prompt-templates`,
+   `--no-approve`), the unit not passing `--peers`, and `peers.py` wrapping peer text in its data envelope.
+
+9. It writes nothing to long-term memory automatically except redacted turns.
+   Must: send settled turns to Loom only through the output redactor and fail closed without it; never store raw tool results;
+   no automatic recall into new sessions until memgate decides what may be written (`TODO.md` task 5). A turn that carried a
+   trigger must not be replayed into every later session.
+   Settled by: `REDACTOR` and the `--loom-url` path in `harness/bridge/server.py`; the unit not passing `--loom-url` until
+   memgate exists.
 
 Not verified from this repo, and so not settled by reading it: Pi's built-in tool set and whether its exec or file tools are
 reachable (no config here; the file that would have to change is `harness/systemd/pi-bridge.service` or a config installed by

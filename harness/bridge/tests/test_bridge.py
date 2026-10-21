@@ -456,7 +456,7 @@ for line in sys.stdin.buffer:
         self.assertIn("tool: read", content)
         self.assertIn("notes.txt", content)
         self.assertIn("tool result: read", content)
-        self.assertIn("hello from the file", content)
+        self.assertNotIn("hello from the file", content)                 # tool output never goes to memory
         self.assertIn("unknown event pi_future_event", content)          # not dropped silently
         self.assertLess(content.index("Looking at the notes."), content.index("tool: read"))
         self.assertLess(content.index("tool: read"), content.index("tool result: read"))

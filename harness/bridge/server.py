@@ -423,12 +423,10 @@ class TurnRecorder:
                                                                       if args not in (None, {}, []) else "")
             line = "tool: %s%s" % (name, " " + _clip(" ".join(summary.split()), LOOM_ARGS) if summary else "")
         else:
-            result = event.get("result", event.get("output", event.get("content", event.get("message"))))
-            summary = _text_value(result) if isinstance(result, str) else (_bounded_json(result, LOOM_ARGS)
-                                                                           if result not in (None, {}, []) else "")
+            # The result's content is never stored: it is data from outside the session (a file, a page, a desk
+            # response) and may carry a trigger that memory would replay into later sessions. Name and outcome only.
             failed = bool(event.get("isError") or event.get("error"))
-            line = "tool result: %s%s%s" % (name, " error" if failed else "",
-                                            ": " + _clip(" ".join(summary.split()), LOOM_ARGS) if summary else "")
+            line = "tool result: %s%s" % (name, " error" if failed else "")
         with self.lock:
             if not self.open:
                 return
