@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the pinned Pi standalone binary (linux-x64) and install it to /usr/local/bin/pi.
+# Build the pinned Pi standalone binary (linux-x64), install its release directory to /opt/pi and link /usr/local/bin/pi.
 # Run as root inside Debian 13. provision.sh calls this via PI_BUILD_CMD (eval'd in /opt/pi-src);
 # it is also runnable alone:  sudo bash image/build-pi.sh
 # Node.js is unpacked to /opt/node-build and put on PATH only inside this script.
@@ -12,6 +12,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 NODE_DIR=/opt/node-build
 PI_SRC=/opt/pi-src
+PI_DIR=/opt/pi                 # the whole release dir: the binary reads package.json (its version), theme/ and native/ beside itself
 PI_INSTALL=/usr/local/bin/pi
 
 if [ "$(id -u)" != 0 ]; then echo "ERROR: run as root" >&2; exit 1; fi
@@ -87,7 +88,10 @@ if [ ! -x "$OUT_BIN" ] || [ "$(cat "$STAMP" 2>/dev/null || true)" != "$PI_SOURCE
 fi
 
 # ---- Install ----
-install -m 755 "$OUT_BIN" "$PI_INSTALL"
+rm -rf "$PI_DIR"
+cp -a "$(dirname "$OUT_BIN")" "$PI_DIR"
+chown -R root:root "$PI_DIR"
+ln -sf "$PI_DIR/pi" "$PI_INSTALL"
 # Time-boxed: on a CPU model without the instructions the binary wants, this hung for an hour and stalled the build.
 if ver=$(timeout 30 "$PI_INSTALL" --version 2>&1); then
   echo "pi $ver"

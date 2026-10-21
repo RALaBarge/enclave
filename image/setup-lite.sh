@@ -74,12 +74,14 @@ set_kv SBX_KNOWN_HOSTS "$KH"
 chown root:root "$ENV_FILE"
 chmod 640 "$ENV_FILE"
 
-# ---- sshd: loopback only, key auth only, sbx only ----
+# ---- sshd: loopback only, key auth only; sbx (forced command, no tty) and the operator sbxadmin (tty) ----
+# The operator reaches it from the tailnet through `tailscale serve --tcp 22 tcp://127.0.0.1:22` (SETUP.md); nothing
+# else can, because sshd never listens off loopback.
 cat >"$SSHD_SNIP" <<'EOF'
 # sbx lite mode (managed by image/setup-lite.sh)
 ListenAddress 127.0.0.1
 AddressFamily inet
-AllowUsers sbx
+AllowUsers sbx sbxadmin
 PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -92,6 +94,8 @@ PermitTunnel no
 GatewayPorts no
 PermitTTY no
 PermitUserEnvironment no
+Match User sbxadmin
+    PermitTTY yes
 EOF
 chmod 644 "$SSHD_SNIP"
 sshd -t || die "sshd config invalid (see $SSHD_SNIP)"

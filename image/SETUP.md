@@ -158,7 +158,8 @@ only as far as the allowlist says, and masquerades it out. The sandbox holds non
 enclave.cmd            # menu: build, start both VMs, stop, reset. The core's own window is its console.
 ```
 
-**On the core:** `sudo sbx-mode box` points the broker at `10.77.0.2` and turns this VM's own sshd off. `sudo sbx-mode lite` goes back.
+**On the core:** `sudo sbx-mode box` points the broker at `10.77.0.2`. This VM's sshd stays on: it is loopback-only and is your way in
+(see Tailscale below), and the console's input chain gives the sandbox link nothing but ping. `sudo sbx-mode lite` goes back.
 Then allow what the sandbox needs in the console's Firewall tab (resolver first, then host:port rules).
 
 **On the sandbox:** `sudo sbx-node-test` checks it (default expects every outbound request to be blocked; after allowing a host on
@@ -216,7 +217,18 @@ sudo tailscale up --accept-dns=false   # prints a login URL; approve this node o
 ```
 
 `--accept-dns=false` keeps tailscaled from rewriting `/etc/resolv.conf` (its unit runs with `ProtectSystem=strict`);
-the bridge talks to peers by tailnet IP, so MagicDNS is not needed. `tailscale status` then shows the tailnet and
+the bridge talks to peers by tailnet IP, so MagicDNS is not needed.
+
+**Operator SSH over the tailnet.** Forward the tailnet's port 22 to the loopback sshd, which admits `sbxadmin` by key:
+
+```sh
+sudo tailscale serve --bg --tcp 22 tcp://127.0.0.1:22    # then from your machine: ssh sbxadmin@<this node's tailnet name>
+```
+
+Not `tailscale up --ssh`: Tailscale SSH needs tailscaled to switch users, and this image's unit withholds that on purpose
+(only `CAP_NET_ADMIN` and `CAP_NET_RAW`, `NoNewPrivileges`, `ProtectHome`), so it answers "operation not permitted". The
+forward needs no privilege, sshd never listens off loopback, and your tailnet's access rules decide who reaches it. Add
+your public key to `/home/sbxadmin/.ssh/authorized_keys` from the console first. `tailscale status` then shows the tailnet and
 `sudo tailscale down` leaves it. Node identity lives in `/var/lib/tailscale`; `sudo systemctl disable --now tailscaled`
 takes the agent out of boot. Nothing here is required for the single-machine setup.
 

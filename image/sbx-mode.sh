@@ -18,10 +18,7 @@ case "$1" in
   *) echo "usage: sbx-mode [lite|box]" >&2; exit 2 ;;
 esac
 sed -i "s|^SBX_HOST=.*|SBX_HOST=$host|" "$ENV"
-if [ "$1" = box ]; then
-  systemctl disable --now ssh >/dev/null 2>&1 || true      # nothing on this host should accept SSH once the sandbox is elsewhere
-else
-  systemctl enable --now ssh >/dev/null 2>&1
-fi
+# sshd stays up in both modes: it listens on loopback only and is the operator's way in (tailscale serve, SETUP.md).
+# The sandbox link cannot reach it: the console's input chain accepts nothing but ping from the sandbox interface.
 systemctl restart sbx-broker
 echo "sbx mode: $1 (SBX_HOST=$host)"
