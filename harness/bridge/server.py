@@ -8,7 +8,8 @@ The local API listens on loopback only and has no login. A web page elsewhere ca
     GET    /sessions                      POST /sessions {cwd, name?}          DELETE /sessions/{id}
            (cwd must resolve under one of the --cwd-root directories; see App/validate_cwd_root.
             With --gate-socket, creating a session first has sbx-session-gate force the console's `session`
-            firewall profile; if that fails the session is NOT started. The bridge cannot loosen it.)
+            firewall profile; if that fails the session is NOT started. The bridge cannot loosen it.
+            The same happens before every prompt, steer, follow_up and peer delivery: 503 and nothing sent.)
     POST   /sessions/{id}/command         a Pi RPC command object from COMMANDS; returns Pi's response record
     POST   /sessions/{id}/ui-response     fire-and-forget (extension_ui_response)
     GET    /sessions/{id}/events?since=N  SSE, resumable via Last-Event-ID
@@ -80,6 +81,7 @@ COMMANDS = frozenset((
     "set_session_name", "set_thinking_level", "compact", "set_auto_compaction", "set_auto_retry", "abort_retry",
     "set_steering_mode", "set_follow_up_mode",
 ))
+INPUT_COMMANDS = frozenset(("prompt", "steer", "follow_up"))   # commands that start or extend a turn
 REDACTOR = REDACT.OutputRedactor({"security": {"output_redaction": {"enabled": True, "redact_pii": False}}}) if REDACT else None
 
 
@@ -554,11 +556,18 @@ class App:
         if rec is not None:
             rec.stop()
 
+    def lockdown(self):
+        """Force the session profile before any input reaches Pi, so a build window opened during a live session
+        never applies to the session's next turn. Raises FirewallError; the input is then not sent."""
+        if self.gate:
+            gate_lockdown(self.gate)
+
     def deliver(self, item, sid):
         s = self.reg.get(sid)
         if not s:
             raise KeyError("no such session")
         text = P.envelope(item)
+        self.lockdown()
         self.note_user(s, text)
         r = s.call({"type": "prompt", "message": text, "streamingBehavior": "followUp"})
         if r.get("success"):
@@ -637,6 +646,8 @@ def make_handler(app: App):
                 self._json(413, {"error": str(e)})
             except RpcError as e:
                 self._json(502, {"error": str(e)})
+            except FirewallError as e:
+                self._json(503, {"error": "firewall lockdown failed, input not sent: %s" % e})
             except (ValueError, TypeError) as e:
                 self._json(400, {"error": str(e)})
             except Exception as e:
@@ -796,6 +807,8 @@ def make_handler(app: App):
                         raise ValueError("command needs a string 'type'")
                     if cmd["type"] not in COMMANDS:
                         raise ValueError("command %r is not allowed" % cmd["type"][:40])
+                    if cmd["type"] in INPUT_COMMANDS:
+                        app.lockdown()
                     if cmd["type"] in ("prompt", "steer"):
                         app.note_user(s, cmd.get("message"))
                     return self._json(200, s.call(cmd, timeout=float(q.get("timeout", ["30"])[0])))

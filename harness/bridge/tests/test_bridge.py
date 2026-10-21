@@ -183,13 +183,16 @@ class Local(unittest.TestCase):
         manifest = os.path.join(HERE, "..", "..", "..", "image", "manifest.env")
         with open(manifest) as f:
             self.assertIn("PI_VERSION=%s\n" % B.PI_VERSION, f.read())
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        code = "print(1, flush=True); import time; time.sleep(30)"
+        child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE)
         try:
-            self.assertTrue(B._started_as(child.pid, ["x", "-c", "import time; time.sleep(30)"]))
-            self.assertFalse(B._started_as(child.pid, ["x", "-c", "import time; time.sleep(30)", "--offline"]))
+            child.stdout.readline()                          # exec has happened, so /proc shows the new argv
+            self.assertTrue(B._started_as(child.pid, ["x", "-c", code]))
+            self.assertFalse(B._started_as(child.pid, ["x", "-c", code, "--offline"]))
         finally:
             child.kill()
             child.wait()
+            child.stdout.close()
 
     def test_peers_off_by_default(self):
         app = S.App(FAKE, state_dir=tempfile.mkdtemp(), cwd_root=tempfile.gettempdir())
@@ -627,6 +630,21 @@ class FirewallLockdown(unittest.TestCase):
         self.assertEqual(c, 503)
         self.assertIn("unreachable", r["error"])
         self.assertEqual(app.reg.list(), [])
+
+    def test_every_input_forces_the_profile_and_a_refusal_holds_it_back(self):
+        gate = FakeGate()
+        self.addCleanup(gate.close)
+        app, base = self.make(gate.path)
+        sid = req(base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})[1]["id"]
+        self.assertEqual(req(base, "/sessions/%s/command" % sid, "POST", {"type": "prompt", "message": "hi"})[0], 200)
+        self.assertEqual(req(base, "/sessions/%s/command" % sid, "POST", {"type": "get_messages"})[0], 200)
+        self.assertEqual(gate.calls, ["/lockdown", "/lockdown"])      # session start, then the prompt; not the read
+        gate.status, gate.body = 502, {"error": "console down"}
+        c, r = req(base, "/sessions/%s/command" % sid, "POST", {"type": "prompt", "message": "second"})
+        self.assertEqual(c, 503)
+        self.assertIn("console down", r["error"])
+        msgs = req(base, "/sessions/%s/command" % sid, "POST", {"type": "get_messages"})[1]["data"]["messages"]
+        self.assertEqual([m["text"] for m in msgs], ["hi"])
 
     def test_not_configured_means_no_call(self):
         app, base = self.make()
