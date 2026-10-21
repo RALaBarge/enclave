@@ -51,17 +51,19 @@ check_units() {
 # Every TCP listener must be bound to loopback (127.0.0.0/8 or ::1).
 check_listeners() {
   if ! have ss; then fail listeners "ss not installed"; return; fi
-  local local_addr addr offenders="" count=0
-  while read -r local_addr; do
+  local local_addr proc addr offenders="" count=0
+  while read -r local_addr proc; do
     [ -z "$local_addr" ] && continue
     count=$((count+1))
+    # tailscaled's own peer API, once the node is logged in: bound to tailscale0 only, random ports.
+    case "$local_addr:$proc" in *%tailscale0:*:*'"tailscaled"'*) continue;; esac
     addr=${local_addr%:*}      # strip :port (the last colon)
     addr=${addr#[}; addr=${addr%]}
     case "$addr" in
       127.*|::1) ;;
       *) offenders="$offenders $local_addr" ;;
     esac
-  done < <(ss -ltnH | awk '{print $4}')
+  done < <(ss -ltnpH | awk '{print $4, $6}')
   if [ "$count" -eq 0 ]; then fail listeners "ss reported no TCP listeners (unexpected)"
   elif [ -n "$offenders" ]; then fail listeners "non-loopback listeners:$offenders"
   else pass listeners "$count TCP listeners, all loopback"; fi
