@@ -162,6 +162,9 @@ fail-closed, as planned.
 
 ### 8. Pin models (F12)
 
+> **Decided (Oct 21):** no model list. Any OpenAI-compatible provider is allowed; the provider set is the set of API keys
+> stored in Bitwarden, and `set_model` is open. Weights we host ourselves still get the provenance rule below.
+
 - Add the model allowlist to the repo: provider and exact model ID, first-party publishers only (no community or abliterated
   fine-tunes). The bridge passes it to Pi with `--models`, and step 2 limits `set_model` to it.
 - If a local model is ever used, record its source and sha256 in `image/manifest.env` as is done for Ollama, Pi and DeskBox,

@@ -73,9 +73,10 @@ LOOM_ARGS = 500
 # with --loom-url and no redactor the bridge still runs but sends no turns (fail closed, warned at start).
 # The Pi RPC commands /sessions/{id}/command forwards; anything else is 400. Pi's RPC also runs a shell (`bash`,
 # `abort_bash`) and writes or opens caller-chosen paths (`export_html`, `switch_session`), so the endpoint is an
-# allowlist, not a passthrough. `set_model`/`cycle_model` stay out until there is a pinned model list to check them against.
+# allowlist, not a passthrough. Model choice is open: Pi offers only models whose provider has a key, and the keys come
+# from Bitwarden through secrets.env, so the provider list is the set of keys stored there.
 COMMANDS = frozenset((
-    "prompt", "steer", "follow_up", "abort", "clear_queue",
+    "prompt", "steer", "follow_up", "abort", "clear_queue", "set_model", "cycle_model", "get_available_models",
     "get_state", "get_messages", "get_entries", "get_tree", "get_fork_messages", "fork", "clone",
     "get_last_assistant_text", "get_session_stats", "get_commands",
     "set_session_name", "set_thinking_level", "compact", "set_auto_compaction", "set_auto_retry", "abort_retry",

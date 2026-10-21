@@ -261,7 +261,10 @@ after every firewall change, and after any tool change.
 
 ## Secrets (Bitwarden Secrets Manager)
 
-The core fetches its LLM keys (`OPENROUTER_API_KEY`, `REQUESTY_API_KEY`) from Bitwarden when `pi-bridge` starts. Nothing secret is in the image or the repo.
+The core fetches its LLM keys (`DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `REQUESTY_API_KEY`, or any provider's `*_API_KEY`)
+from Bitwarden when `pi-bridge` starts. Nothing secret is in the image or the repo. The keys stored there are the provider
+list: Pi offers only models whose provider has a key, and a session picks one with `set_model` (`get_available_models` lists
+them).
 
 In the web vault (free tier is enough): enable Secrets Manager for the org, make a project `enclave`, add the secrets there with `UPPER_SNAKE_CASE` names, make a machine account with **read-only** access to that project, and create an access token for it.
 
