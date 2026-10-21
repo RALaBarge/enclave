@@ -305,7 +305,19 @@ check_bridge() {
           "$api/sessions" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
   if [ -z "$sid" ]; then fail pi-bridge "could not create a session"; return; fi
   out=$(curl -sS --max-time 40 -H 'Content-Type: application/json' -d '{"type":"get_state"}' "$api/sessions/$sid/command" 2>&1)
+  # The real Pi's argv carries the lockdown and the desk extension, and the bridge refuses Pi's shell command.
+  local pid argv code
+  pid=$(curl -fsS --max-time 5 "$api/sessions" 2>/dev/null | python3 -c \
+    'import json,sys; print(next(s["pid"] for s in json.load(sys.stdin) if s["id"]==sys.argv[1]))' "$sid" 2>/dev/null)
+  argv=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H 'Content-Type: application/json' \
+    -d '{"type":"bash","command":"id"}' "$api/sessions/$sid/command")
   curl -s --max-time 10 -X DELETE "$api/sessions/$sid" >/dev/null 2>&1
+  for flag in --offline --no-builtin-tools --no-extensions --no-mcp --no-skills --no-context-files desk-extension.js; do
+    case " $argv " in *"$flag"*) ;; *) fail pi-lockdown "pi (pid ${pid:-?}) runs without $flag: $argv"; return;; esac
+  done
+  if [ "$code" = 400 ]; then pass pi-lockdown "pi runs locked down with the desk extension; RPC bash refused (400)"
+  else fail pi-lockdown "RPC bash answered $code, expected 400"; fi
   if printf '%s' "$out" | python3 -c 'import json,sys; assert json.load(sys.stdin)["success"] is True' 2>/dev/null; then
     pass pi-bridge "session -> real pi get_state OK"
   else fail pi-bridge "get_state failed: $(printf '%s' "$out" | head -c 200)"; fi
