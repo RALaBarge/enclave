@@ -13,9 +13,7 @@ for f in broker_ed25519.pub sbx_host_ed25519 sbx_host_ed25519.pub; do [ -f "$KEY
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-# rsync + openssh-client are for the `rsync` tool (sbx/tools/rsync): it runs the
-# sandbox's own rsync, so both ends of the transfer are this box's binaries.
-apt-get install -y --no-install-recommends nftables python3 bubblewrap openssh-server ca-certificates curl iproute2 sudo rsync openssh-client iputils-ping
+apt-get install -y --no-install-recommends nftables python3 bubblewrap openssh-server ca-certificates curl iproute2 sudo iputils-ping
 
 # ---- sandbox user: key login only, forced into sbx-channel (sbx-run, or reset for a reboot) ----
 SBX_HOME=/home/sbx

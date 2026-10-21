@@ -131,12 +131,12 @@ class BrokerTest(unittest.TestCase):
             return "ok", OK_ENVELOPE
         sbx_broker.run_on_sbx = record
         with open(self.tool_list, "w", encoding="utf-8") as f:
-            f.write("greet 5\nrsync 5 net\n")
+            f.write("greet 5\nfetch 5 net\n")
         for label, doc, want in [
             ("matching caller", {"tool": "greet", "caller": "greet-sbx", "input": {}}, 200),
-            ("a non-net stub asking for a net tool", {"tool": "rsync", "caller": "greet-sbx", "input": {}}, 403),
+            ("a non-net stub asking for a net tool", {"tool": "fetch", "caller": "greet-sbx", "input": {}}, 403),
             ("caller without the -sbx suffix", {"tool": "greet", "caller": "greet", "input": {}}, 403),
-            ("caller of another tool", {"tool": "greet", "caller": "rsync-sbx", "input": {}}, 403),
+            ("caller of another tool", {"tool": "greet", "caller": "fetch-sbx", "input": {}}, 403),
             ("no caller at all", {"tool": "greet", "input": {}}, 400),
             ("caller that is not a name", {"tool": "greet", "caller": ["greet-sbx"], "input": {}}, 400),
         ]:
@@ -153,9 +153,9 @@ class BrokerTest(unittest.TestCase):
         saved = sbx_broker.log
         sbx_broker.log = lines.append
         self.addCleanup(setattr, sbx_broker, "log", saved)
-        code, _ = self.post_body(signed({"tool": "greet", "caller": "rsync-sbx", "input": {}}))
+        code, _ = self.post_body(signed({"tool": "greet", "caller": "fetch-sbx", "input": {}}))
         self.assertEqual(code, 403)
-        self.assertTrue(any(l.startswith("ALERT caller_mismatch") and "tool=greet" in l and "caller=rsync-sbx" in l
+        self.assertTrue(any(l.startswith("ALERT caller_mismatch") and "tool=greet" in l and "caller=fetch-sbx" in l
                             for l in lines), lines)
 
     # -- the desk's token: what makes the caller something a job was given ---
@@ -174,7 +174,7 @@ class BrokerTest(unittest.TestCase):
             ("a token the desk made", signed(base), 200),
             ("a token made with another key", signed(base, key=b"another-key-0123456789"), 403),
             ("a token made for another tool's caller",
-             dict(signed(base), mac=sbx_broker.job_token_mac(KEY, "rsync-sbx", "job-x", 1, int(now))), 403),
+             dict(signed(base), mac=sbx_broker.job_token_mac(KEY, "fetch-sbx", "job-x", 1, int(now))), 403),
             ("a token a minute past its life", signed(base, now=now - sbx_broker.TOKEN_MAX_AGE_S - 60), 403),
             ("a token from the future", signed(base, now=now + sbx_broker.TOKEN_MAX_AGE_S + 60), 403),
             ("no token at all", dict(base), 400),

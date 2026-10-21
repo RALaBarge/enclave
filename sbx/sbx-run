@@ -62,7 +62,7 @@ def bwrap_args(tool_dir, in_dir, out_dir, network=False):
           "--ro-bind", in_dir, "/deskbox/in",
           "--bind", out_dir, "/deskbox/out"]
     if network:
-        # A network tool that shells out (rsync-over-ssh) needs the name service
+        # A network tool that shells out (ssh, git, curl) needs the name service
         # and the trust store inside the job: without /etc/resolv.conf the DNS
         # lookup fails, and without /etc/passwd nsswitch has no local user to
         # resolve. Same set DeskBox binds for a network:true contract. Each is

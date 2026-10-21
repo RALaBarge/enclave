@@ -129,34 +129,6 @@ refuses one older than 5 minutes, and refuses a second use of the same (job, att
 `403 token_replayed`, each logged `ALERT`). The key is never bound into a job. This needs the DeskBox binary built from a
 commit that has `-job-key` (see `DESKBOX_COMMIT`); an older desk starts jobs without a token and every call is refused.
 
-### `rsync` allowlist
-
-`rsync` is listed as `rsync 120 net`; the sandbox image installs `rsync` and `openssh-client` (`image/provision-sbx.sh`). Its
-allowlist is a file in the tool's own directory on the sandbox side: `/opt/sbx/tools/rsync/allowlist` (inside the job,
-`/deskbox/tool/allowlist`). Start from `allowlist.example` and keep one entry per line:
-
-```text
-# <name> = [user@]<host>[:port]  /absolute/prefix
-backup = ryan@backup.example.com  /srv/backups
-nas = 10.0.0.10:22  /srv/share
-```
-
-The path prefix is required. A remote path must be that directory or below it (compared after `normpath`, so `..` cannot
-climb out), otherwise the call is refused as `path_not_allowed` before rsync runs. An entry without a prefix, with a
-relative one, or with `/` makes the whole file invalid, and an invalid file permits nothing. The prefix bounds what the
-caller can name, not what the remote holds: a symlink under the prefix on the remote still leads where it leads, so point
-it at a directory you control.
-
-A remote source or destination is written `<name>:<absolute path>`; the name must match an entry exactly, and the user and port come
-only from this file. There are no wildcards, CIDR ranges or default entry: an empty, missing or malformed allowlist permits
-no remote host. The local side is limited to `/deskbox/in`, `/deskbox/out` and `/tmp`, so the job cannot upload the allowlist
-or the SSH key from its own tool directory. The call runs `rsync --dry-run` unless it sets `"apply": true`. SSH reads
-`id_ed25519` and `known_hosts` from that same directory (neither is in the repo), with `StrictHostKeyChecking=yes` and
-`BatchMode=yes`, so an unknown host or a passphrase fails instead of prompting. A `net` tool now also gets
-`/etc/resolv.conf`, `/etc/passwd` and the trust store bound in (`sbx/sbx-run`), so a hostname in the allowlist resolves.
-Keep the allowlist and key readable by the sandbox's `sbx` account (the job runs as it; the key should be mode 600), and
-copy the run script executable: `chmod 755 /opt/sbx/tools/rsync/run`.
-
 ## A second harness
 
 Point the harness's tool definitions at the desk:
