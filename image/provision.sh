@@ -224,6 +224,11 @@ systemctl enable --now tailscaled
 #      --peers, so peer messaging stays off until the operator opts in) ----
 id pibridge &>/dev/null || useradd --system --home /var/lib/pi-bridge --create-home --shell /usr/sbin/nologin pibridge
 install -d -o pibridge -g pibridge /var/lib/pi-bridge/state
+# Pi's default model for every session (a session can still switch with set_model). Owned by the bridge account like the
+# rest of Pi's agent dir, which Pi writes to at runtime.
+install -d -o pibridge -g pibridge -m 755 /var/lib/pi-bridge/.pi /var/lib/pi-bridge/.pi/agent
+printf '{"defaultProvider": "deepseek", "defaultModel": "deepseek-flash"}\n' >/var/lib/pi-bridge/.pi/agent/settings.json
+chown pibridge:pibridge /var/lib/pi-bridge/.pi/agent/settings.json; chmod 600 /var/lib/pi-bridge/.pi/agent/settings.json
 # Session root: a sibling of the home, never inside it (the bridge protects the whole home).
 install -d -m 0700 -o pibridge -g pibridge /var/lib/pi-bridge-work
 install -d /opt/pi-bridge
