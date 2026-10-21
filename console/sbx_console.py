@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """sbx-console: local control panel for the deskbox sandbox bridge.
 
-Tabs: Firewall (nftables allowlist), Tools (tools.list health, enable/disable, timeouts, network), Settings.
+Tabs: Firewall (nftables allowlist), Tools (tools.list health, enable/disable, timeouts; network is shown, never
+set: `net` is granted only by editing tools.list), Settings.
 Tools are deliberately NOT installable from the UI: adding one means writing sandbox code, a
 contract and a pinned stub by hand (see sync.py).
 Stdlib only. Binds 127.0.0.1; every /api call needs the bearer token in
@@ -638,28 +639,6 @@ def tool_timeout(name, t):
     return {"ok": True}
 
 
-def tool_network(name, enabled):
-    if not any(x["name"] == name for x in parse_tools()):
-        raise Bad("unknown tool")
-    network = bool(enabled)
-
-    def mut(lines):
-        out = []
-        for ln in lines:
-            m = OFF_RE.match(ln.strip())
-            body = ln.split("#", 1)[0].split()
-            if m and m.group(1) == name:
-                out.append(_fmt(name, int(m.group(2) or toollist.DEFAULT_TIMEOUT), network, False))
-            elif body and body[0] == name and not ln.lstrip().startswith("#"):
-                t, _ = _fields(body)
-                out.append(_fmt(name, t, network, True))
-            else:
-                out.append(ln)
-        return out
-    _write_toollist(mut)
-    return {"ok": True, "note": "Deploy tools.list to the sandbox box too (full mode); sbx-run reads it per job."}
-
-
 # ------------------------------------------------------------------ settings
 
 # Lite mode needs no reset: sbx-run gives every job a fresh bwrap tmpfs. These are hooks YOU install.
@@ -774,7 +753,6 @@ ROUTES = {
     ("GET", "/api/tools"): lambda b: tools_list(),
     ("POST", "/api/tools/toggle"): lambda b: tool_toggle(b.get("name"), bool(b.get("enabled"))),
     ("POST", "/api/tools/timeout"): lambda b: tool_timeout(b.get("name"), b.get("timeout_s")),
-    ("POST", "/api/tools/network"): lambda b: tool_network(b.get("name"), bool(b.get("enabled"))),
     ("GET", "/api/settings"): lambda b: settings_get(),
     ("POST", "/api/settings"): lambda b: settings_set(b),
 }
