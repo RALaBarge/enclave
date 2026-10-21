@@ -166,6 +166,15 @@ class Local(unittest.TestCase):
         self.assertEqual((info["alive"], info["exit_code"]), (False, 3))
         self.assertEqual(req(self.base, "/sessions/%s/command" % sid, "POST", {"type": "get_state"})[0], 502)
 
+    def test_command_allowlist(self):
+        sid = req(self.base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})[1]["id"]
+        for t in ("bash", "abort_bash", "export_html", "switch_session", "set_model", "cycle_model", "nonsense"):
+            c, body = req(self.base, "/sessions/%s/command" % sid, "POST", {"type": t, "command": "id"})
+            self.assertEqual(c, 400, t)
+            self.assertIn("not allowed", body["error"])
+        self.assertEqual(req(self.base, "/sessions/%s/command" % sid, "POST", {"type": "get_state"})[0], 200)
+        self.assertEqual(S.COMMANDS & {"bash", "abort_bash", "export_html", "switch_session"}, set())
+
     def test_peers_off_by_default(self):
         app = S.App(FAKE, state_dir=tempfile.mkdtemp(), cwd_root=tempfile.gettempdir())
         base = serve(ThreadingHTTPServer(("127.0.0.1", 0), S.make_handler(app)))

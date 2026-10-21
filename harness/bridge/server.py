@@ -9,7 +9,7 @@ The local API listens on loopback only and has no login. A web page elsewhere ca
            (cwd must resolve under one of the --cwd-root directories; see App/validate_cwd_root.
             With --gate-socket, creating a session first has sbx-session-gate force the console's `session`
             firewall profile; if that fails the session is NOT started. The bridge cannot loosen it.)
-    POST   /sessions/{id}/command         any Pi RPC command object; returns Pi's response record
+    POST   /sessions/{id}/command         a Pi RPC command object from COMMANDS; returns Pi's response record
     POST   /sessions/{id}/ui-response     fire-and-forget (extension_ui_response)
     GET    /sessions/{id}/events?since=N  SSE, resumable via Last-Event-ID
     GET    /sessions/{id}/stderr
@@ -69,6 +69,16 @@ LOOM_ARGS = 500
 # entropy sweep are what must not cross into storage. redact() is the whole API we need.
 # It is optional at import only because image/provision.sh installs bridge/*.py without harness/redact;
 # with --loom-url and no redactor the bridge still runs but sends no turns (fail closed, warned at start).
+# The Pi RPC commands /sessions/{id}/command forwards; anything else is 400. Pi's RPC also runs a shell (`bash`,
+# `abort_bash`) and writes or opens caller-chosen paths (`export_html`, `switch_session`), so the endpoint is an
+# allowlist, not a passthrough. `set_model`/`cycle_model` stay out until there is a pinned model list to check them against.
+COMMANDS = frozenset((
+    "prompt", "steer", "follow_up", "abort", "clear_queue",
+    "get_state", "get_messages", "get_entries", "get_tree", "get_fork_messages", "fork", "clone",
+    "get_last_assistant_text", "get_session_stats", "get_commands",
+    "set_session_name", "set_thinking_level", "compact", "set_auto_compaction", "set_auto_retry", "abort_retry",
+    "set_steering_mode", "set_follow_up_mode",
+))
 REDACTOR = REDACT.OutputRedactor({"security": {"output_redaction": {"enabled": True, "redact_pii": False}}}) if REDACT else None
 
 
@@ -783,6 +793,8 @@ def make_handler(app: App):
                     cmd = self._body()
                     if not isinstance(cmd.get("type"), str):
                         raise ValueError("command needs a string 'type'")
+                    if cmd["type"] not in COMMANDS:
+                        raise ValueError("command %r is not allowed" % cmd["type"][:40])
                     if cmd["type"] in ("prompt", "steer"):
                         app.note_user(s, cmd.get("message"))
                     return self._json(200, s.call(cmd, timeout=float(q.get("timeout", ["30"])[0])))
