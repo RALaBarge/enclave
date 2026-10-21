@@ -228,6 +228,7 @@ install -d -o pibridge -g pibridge /var/lib/pi-bridge/state
 install -d -m 0700 -o pibridge -g pibridge /var/lib/pi-bridge-work
 install -d /opt/pi-bridge
 for f in pairing peers pibridge server; do install -m 644 "$ROOT/harness/bridge/$f.py" /opt/pi-bridge/; done
+install -m 644 "$ROOT/harness/bridge/desk-extension.js" /opt/pi-bridge/   # Pi's only tools (PI_LOCKDOWN + -e)
 # The bridge imports the redactor from ./redact next to itself (or ../redact in the
 # repo). Without the file, --loom-url refuses to post rather than storing raw text.
 install -d /opt/pi-bridge/redact

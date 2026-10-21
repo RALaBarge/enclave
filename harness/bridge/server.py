@@ -923,6 +923,10 @@ def main(argv=None) -> int:
                              env=pi_env()).stdout.strip()
     except (OSError, subprocess.SubprocessError) as e:
         got = "unknown (%s)" % e
+    desk_ext = os.path.join(HERE, "desk-extension.js")
+    if not os.path.isfile(desk_ext):
+        print("pi-bridge: refusing to start: %s is missing; Pi would have no tools" % desk_ext, file=sys.stderr)
+        return 2
     if got != PI_VERSION:
         print("pi-bridge: refusing to start: %s is Pi %s, the lockdown flags were checked against %s"
               % (args.pi_bin, got, PI_VERSION), file=sys.stderr)
@@ -944,7 +948,7 @@ def main(argv=None) -> int:
             print("tailscale is not running (state=%s)" % st["state"], file=sys.stderr)
             return 2
     name = st["self"]["name"] if st else socket.gethostname().split(".")[0]
-    app = App([args.pi_bin, "--mode", "rpc", *PI_LOCKDOWN], args.peer_port if args.peers else None,
+    app = App([args.pi_bin, "--mode", "rpc", *PI_LOCKDOWN, "-e", desk_ext], args.peer_port if args.peers else None,
               os.path.abspath(os.path.expanduser(args.state_dir)), name,
               args.gate_socket, args.loom_url, args.loom_timeout, cwd_root=cwd_roots)
     here = os.path.dirname(os.path.abspath(__file__))
