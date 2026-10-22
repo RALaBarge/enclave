@@ -19,8 +19,9 @@ case "$1" in
         [ -s /etc/sbx/known_hosts.box ] || { echo "no sandbox-box host key installed (/etc/sbx/known_hosts.box)" >&2; exit 1; } ;;
   *) echo "usage: sbx-mode [lite|box]" >&2; exit 2 ;;
 esac
-sed -i -e "s|^SBX_HOST=.*|SBX_HOST=$host|" -e "/^SBX_RESET_CMD=/d" "$ENV"
-echo "SBX_RESET_CMD=$reset" >>"$ENV"
+# The queue wait goes with it: the next job waits behind the previous reset, and an older broker.env said 60.
+sed -i -e "s|^SBX_HOST=.*|SBX_HOST=$host|" -e "/^SBX_RESET_CMD=/d" -e "/^SBX_QUEUE_WAIT_S=/d" "$ENV"
+printf 'SBX_RESET_CMD=%s\nSBX_QUEUE_WAIT_S=300\n' "$reset" >>"$ENV"
 # sshd stays up in both modes: it listens on loopback only and is the operator's way in (tailscale serve, SETUP.md).
 # The sandbox link cannot reach it: the console's input chain accepts nothing but ping from the sandbox interface.
 systemctl restart sbx-broker
