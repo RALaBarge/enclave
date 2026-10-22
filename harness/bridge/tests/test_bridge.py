@@ -412,8 +412,12 @@ for line in sys.stdin.buffer:
         out({"type": "message_update", "assistantMessageEvent": {"delta": "Looking at "}})
         out({"type": "message_update", "assistantMessageEvent": {"delta": "the notes."}})
         out({"type": "tool_execution_start", "toolName": "read", "args": {"path": "notes.txt"}})
+        out({"type": "tool_execution_update", "toolName": "read", "partialResult": "hello from the file"})
         out({"type": "tool_execution_end", "toolName": "read", "output": "hello from the file", "isError": False})
-        out({"type": "pi_future_event", "detail": {"n": 1}})
+        out({"type": "message_end", "message": {"role": "toolResult", "content": "hello from the file"}})
+        out({"type": "message_update", "message": {"role": "toolResult", "content": "hello from the file"}})
+        out({"type": "turn_end", "message": {"content": "hello from the file"}, "toolResults": ["hello from the file"]})
+        out({"type": "pi_future_event", "detail": "hello from the file"})
         out({"type": "agent_settled"})
     elif t == "get_messages":
         out({"type": "response", "id": cid, "command": t, "success": True, "data": {"messages": msgs}})
@@ -470,7 +474,9 @@ for line in sys.stdin.buffer:
         self.assertIn("notes.txt", content)
         self.assertIn("tool result: read", content)
         self.assertNotIn("hello from the file", content)                 # tool output never goes to memory
-        self.assertIn("unknown event pi_future_event", content)          # not dropped silently
+        self.assertIn("unknown event pi_future_event", content)          # not dropped silently, but no payload
+        self.assertNotIn("turn_end", content)
+        self.assertNotIn("toolResult", content)
         self.assertLess(content.index("Looking at the notes."), content.index("tool: read"))
         self.assertLess(content.index("tool: read"), content.index("tool result: read"))
         self.assertLess(content.index("tool result: read"), content.index("unknown event"))
@@ -506,7 +512,8 @@ for line in sys.stdin.buffer:
         self.assertEqual(self.prompt("three")[0], 200)
         self.assertEqual([e["type"] for e in self.read_until_settled(since)],
                          ["agent_start", "message_update", "message_update", "tool_execution_start",
-                          "tool_execution_end", "pi_future_event", "agent_settled"])
+                          "tool_execution_update", "tool_execution_end", "message_end", "message_update",
+                          "turn_end", "pi_future_event", "agent_settled"])    # the event stream keeps everything
 
     def test_closed_port_is_logged_once_and_the_session_keeps_working(self):
         sock = socket.socket()

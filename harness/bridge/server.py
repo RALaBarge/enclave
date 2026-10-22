@@ -252,6 +252,12 @@ def gate_lockdown(socket_path, timeout=10.0):
     return doc
 
 
+# Pi events that carry tool output or repeat what is already recorded: ignored for memory. tool_execution_update holds
+# partial results, message_end (role toolResult) the result again, turn_end the whole turn; assistant text arrives
+# through message_update and tool name/outcome through tool_execution_start/end.
+QUIET_EVENTS = frozenset(("tool_execution_update", "message_start", "message_end", "turn_start", "turn_end"))
+
+
 def ui_response(body) -> dict:
     """The one shape /ui-response may forward: an answer to an extension's UI request, nothing else.
 
@@ -394,11 +400,15 @@ class TurnRecorder:
         if kind == "tool_execution_end":
             self._tool_event(event, start=False)
             return
+        if kind in QUIET_EVENTS:
+            return
         with self.lock:
             if not self.open:
                 return
-            # A Pi event type this bridge does not know yet is recorded rather than dropped.
-            self.unknown_lines.append("unknown event %s: %s" % (kind or "?", _bounded_json(event)))
+            # A Pi event type this bridge does not know yet is recorded by name, never with its payload: a new event
+            # may carry tool output, and memory replays whatever it stores into later sessions.
+            name = kind if isinstance(kind, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", kind) else "?"
+            self.unknown_lines.append("unknown event %s" % name)
 
     def _flush_locked(self):
         if self.current:
@@ -414,6 +424,8 @@ class TurnRecorder:
         if role == "user":                  # some Pi versions replay the prompt as a message event
             if text:
                 self.note_user(text)
+            return
+        if role not in (None, "assistant"):  # a toolResult message is tool output: never stored
             return
         if not isinstance(delta, str):
             delta = None
