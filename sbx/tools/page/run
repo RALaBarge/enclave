@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""page: a web page as Ryan's browser renders it, through browserbox's gate on win11.
+
+stdin  {"url": "https://...", "settle": seconds}     settle optional, 0..20, default 4
+stdout {"url", "title", "text", "links": [{"text", "href"}]}
+
+The gate opens the URL in a background tab of Ryan's Chrome, signed in as him, reads it and closes the tab. That is
+the hole this tool exists for: it reaches one host and port, which the core's allowlist opens for this and nothing
+else. /deskbox/tool/gate holds "URL TOKEN" and is written at deploy, not kept in git.
+"""
+import json
+import sys
+import urllib.request
+
+with open("/deskbox/tool/gate", encoding="ascii") as f:
+    gate, token = f.read().split()
+req = urllib.request.Request(gate + "/page", data=sys.stdin.buffer.read(),
+                             headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+with urllib.request.urlopen(req, timeout=55) as r:
+    json.dump(json.load(r), sys.stdout)

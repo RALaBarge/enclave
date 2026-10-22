@@ -19,3 +19,5 @@
 #   5. deploy: this file -> /etc/sbx/tools.list (harness) and /opt/sbx/tools.list (sbx)
 greet   10
 netcheck 30 net
+page    60 net
+fetch   30 net
