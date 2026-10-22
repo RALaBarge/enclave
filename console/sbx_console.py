@@ -400,7 +400,7 @@ def fw_apply(policy, instant=False):
         rc, msg = _nft(["-f", "-"], text)
         if rc:
             raise Bad(f"nft failed to apply: {msg}")
-        _pending["text"], _pending["policy"] = text, policy
+        _pending["text"], _pending["policy"], _pending["failed"] = text, policy, False
         _pending["deadline"] = time.time() + REVERT_S
         t = threading.Timer(REVERT_S, lambda: _revert(t))   # names its own generation: a stale timer reverts nothing
         t.daemon = True
@@ -513,6 +513,8 @@ def fw_confirm():
     with _fw_lock:
         if not _pending["timer"]:
             raise Bad("nothing pending")
+        if _pending.get("failed"):
+            raise Bad("this change could not be rolled back; cancel it or apply again, it will not be confirmed as is")
         _pending["timer"].cancel()
         _save(_pending["text"], _pending["policy"])
         _pending.update(timer=None, prev=None, text=None, deadline=0)

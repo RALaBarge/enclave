@@ -144,6 +144,18 @@ class SessionGate(unittest.TestCase):
             p.stderr.close()
         self.assertEqual(http_unix(self.sock, "/status")[0], 200)   # the first gate still owns it
 
+    def test_a_regular_file_or_link_at_the_socket_path_is_never_deleted(self):
+        other = os.path.join(self.tmp, "other.sock")
+        for make in (lambda p: open(p, "w").write("keep\n"), lambda p: os.symlink(self.token, p)):
+            make(other)
+            env = dict(os.environ, SBX_GATE_SOCKET=other, SBX_GATE_TOKEN_FILE=self.token,
+                       SBX_GATE_CONSOLE="http://127.0.0.1:%d" % self.cport)
+            r = subprocess.run([sys.executable, GATE], env=env, capture_output=True, timeout=10)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn(b"not a socket", r.stderr)
+            self.assertTrue(os.path.lexists(other))
+            os.remove(other)
+
     def test_socket_is_group_scoped_not_world_writable(self):
         mode = stat.S_IMODE(os.stat(self.sock).st_mode)
         self.assertEqual(mode, 0o660, "socket mode is %04o" % mode)

@@ -180,7 +180,13 @@ class Firewall(unittest.TestCase):
             self.assertTrue(c._pending["timer"] and c._pending["failed"])   # still pending: nobody may think it is gone
             with self.assertRaises(c.Bad):
                 c.fw_lockdown()                                           # and no session starts over it
+            with self.assertRaises(c.Bad):
+                c.fw_confirm()                                            # rules nobody could roll back are not blessed
             c._nft = LIVE
+            c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 24}]})    # a fresh pending apply clears the failed mark
+            self.assertFalse(c._pending["failed"])
+            self.assertFalse(c.fw_status()["revert_failed"])
+            c._pending["failed"] = True
             self.assertEqual(c.fw_lockdown()["profile"], "session")      # nft works again: lockdown heals it
             self.assertIsNone(c._pending["timer"])
         self._with_fake_nft(run)

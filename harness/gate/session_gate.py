@@ -26,6 +26,7 @@ import json
 import os
 import socket
 import socketserver
+import stat
 import sys
 import threading
 import time
@@ -123,7 +124,14 @@ class UnixServer(socketserver.ThreadingUnixStreamServer):
 
 
 def main():
-    if os.path.exists(SOCKET):
+    try:
+        st = os.lstat(SOCKET)
+    except FileNotFoundError:
+        st = None
+    if st is not None and not stat.S_ISSOCK(st.st_mode):
+        # A regular file or a link answers a connect with ECONNREFUSED too; only a socket is ever reclaimed.
+        raise SystemExit(f"refusing to start: {SOCKET} exists and is not a socket")
+    if st is not None:
         # Reclaim a socket left by a dead gate, but not one a running gate is
         # still serving: unlinking a live socket leaves the first process
         # reachable by nobody, which looks like "the gate is up". Same probe as
