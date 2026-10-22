@@ -113,6 +113,37 @@ class SessionGate(unittest.TestCase):
         self.proc.wait(timeout=5)
         self.proc.stderr.close()
 
+    def _start_again(self):
+        env = dict(os.environ, SBX_GATE_SOCKET=self.sock, SBX_GATE_CONSOLE="http://127.0.0.1:%d" % self.cport,
+                   SBX_GATE_TOKEN_FILE=self.token,
+                   SBX_GATE_SOCKET_GROUP=os.environ.get("SBX_GATE_TEST_GROUP", "nogroup-xyz"))
+        return subprocess.Popen([sys.executable, GATE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    def test_restart_over_a_stale_socket(self):
+        self.proc.kill()
+        self.proc.wait(timeout=5)                 # killed: the socket file stays behind
+        self.assertTrue(os.path.exists(self.sock))
+        self.proc.stderr.close()
+        self.proc = self._start_again()
+        for _ in range(100):
+            try:
+                if http_unix(self.sock, "/status", timeout=1)[0] == 200:
+                    break
+            except OSError:
+                pass
+            time.sleep(0.05)
+        else:
+            self.fail("gate did not come back over a stale socket: %s" % self.proc.stderr.read1(4000))
+
+    def test_a_second_gate_refuses_to_steal_a_live_socket(self):
+        p = self._start_again()
+        try:
+            self.assertNotEqual(p.wait(timeout=10), 0)
+            self.assertIn(b"refusing to start", p.stderr.read())
+        finally:
+            p.stderr.close()
+        self.assertEqual(http_unix(self.sock, "/status")[0], 200)   # the first gate still owns it
+
     def test_socket_is_group_scoped_not_world_writable(self):
         mode = stat.S_IMODE(os.stat(self.sock).st_mode)
         self.assertEqual(mode, 0o660, "socket mode is %04o" % mode)

@@ -24,6 +24,7 @@ it. No shared secret, nothing to rotate.
 import grp
 import json
 import os
+import socket
 import socketserver
 import sys
 import threading
@@ -131,8 +132,10 @@ def main():
         try:
             probe.settimeout(1.0)
             probe.connect(SOCKET)
-        except OSError:
-            os.unlink(SOCKET)      # nothing answered: stale
+        except ConnectionRefusedError:
+            os.unlink(SOCKET)      # nobody listening: stale
+        except OSError as e:       # a timeout or EACCES may be a live gate: never unlink it
+            raise SystemExit(f"refusing to start: cannot tell whether {SOCKET} is live ({e})")
         else:
             raise SystemExit(f"refusing to start: another session gate is listening on {SOCKET}")
         finally:
