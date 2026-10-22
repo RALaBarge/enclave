@@ -15,7 +15,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends nftables python3 bubblewrap openssh-server ca-certificates curl iproute2 sudo iputils-ping
 
-# ---- sandbox user: key login only, forced into sbx-channel (sbx-run, or reset for a reboot) ----
+# ---- sandbox user: key login only, forced into sbx-channel (sbx-run, reset for a reboot, install for new tools) ----
 SBX_HOME=/home/sbx
 FORCED='command="/opt/sbx/sbx-channel",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty,restrict'
 id sbx >/dev/null 2>&1 || useradd --create-home --home-dir "$SBX_HOME" --shell /bin/sh sbx
@@ -33,8 +33,9 @@ install -m 644 "$ROOT/tools.list" /opt/sbx/tools.list
 install -m 755 "$ROOT/sbx/sbx-run" /opt/sbx/sbx-run
 install -m 755 "$ROOT/sbx/sbx-channel" /opt/sbx/sbx-channel    # forced command: sbx-run, or reset
 install -m 755 "$HERE/sbx-reset.sh" /usr/local/sbin/sbx-reset  # root helper behind the reset verb
-# The reset channel may run exactly one program as root, with no TTY (the forced command has none).
-printf '%s\n' 'Defaults:sbx !requiretty' 'sbx ALL=(root) NOPASSWD: /usr/local/sbin/sbx-reset' >/etc/sudoers.d/sbx-reset
+install -m 755 "$HERE/sbx-install.py" /usr/local/sbin/sbx-install  # root helper behind the install verb
+# The channel may run exactly these two programs as root, with no TTY (the forced command has none).
+printf '%s\n' 'Defaults:sbx !requiretty' 'sbx ALL=(root) NOPASSWD: /usr/local/sbin/sbx-reset, /usr/local/sbin/sbx-install' >/etc/sudoers.d/sbx-reset
 chmod 440 /etc/sudoers.d/sbx-reset
 visudo -cf /etc/sudoers.d/sbx-reset
 cp -r "$ROOT/sbx/tools/." /opt/sbx/tools/

@@ -267,6 +267,7 @@ iface eth1 inet static
 EOF
 echo "net.ipv4.ip_forward=1" >/etc/sysctl.d/90-sbx-gateway.conf
 
+install -m 755 "$HERE/sbx-push-tools.sh" /usr/local/sbin/sbx-push-tools   # full mode: send /opt/sbx/tools to the box
 install -m 755 "$HERE/sbx-reboot-and-wait.sh" /usr/local/bin/sbx-reboot-and-wait   # full-mode SBX_RESET_CMD
 bash "$HERE/setup-lite.sh"      # sbx user + forced-command key + loopback sshd + broker env + first-boot banner
 echo "Provisioned. Run: bash image/smoke-test.sh"
