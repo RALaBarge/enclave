@@ -693,10 +693,24 @@ def tool_timeout(name, t):
 
 # ------------------------------------------------------------------ settings
 
-# Lite mode needs no reset: sbx-run gives every job a fresh bwrap tmpfs. These are hooks YOU install.
-PRESET_RESETS = {"": "no reset (lite: fresh bwrap tmpfs per job)",
-                 "/usr/local/bin/sbx-vm-revert": "revert VM snapshot",
-                 "/usr/local/bin/sbx-reboot-and-wait": "reboot sandbox box and wait"}
+# The reset command belongs to sbx-mode (box: reboot the sandbox box; lite: none) and is shown here, not set. What the
+# console owns is the switch for the routine reset after each job: a flag file in its own directory that the broker
+# checks per job. It cannot pick a different command, and the broker never lets it skip the retry of a failed reset.
+RESET_OFF = os.path.join(ETC, "reset-off")
+
+
+def reset_set(enabled):
+    if not isinstance(enabled, bool):
+        raise Bad("enabled must be true or false")
+    if enabled:
+        try:
+            os.remove(RESET_OFF)
+        except FileNotFoundError:
+            pass
+    else:
+        os.makedirs(ETC, exist_ok=True)
+        _atomic_write(RESET_OFF, "switched off in the console at %s\n" % time.strftime("%Y-%m-%dT%H:%M:%S"))
+    return {"reset_after_job": enabled}
 
 
 def _v_host(v):
@@ -722,16 +736,10 @@ def _v_user(v):
     return v
 
 
-def _v_reset(v):
-    if v not in PRESET_RESETS:
-        raise Bad("reset command must be one of the installed presets")
-    return v
-
-
 SETTINGS = {  # broker.env key -> validator. Anything else is refused, never written.
     "SBX_HOST": _v_host, "SBX_USER": _v_user, "SBX_PORT": _v_int(1, 65535),
     "SBX_MAX_TIMEOUT": _v_int(1, 120), "SBX_MAX_REQ": _v_int(1024, 16 << 20),
-    "SBX_MAX_OUT": _v_int(1024, 16 << 20), "SBX_RESET_CMD": _v_reset,
+    "SBX_MAX_OUT": _v_int(1024, 16 << 20),
 }
 
 
@@ -760,7 +768,8 @@ def get_mode():
 def settings_get():
     vals, _ = _read_env()
     return {"mode": get_mode(), "broker": {k: vals.get(k, "") for k in SETTINGS},
-            "reset_presets": PRESET_RESETS, "fw_revert_s": REVERT_S}
+            "reset_cmd": vals.get("SBX_RESET_CMD", ""), "reset_after_job": not os.path.exists(RESET_OFF),
+            "fw_revert_s": REVERT_S}
 
 
 def settings_set(body):
@@ -807,6 +816,7 @@ ROUTES = {
     ("POST", "/api/tools/timeout"): lambda b: tool_timeout(b.get("name"), b.get("timeout_s")),
     ("GET", "/api/settings"): lambda b: settings_get(),
     ("POST", "/api/settings"): lambda b: settings_set(b),
+    ("POST", "/api/settings/reset"): lambda b: reset_set(b.get("enabled")),
 }
 
 

@@ -400,7 +400,7 @@ class Tools(unittest.TestCase):
 class Settings(unittest.TestCase):
     def test_set_and_preserve(self):
         open(c.BROKER_ENV, "w").write("# keep me\nSBX_HOST=10.77.0.2\nSBX_KEY=/etc/sbx/id_ed25519\n")
-        r = c.settings_set({"broker": {"SBX_HOST": "127.0.0.1", "SBX_PORT": "2222", "SBX_RESET_CMD": ""}, "mode": "full"})
+        r = c.settings_set({"broker": {"SBX_HOST": "127.0.0.1", "SBX_PORT": "2222"}, "mode": "full"})
         self.assertTrue(r["restart_required"])
         t = open(c.BROKER_ENV).read()
         self.assertIn("# keep me", t)
@@ -410,12 +410,26 @@ class Settings(unittest.TestCase):
         self.assertEqual(c.get_mode(), "full")
 
     def test_refuses_dangerous(self):
-        for body in ({"broker": {"SBX_KEY": "/etc/shadow"}}, {"broker": {"SBX_RESET_CMD": "rm -rf /"}},
+        for body in ({"broker": {"SBX_KEY": "/etc/shadow"}}, {"broker": {"SBX_RESET_CMD": "rm -rf /"}}, {"broker": {"SBX_RESET_CMD": ""}},
                      {"broker": {"SBX_HOST": "a b"}}, {"broker": {"SBX_PORT": "0"}},
                      {"broker": {"SBX_USER": "root; id"}}, {"mode": "weird"}):
             with self.assertRaises(c.Bad, msg=str(body)):
                 c.settings_set(body)
 
+
+    def test_reset_switch_is_a_flag_file_not_broker_env(self):
+        open(c.BROKER_ENV, "w").write("SBX_HOST=10.77.0.2\nSBX_RESET_CMD=/usr/local/bin/sbx-reboot-and-wait\n")
+        before = open(c.BROKER_ENV).read()
+        self.assertTrue(c.settings_get()["reset_after_job"])                  # on by default
+        self.assertEqual(c.settings_get()["reset_cmd"], "/usr/local/bin/sbx-reboot-and-wait")
+        c.reset_set(False)
+        self.assertTrue(os.path.exists(c.RESET_OFF))
+        self.assertFalse(c.settings_get()["reset_after_job"])
+        c.reset_set(True)
+        self.assertFalse(os.path.exists(c.RESET_OFF))
+        self.assertEqual(open(c.BROKER_ENV).read(), before)                    # the console never wrote broker.env
+        with self.assertRaises(c.Bad):
+            c.reset_set("no")
 
 class Http(unittest.TestCase):
     @classmethod

@@ -171,18 +171,24 @@ async function loadTools(){
 }
 
 // ---- settings
-const LABELS={SBX_HOST:"Sandbox host",SBX_USER:"Sandbox user",SBX_PORT:"SSH port",SBX_MAX_TIMEOUT:"Max job timeout (s)",SBX_MAX_REQ:"Max request bytes",SBX_MAX_OUT:"Max output bytes",SBX_RESET_CMD:"Reset after every job"};
+const LABELS={SBX_HOST:"Sandbox host",SBX_USER:"Sandbox user",SBX_PORT:"SSH port",SBX_MAX_TIMEOUT:"Max job timeout (s)",SBX_MAX_REQ:"Max request bytes",SBX_MAX_OUT:"Max output bytes"};
 let cur=null;
 async function loadSettings(){
   cur=await act(()=>api("/api/settings"));if(!cur)return;const s=$("settings");s.replaceChildren();
   const mode=el("select",{id:"s-mode"},el("option",{value:"lite",textContent:"Lite: sandbox in this VM (bwrap)"}),el("option",{value:"full",textContent:"Full: separate sandbox machine"}));mode.value=cur.mode;
   s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},"Mode"),mode));
+  // Reboot after every job: the command comes from sbx-mode; this only switches the routine reset off and on.
+  const has=!!cur.reset_cmd, rb=el("input",{type:"checkbox",id:"s-reset",checked:cur.reset_after_job,disabled:!has});
+  const note=el("span",{className:has&&!cur.reset_after_job?"bad":"mut"},!has?"lite mode: every job already gets a fresh bwrap, nothing to reboot"
+    :cur.reset_after_job?"on: "+cur.reset_cmd+" after every job (the next job waits for it)"
+    :"off: jobs reuse the sandbox box as the last job left it. A failed reset is still retried.");
+  rb.onchange=()=>act(async()=>{await api("/api/settings/reset",{enabled:rb.checked});toast(rb.checked?"Reboot after every job: on":"Reboot after every job: off",!rb.checked);loadSettings()});
+  s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},"Reboot sandbox after every job"),rb,note));
   for(const k in LABELS){
-    let inp;
-    if(k==="SBX_RESET_CMD"){inp=el("select",{id:"s-"+k});for(const v in cur.reset_presets)inp.append(el("option",{value:v,textContent:cur.reset_presets[v]}));inp.value=cur.broker[k]||""}
-    else inp=el("input",{id:"s-"+k,value:cur.broker[k]||"",size:24});
+    const inp=el("input",{id:"s-"+k,value:cur.broker[k]||"",size:24});
     s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},LABELS[k]),inp));
   }
+  s.append(el("p",{className:"mut"},"Per-tool timeouts are on the Tools tab. Queue and reset waits are fixed (300 s each) so the contracts can be sized for them."));
 }
 $("save").onclick=()=>act(async()=>{const broker={};for(const k in LABELS){const v=$("s-"+k).value;if(v!==(cur.broker[k]||""))broker[k]=v}
   const body={broker};if($("s-mode").value!==cur.mode)body.mode=$("s-mode").value;
