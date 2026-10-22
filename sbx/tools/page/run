@@ -6,7 +6,7 @@ stdout {"url", "title", "text", "links": [{"text", "href"}]}
 
 The gate opens the URL in a background tab of Ryan's Chrome, signed in as him, reads it and closes the tab. That is
 the hole this tool exists for: it reaches one host and port, which the core's allowlist opens for this and nothing
-else. /deskbox/tool/gate holds "URL TOKEN" and is written at deploy, not kept in git.
+else. /deskbox/tool/gate holds "URL TOKEN"; sbx-fetch-gate writes it from Bitwarden at each push, never git.
 """
 import json
 import sys

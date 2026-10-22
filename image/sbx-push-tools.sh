@@ -10,6 +10,7 @@ set -a
 . "$ENV"
 set +a
 [ "${SBX_HOST:-}" != 127.0.0.1 ] || { echo "sbx-push-tools: lite mode, the tools already run from /opt/sbx here" >&2; exit 1; }
+/usr/local/sbin/sbx-fetch-gate      # the page/fetch tools' gate token, current from Bitwarden
 tar -C /opt/sbx -cf - tools.list tools |
   ssh -T -i "${SBX_KEY:-/etc/sbx/id_ed25519}" \
     -o BatchMode=yes -o IdentitiesOnly=yes -o ForwardAgent=no -o ForwardX11=no -o RequestTTY=no \

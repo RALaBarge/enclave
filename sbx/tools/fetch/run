@@ -6,7 +6,7 @@ stdout {"url", "body"}      body is the response text, cut at 200,000 characters
 
 The extension makes the request with Ryan's cookies for that site, so it is signed in as him. That is
 the hole this tool exists for: it reaches one host and port, which the core's allowlist opens for this and nothing
-else. /deskbox/tool/gate holds "URL TOKEN" and is written at deploy, not kept in git.
+else. /deskbox/tool/gate holds "URL TOKEN"; sbx-fetch-gate writes it from Bitwarden at each push, never git.
 """
 import json
 import sys

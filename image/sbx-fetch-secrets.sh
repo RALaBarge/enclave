@@ -36,6 +36,8 @@ if not isinstance(items, list):
 seen = set()
 for it in items:
     k, v = it.get("key", ""), it.get("value", "")
+    if k.startswith("SBX_GATE"):        # gate token for the page and fetch tools: sbx-fetch-gate places it, never in Pi
+        continue
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
         sys.exit("secret name %r is not a valid environment variable name" % k)
     if k in seen:
