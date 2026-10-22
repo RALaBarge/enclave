@@ -1,10 +1,11 @@
 [Unit]
 Description=pi-bridge (HTTP/SSE API over Pi's RPC mode; loopback only, peers off)
-After=network.target sbx-broker.service sbx-console.service sbx-session-gate.service
+# network-online: sbx-fetch-secrets needs DNS for Bitwarden; at boot it otherwise fails five times in two seconds.
+After=network-online.target sbx-broker.service sbx-console.service sbx-session-gate.service
 # The gate, not this service, holds the tighten-only token and forces the
 # session profile. It is wanted rather than merely ordered: a bridge that
 # starts without a gate would create sessions on whatever profile is active.
-Wants=sbx-session-gate.service
+Wants=sbx-session-gate.service network-online.target
 
 [Service]
 User=pibridge
@@ -28,6 +29,7 @@ ExecStart=/usr/bin/python3 -B /opt/pi-bridge/server.py --pi-bin /usr/local/bin/p
 # or by deleting the sessions through the API.
 KillMode=process
 Restart=on-failure
+RestartSec=10
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
