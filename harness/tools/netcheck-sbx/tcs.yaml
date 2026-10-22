@@ -1,0 +1,52 @@
+name: netcheck-sbx
+summary: |
+  Checks the sandbox box's network from inside a tool job on the box: one
+  address on the private link, the core as gateway and resolver, nothing
+  listening off the link, the core's services unreachable, and egress only as
+  far as the core's allowlist. The network half of sbx-node-test; the
+  root-only half (nftables ruleset, forced-command key) needs the box's
+  keyboard. Use it after changing the firewall allowlist: expect "open" for a
+  host you just allowed, "blocked" (the default) otherwise.
+
+input:
+  type: object
+  additionalProperties: false
+  properties:
+    expect: { type: string, enum: [blocked, open] }
+    host:   { type: string, minLength: 1, maxLength: 253 }   # checked against a hostname pattern in the tool
+
+output:
+  schema:
+    type: object
+    additionalProperties: false
+    required: [passed, failed, checks]
+    properties:
+      passed: { type: integer }
+      failed: { type: integer }
+      checks:
+        type: array
+        maxItems: 20
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, ok, detail]
+          properties:
+            name:   { type: string, maxLength: 80 }
+            ok:     { type: boolean }
+            detail: { type: string, maxLength: 300 }
+
+allowed_side_effects:
+  files: []
+  # The stub only talks to the broker over the bound socket. The network this
+  # tool tests is the sandbox box's, granted by `net` in tools.list.
+  network: false
+
+sandbox:
+  bind:
+    - src: /run/sbx/broker.sock
+      dst: /deskbox/broker.sock
+
+execution:
+  mode: queued
+  max_retries: 0
+  timeout_ms: 150000
