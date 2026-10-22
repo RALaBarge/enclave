@@ -17,6 +17,8 @@ os.makedirs(os.path.dirname(os.environ["SBX_TOOLLIST"]))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sbx_console as c  # noqa: E402
 
+LIVE = lambda args, stdin=None: (0, "table inet sbxfw {\n  chain forward {\n  }\n}" if args[0] == "list" else "")
+
 FAKE = {"openrouter.ai": (["104.18.2.115", "104.18.3.115"], ["2606:4700::6812:273"]), "1.2.3.4": (["1.2.3.4"], [])}
 
 
@@ -175,7 +177,36 @@ class Firewall(unittest.TestCase):
             c._nft = lambda args, stdin=None: (1, "boom")                    # nothing applies: say so, loudly
             with self.assertRaises(c.Bad):
                 c.fw_cancel()
+            self.assertTrue(c._pending["timer"] and c._pending["failed"])   # still pending: nobody may think it is gone
+            with self.assertRaises(c.Bad):
+                c.fw_lockdown()                                           # and no session starts over it
+            c._nft = LIVE
+            self.assertEqual(c.fw_lockdown()["profile"], "session")      # nft works again: lockdown heals it
             self.assertIsNone(c._pending["timer"])
+        self._with_fake_nft(run)
+
+    def test_lockdown_needs_the_live_table(self):
+        def run(calls):
+            base = c.validate_policy({"sbx_ifaces": ["eth1"]})
+            c._save(c.render_ruleset(base)[0], base)
+            c._nft = lambda args, stdin=None: (1, "No such file or directory") if args[0] == "list" else (0, "")
+            with self.assertRaises(c.Bad):                                # policy.json says session; the kernel has nothing
+                c.fw_lockdown()
+            c._nft = lambda args, stdin=None: (calls.append((args, stdin)) or LIVE(args, stdin))
+            self.assertEqual(c.fw_lockdown(), {"profile": "session", "changed": False})
+            self.assertTrue(any(a == ["-f", "-"] for a, _ in calls))     # applied even though nothing changed
+        self._with_fake_nft(run)
+
+    def test_session_may_not_allow_more_than_build(self):
+        def run(calls):
+            base = c.validate_policy({"sbx_ifaces": ["eth1"]})
+            c._save(c.render_ruleset(base)[0], base)
+            one = [{"host": "1.2.3.4", "port": 443}]
+            with self.assertRaises(c.Bad):
+                c.fw_apply({"profiles": {"session": {"allow": one}}}, instant=True)
+            with self.assertRaises(c.Bad):
+                c.fw_apply({"profiles": {"build": {"block": one}}}, instant=True)
+            c.fw_apply({"profiles": {"build": {"allow": one}}}, instant=True)         # build may be wider
         self._with_fake_nft(run)
 
     def test_a_stale_timer_reverts_nothing(self):
@@ -195,7 +226,8 @@ class Firewall(unittest.TestCase):
         def run(calls):
             base = c.validate_policy({"sbx_ifaces": ["eth1"]})
             c._save(c.render_ruleset(base)[0], base)
-            r = c.fw_apply({"profiles": {"session": {"allow": [{"host": "1.2.3.4", "port": 443}]}}}, instant=True)
+            one = [{"host": "1.2.3.4", "port": 443}]
+            r = c.fw_apply({"profiles": {"session": {"allow": one}, "build": {"allow": one}}}, instant=True)
             self.assertEqual((r["applied"], r["pending"]), (True, False))
             self.assertIsNone(c._pending["timer"])
             self.assertEqual(c.load_policy()["profiles"]["session"]["allow"][0]["host"], "1.2.3.4/32")
@@ -427,7 +459,7 @@ class Http(unittest.TestCase):
         self.assertEqual(self.req("POST", c.LOCKDOWN_PATH, body="{}", headers={**T, "Authorization": "Bearer nope"})[0], 401)
         old = (c._nft, c.ETC)
         c.ETC = tempfile.mkdtemp()
-        c._nft = lambda args, stdin=None: (0, "")
+        c._nft = LIVE
         c._pending.update(timer=None, prev=None, text=None, deadline=0, policy=None)
         try:
             base = c.validate_policy({"sbx_ifaces": ["eth1"], "profiles": {"build": {"allow": [{"host": "10.1.2.3", "port": 443}]}}})

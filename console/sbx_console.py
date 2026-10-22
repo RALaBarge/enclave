@@ -354,6 +354,20 @@ def _save(text, policy):
     _atomic_write(os.path.join(ETC, "policy.json"), json.dumps(policy, indent=2) + "\n")
 
 
+def _session_within_build(policy):
+    """Switching build -> session (what lockdown does) must never add egress: every session allow is also a build
+    allow, and every build block is also a session block."""
+    key = lambda r: (r["host"], str(r["port"]), r.get("proto", "tcp"))
+    se, bu = policy["profiles"]["session"], policy["profiles"]["build"]
+    extra = {key(r) for r in se["allow"]} - {key(r) for r in bu["allow"]}
+    if extra:
+        raise Bad("session may not allow what build does not; add to build too: "
+                  + ", ".join("%s %s/%s" % k for k in sorted(extra)))
+    missing = {key(r) for r in bu["block"]} - {key(r) for r in se["block"]}
+    if missing:
+        raise Bad("every build block must also be a session block: " + ", ".join("%s %s/%s" % k for k in sorted(missing)))
+
+
 def fw_apply(policy, instant=False):
     """Validate, check, make live. Two-phase by default (revert timer); instant=True applies and saves at once, allowed only
     when the change cannot affect access to this host (no change to management sources or the sandbox interface)."""
@@ -362,6 +376,7 @@ def fw_apply(policy, instant=False):
     if isinstance(policy, dict) and "sbx_ifaces" not in policy:
         policy = {**policy, "sbx_ifaces": base["sbx_ifaces"]}
     policy = validate_policy(policy)
+    _session_within_build(policy)
     text, warns = render_ruleset(policy)
     with _fw_lock:
         rc, msg = _nft(["-c", "-f", "-"], text)
@@ -419,23 +434,23 @@ def fw_check_expiry():
 
 
 def fw_lockdown():
-    """Tighten only: make sure the session profile is active. Never loosens anything.
+    """Make the session profile live, and prove it. Called by the session gate before every new agent session.
 
-    A pending (unconfirmed) apply is rolled back first, exactly as if its timer had run out: the live rules go back to
-    the last confirmed policy, which is then switched to the session profile. A forgotten confirm must never stop a
-    new agent session from starting, and an unconfirmed change must never decide what the new session runs under.
+    A pending (unconfirmed) apply is rolled back first, exactly as if its timer had run out. Then the session profile
+    of the last confirmed policy is applied every time, not only when policy.json says build: the saved file can say
+    session while the kernel has no table (nftables failed at boot, someone flushed it). Success means the table is
+    listed back afterwards. Anything else raises, and the gate refuses the session.
+
+    Lockdown never loosens: fw_apply refuses a policy whose session profile allows more than its build profile.
     """
-    with _fw_lock:
-        t = _pending["timer"]
-    if t:
-        t.cancel()
-        if _revert(t) is None:
-            raise Bad("rolling back the pending change failed; check the firewall before starting a session")
+    if _pending["timer"] and _revert() is None:
+        raise Bad("rolling back the pending change failed; the unconfirmed rules may still be live")
     was = load_policy()["active"]
-    if was == "session":
-        return {"profile": "session", "changed": False}
     fw_set_profile("session")
-    return {"profile": "session", "changed": True, "was": was}
+    rc, live = _nft(["list", "table", "inet", "sbxfw"])
+    if rc or "chain forward" not in live:
+        raise Bad("session rules applied but table inet sbxfw is not live")
+    return {"profile": "session", "changed": was != "session", **({"was": was} if was != "session" else {})}
 
 
 def _expiry_loop():
@@ -456,17 +471,22 @@ table inet sbxfw {
 """
 
 
-def _revert(gen):
+def _revert(gen=None):
     """Put the rules from before the pending apply back, in one nft transaction. Returns what it restored, or None.
 
-    gen is the timer the pending apply started: a timer that fires after a newer apply replaced it reverts nothing.
+    gen is the timer that fired: if a newer apply replaced it, nothing is reverted. Callers that mean "whatever is
+    pending now" (cancel, lockdown) pass nothing, so a snapshot taken before an apply raced in cannot report success.
     The rollback point is the live table as listed at apply time; failing that, the last confirmed ruleset; failing
-    that, DENY_ALL. The table is never left deleted: every attempt replaces it inside the same transaction, so a
-    failed one leaves the current rules in place and the next attempt runs.
+    that, DENY_ALL. The table is never left deleted: every attempt replaces it inside the same transaction. If every
+    attempt fails, the change stays marked pending (failed, no timer), so lockdown and the UI keep seeing it.
     """
     with _fw_lock:
-        if _pending["timer"] is not gen:
+        cur = _pending["timer"]
+        if cur is None:
+            return "nothing pending"
+        if gen is not None and cur is not gen:
             return "nothing (superseded)"
+        cur.cancel()
         attempts = []
         if _pending["prev"]:
             attempts.append(("previous live table", "table inet sbxfw\ndelete table inet sbxfw\n" + _pending["prev"] + "\n"))
@@ -476,14 +496,16 @@ def _revert(gen):
         except OSError:
             pass
         attempts.append(("deny-all fallback", DENY_ALL))
-        _pending.update(timer=None, prev=None, text=None, deadline=0)
         for what, text in attempts:
             rc, msg = _nft(["-f", "-"], text)
             if rc == 0:
                 if what != attempts[0][0]:
                     print(f"firewall revert: restored the {what}", file=sys.stderr, flush=True)
+                _pending.update(timer=None, prev=None, text=None, deadline=0, failed=False)
                 return what
             print(f"FIREWALL REVERT FAILED ({what}): {msg}", file=sys.stderr, flush=True)
+        stuck = threading.Timer(0, lambda: None)            # never started: marks "pending, revert failed"
+        _pending.update(timer=stuck, deadline=0, failed=True)
         return None
 
 
@@ -498,11 +520,9 @@ def fw_confirm():
 
 
 def fw_cancel():
-    t = _pending["timer"]
-    if not t:
+    if not _pending["timer"]:
         raise Bad("nothing pending")
-    t.cancel()
-    what = _revert(t)
+    what = _revert()
     if what is None:
         raise Bad("revert failed: nft refused every rollback, the unconfirmed rules are still live; see the console log")
     return {"reverted": True, "restored": what}
@@ -513,7 +533,7 @@ def fw_status():
     left = max(0, int(_pending["deadline"] - time.time())) if _pending["timer"] else 0
     pol = load_policy()
     until = pol["active_until"]
-    return {"policy": pol, "live": rc == 0, "pending": bool(_pending["timer"]),
+    return {"policy": pol, "live": rc == 0, "pending": bool(_pending["timer"]), "revert_failed": bool(_pending.get("failed")),
             "revert_in_s": left, "pending_policy": _pending.get("policy") if _pending["timer"] else None,
             "build_left_s": max(0, int(until - time.time())) if until else 0}
 
