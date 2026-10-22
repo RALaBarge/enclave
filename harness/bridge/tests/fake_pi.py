@@ -21,7 +21,9 @@ for line in sys.stdin.buffer:
         out({"type": "response", "id": cid, "command": t, "success": True, "data": {"messages": msgs}})
     elif t == "get_state":
         out({"type": "response", "id": cid, "command": t, "success": True, "data": {"model": "fake"}})
-    elif t == "crash":
+    elif t == "extension_ui_response" and cmd.get("id") == "crash":
         sys.exit(3)
+    elif t == "extension_ui_response":
+        pass                     # Pi answers nothing to a UI response
     else:
         out({"type": "response", "id": cid, "command": t, "success": False, "error": "unknown " + str(t)})

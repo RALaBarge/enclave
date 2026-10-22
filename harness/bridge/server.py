@@ -252,6 +252,24 @@ def gate_lockdown(socket_path, timeout=10.0):
     return doc
 
 
+def ui_response(body) -> dict:
+    """The one shape /ui-response may forward: an answer to an extension's UI request, nothing else.
+
+    Pi runs every other input object through its ordinary command handler, so a loose check here
+    would be a second /command without the allowlist or the lockdown.
+    """
+    if not isinstance(body, dict) or body.get("type") != "extension_ui_response":
+        raise ValueError("ui-response takes only type extension_ui_response")
+    rid = body.get("id")
+    if not isinstance(rid, str) or not 0 < len(rid) <= 128:
+        raise ValueError("ui-response needs a string 'id'")
+    rest = {k: v for k, v in body.items() if k not in ("type", "id")}
+    if len(rest) != 1 or not (isinstance(rest.get("value"), str) or isinstance(rest.get("confirmed"), bool)
+                              or rest.get("cancelled") is True):
+        raise ValueError("ui-response needs exactly one of value (string), confirmed (bool), cancelled (true)")
+    return {"type": "extension_ui_response", "id": rid, **rest}
+
+
 def _clip(value, limit):
     s = value if isinstance(value, str) else str(value)
     if len(s) <= limit:
@@ -812,7 +830,7 @@ def make_handler(app: App):
                         app.note_user(s, cmd.get("message"))
                     return self._json(200, s.call(cmd, timeout=float(q.get("timeout", ["30"])[0])))
                 if what == "ui-response" and m == "POST":
-                    s.fire(self._body())
+                    s.fire(ui_response(self._body()))
                     return self._json(202, {"ok": True})
                 if what == "stderr" and m == "GET":
                     return self._json(200, list(s.stderr))

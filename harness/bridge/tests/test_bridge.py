@@ -158,7 +158,7 @@ class Local(unittest.TestCase):
         self.assertEqual(req(self.base, "/sessions/aaaaaaaaaaaa/command", "POST", {"type": "x"})[0], 404)
         sid = req(self.base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})[1]["id"]
         self.assertEqual(req(self.base, "/sessions/%s/command" % sid, "POST", {})[0], 400)
-        req(self.base, "/sessions/%s/ui-response" % sid, "POST", {"type": "crash"})
+        req(self.base, "/sessions/%s/ui-response" % sid, "POST", {"type": "extension_ui_response", "id": "crash", "cancelled": True})
         for _ in range(50):
             if not req(self.base, "/sessions")[1][0]["alive"]:
                 break
@@ -166,6 +166,19 @@ class Local(unittest.TestCase):
         info = req(self.base, "/sessions")[1][0]
         self.assertEqual((info["alive"], info["exit_code"]), (False, 3))
         self.assertEqual(req(self.base, "/sessions/%s/command" % sid, "POST", {"type": "get_state"})[0], 502)
+
+    def test_ui_response_takes_only_ui_responses(self):
+        sid = req(self.base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})[1]["id"]
+        bad = [{"type": "bash", "command": "id"}, {"type": "prompt", "message": "hi"}, {"type": "new_session"},
+               {"type": "crash"}, {"type": "extension_ui_response"}, {"type": "extension_ui_response", "id": 7, "value": "x"},
+               {"type": "extension_ui_response", "id": "a", "value": "x", "message": "hi"},
+               {"type": "extension_ui_response", "id": "a", "cancelled": False}, ["extension_ui_response"]]
+        for b in bad:
+            self.assertEqual(req(self.base, "/sessions/%s/ui-response" % sid, "POST", b)[0], 400, b)
+        for b in ({"id": "a", "value": "x"}, {"id": "a", "confirmed": False}, {"id": "a", "cancelled": True}):
+            b["type"] = "extension_ui_response"
+            self.assertEqual(req(self.base, "/sessions/%s/ui-response" % sid, "POST", b)[0], 202, b)
+        self.assertEqual(req(self.base, "/sessions/%s/command" % sid, "POST", {"type": "get_state"})[0], 200)
 
     def test_command_allowlist(self):
         sid = req(self.base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})[1]["id"]

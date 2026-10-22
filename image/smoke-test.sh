@@ -41,10 +41,9 @@ check_units() {
     if [ "$state" = active ]; then pass "unit:$u" "active"
     else fail "unit:$u" "state=${state:-unknown}"; fi
   done
+  # sshd runs in both modes: loopback only (the listeners check), the operator's way in through tailscale serve.
   state=$(systemctl is-active ssh 2>/dev/null)
-  if [ "$MODE" = box ]; then   # the sandbox is another machine: nothing here should accept SSH
-    if [ "$state" = active ]; then fail "unit:ssh" "active in box mode (should be off)"; else pass "unit:ssh" "off in box mode"; fi
-  elif [ "$state" = active ]; then pass "unit:ssh" "active"
+  if [ "$state" = active ]; then pass "unit:ssh" "active"
   else fail "unit:ssh" "state=${state:-unknown}"; fi
 }
 
@@ -314,12 +313,19 @@ check_bridge() {
   argv=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H 'Content-Type: application/json' \
     -d '{"type":"bash","command":"id"}' "$api/sessions/$sid/command")
+  local uicode uiprompt
+  uicode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H 'Content-Type: application/json' \
+    -d '{"type":"bash","command":"id"}' "$api/sessions/$sid/ui-response")
+  uiprompt=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H 'Content-Type: application/json' \
+    -d '{"type":"prompt","message":"hi"}' "$api/sessions/$sid/ui-response")
   curl -s --max-time 10 -X DELETE "$api/sessions/$sid" >/dev/null 2>&1
   for flag in --offline --no-builtin-tools --no-extensions --no-mcp --no-skills --no-context-files desk-extension.js; do
     case " $argv " in *"$flag"*) ;; *) fail pi-lockdown "pi (pid ${pid:-?}) runs without $flag: $argv"; return;; esac
   done
   if [ "$code" = 400 ]; then pass pi-lockdown "pi runs locked down with the desk extension; RPC bash refused (400)"
   else fail pi-lockdown "RPC bash answered $code, expected 400"; fi
+  if [ "$uicode" = 400 ] && [ "$uiprompt" = 400 ]; then pass pi-ui-response "/ui-response refuses bash and prompt (400)"
+  else fail pi-ui-response "/ui-response answered bash=$uicode prompt=$uiprompt, expected 400"; fi
   if printf '%s' "$out" | python3 -c 'import json,sys; assert json.load(sys.stdin)["success"] is True' 2>/dev/null; then
     pass pi-bridge "session -> real pi get_state OK"
   else fail pi-bridge "get_state failed: $(printf '%s' "$out" | head -c 200)"; fi
