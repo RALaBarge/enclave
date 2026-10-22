@@ -3,7 +3,8 @@
 
   python3 sync.py                generate stubs, then validate
   python3 sync.py --check        validate only (CI / pre-deploy)
-  python3 sync.py --deploy DIR   validate, then install into DIR (the desk's tools dir)
+  python3 sync.py --deploy DIR   validate like --check, then install into DIR (the desk's tools dir);
+                                 never writes the checkout
 
 For each tool in tools.list it checks sbx/tools/<name>/run and
 harness/tools/<name>-sbx/tcs.yaml exist, (re)writes the generic stub
@@ -20,6 +21,7 @@ the run script at 0700, so only the desk's account can execute it.
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -35,9 +37,11 @@ if "--deploy" in sys.argv:
         print("--deploy needs a directory", file=sys.stderr)
         sys.exit(2)
     deploy_dir = sys.argv[i + 1]
-    # --deploy regenerates and validates first, then installs: nothing ships
-    # that this run would have refused.
-    check_only = False
+    # --deploy validates exactly as --check does, then installs: nothing ships
+    # that --check would refuse, and nothing in the checkout is written. It
+    # runs as root over a tree a user owns; regenerating stubs is the
+    # developer's `python3 sync.py`, never the deploy's.
+    check_only = True
 
 tools = toollist.load(os.path.join(ROOT, "tools.list"))
 problems = []
@@ -200,7 +204,11 @@ if deploy_dir:
             sys.exit(f"refusing --deploy: {dst}: {e.strerror}")
         try:
             for f in ("run.py", "tcs.yaml"):
-                with open(os.path.join(src, f), "rb") as fh:
+                # The source is a user's checkout: a link there must not make root copy some other file in.
+                sfd = os.open(os.path.join(src, f), os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(sfd, "rb") as fh:
+                    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                        sys.exit(f"refusing --deploy: {src}/{f} is not a regular file")
                     data = fh.read()
                 tmp = f".{f}.deploy-{os.getpid()}"
                 fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
