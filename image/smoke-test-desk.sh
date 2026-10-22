@@ -78,8 +78,15 @@ check_contracts() {
 check_call() {
   local body
   body=$(curl -sS --max-time 90 -H 'Content-Type: application/json' \
-          -d '{"input":{"name":"smoke-test"}}' "$DESK/tools/greet-sbx?wait=60s" 2>&1) \
+          -d '{"input":{"name":"smoke-test"}}' "$DESK/tools/greet-sbx?wait=45s" 2>&1) \
     || { fail desk-call "request failed: $(printf '%s' "$body" | head -c 200)"; return; }
+  # In box mode the job can wait behind the previous job's reboot (up to about 5 min): follow it to the end.
+  local id _
+  for _ in $(seq 1 15); do
+    id=$(printf '%s' "$body" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["id"] if d.get("status") in ("queued","running") else "")' 2>/dev/null)
+    case "$id" in ''|*[!A-Za-z0-9_-]*) break ;; esac
+    body=$(curl -sS --max-time 60 "$DESK/jobs/$id/wait?timeout=45s" 2>&1) || break
+  done
   if printf '%s' "$body" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)

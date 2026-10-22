@@ -23,6 +23,7 @@ import http.client
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import quote, urlencode
@@ -250,13 +251,17 @@ def fetch(base_url: str, timeout=5) -> list[dict]:
     return tools
 
 
-def call(base_url: str, name: str, arguments, wait="45s", timeout=CALL_TIMEOUT):
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def call(base_url: str, name: str, arguments, wait="45s", timeout=CALL_TIMEOUT, poll_s=900.0):
     """POST one tool call and return the job's `result`.
 
     Raises DeskError with the desk's own error text for an HTTP error, a failed
-    or canceled job, or a job still queued/running when `wait` elapsed. There is
-    no polling loop here; a caller that wants to keep waiting can pass a longer
-    `wait` (the desk caps it at 55 s) or poll `GET /jobs/{id}` itself.
+    or canceled job, or a job still queued/running after `poll_s` seconds. A job
+    still in flight when `wait` elapses (the desk caps it at 55 s) is polled with
+    GET /jobs/{id}/wait until it ends: a sandbox call can sit behind the previous
+    job's reset, which in full mode is a reboot. poll_s=0 returns after one wait.
 
     `timeout` bounds the HTTP request. The default covers queued tools; a
     direct-mode tool holds the request for its own timeout budget instead.
@@ -273,7 +278,14 @@ def call(base_url: str, name: str, arguments, wait="45s", timeout=CALL_TIMEOUT):
         if not isinstance(wait, str):
             raise ValueError(f"wait must be a Go duration string such as '45s', got {wait!r}")
         url += "?" + urlencode({"wait": wait})
+    deadline = time.monotonic() + poll_s
     job = _request_json(url, timeout=timeout, data=json.dumps({"input": arguments}).encode())
+    while (wait and isinstance(job, dict) and job.get("status") in ("queued", "running")
+           and time.monotonic() < deadline):
+        job_id = job.get("id")
+        if not isinstance(job_id, str) or not JOB_ID_RE.match(job_id):
+            raise DeskDataError(f"desk at {url} returned a bad job id {job_id!r}", url=url, payload=job)
+        job = _request_json(base + "/jobs/" + job_id + "/wait?" + urlencode({"timeout": wait}), timeout=timeout)
     if not isinstance(job, dict):
         raise DeskDataError(f"desk at {url} returned {type(job).__name__}, expected a job object", url=url)
     status = job.get("status")
@@ -287,7 +299,7 @@ def call(base_url: str, name: str, arguments, wait="45s", timeout=CALL_TIMEOUT):
         raise DeskError(f"desk at {url} job {job_id} {status}: {detail}", url=url, payload=job)
     if status in ("queued", "running"):
         raise DeskError(
-            f"desk at {url} job {job_id} was still {status} after wait={wait or '0'}; "
+            f"desk at {url} job {job_id} was still {status} after wait={wait or '0'} and {poll_s:g}s of polling; "
             f"poll GET /jobs/{job_id} (the desk caps wait at 55s)",
             url=url,
             payload=job,

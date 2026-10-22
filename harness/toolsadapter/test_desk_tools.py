@@ -64,7 +64,8 @@ class Desk:
 
     def respond(self, method, path):
         if (method, path) in self.routes:
-            return self.routes[(method, path)]
+            value = self.routes[(method, path)]
+            return value() if callable(value) else value
         if method == "GET" and path == "/tools":
             return 200, [
                 {
@@ -325,11 +326,22 @@ class DeskTest(unittest.TestCase):
     def test_call_job_still_queued_after_wait_raises(self):
         self.desk.submit = (202, {"id": "job-2", "status": "queued"})
         with self.assertRaises(DT.DeskError) as ctx:
-            DT.call(self.base, "greet-sbx", {"name": "Ada"}, wait="1s")
+            DT.call(self.base, "greet-sbx", {"name": "Ada"}, wait="1s", poll_s=0)
         message = str(ctx.exception)
         self.assertIn("job-2", message)
         self.assertIn("still queued", message)
         self.assertIn("GET /jobs/job-2", message)
+
+    def test_a_job_still_queued_is_polled_until_it_ends(self):
+        self.desk.submit = (202, {"id": "job-5", "status": "queued"})
+        answers = [(202, {"id": "job-5", "status": "running"}), (200, {"id": "job-5", "status": "done", "result": {"ok": 1}})]
+        self.desk.routes[("GET", "/jobs/job-5/wait")] = lambda: answers.pop(0)
+        self.assertEqual(DT.call(self.base, "greet-sbx", {"name": "Ada"}, wait="1s"), {"ok": 1})
+        polls = [r for r in self.desk.requests if r["path"] == "/jobs/job-5/wait"]
+        self.assertEqual([r["query"] for r in polls], ["timeout=1s", "timeout=1s"])
+        self.desk.submit = (202, {"id": "../x", "status": "queued"})
+        with self.assertRaises(DT.DeskDataError):
+            DT.call(self.base, "greet-sbx", {"name": "Ada"}, wait="1s")
 
     def test_call_done_without_a_result_returns_none(self):
         self.desk.submit = (200, {"id": "job-4", "status": "done"})
