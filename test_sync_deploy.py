@@ -90,15 +90,20 @@ class DeployNeverWritesTheCheckout(unittest.TestCase):
         for part in ("sync.py", "tools.list", "common", "harness/stub", "harness/tools", "sbx/tools"):
             src, dst = os.path.join(ROOT, part), os.path.join(self.repo, part)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            (shutil.copytree if os.path.isdir(src) else shutil.copy2)(src, dst)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+            else:
+                shutil.copy2(src, dst)
         self.dest = os.path.join(self.tmp.name, "tools")
 
     def run_deploy(self):
-        return subprocess.run([sys.executable, "-B", os.path.join(self.repo, "sync.py"), "--deploy", self.dest],
+        return subprocess.run([sys.executable, os.path.join(self.repo, "sync.py"), "--deploy", self.dest],
                               capture_output=True, text=True)
 
     def test_deploy_from_a_read_only_checkout_changes_nothing(self):
         before = tree_digest(self.repo)
+        self.run_deploy()                       # writable this time: nothing may appear (a __pycache__, say)
+        self.assertEqual(sorted(tree_digest(self.repo)), sorted(before))
         for d, dirs, files in os.walk(self.repo):
             for n in dirs + files:
                 os.chmod(os.path.join(d, n), os.stat(os.path.join(d, n)).st_mode & ~0o222)

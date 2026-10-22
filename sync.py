@@ -26,6 +26,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.dont_write_bytecode = True     # --deploy runs as root over a user's checkout: not even __pycache__
 sys.path.insert(0, os.path.join(ROOT, "common"))
 import toollist  # noqa: E402
 
