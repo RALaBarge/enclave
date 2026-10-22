@@ -14,6 +14,10 @@ const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const LIST_TIMEOUT_MS = 5000;
 const CALL_TIMEOUT_MS = 70000; // the desk caps ?wait= at 55 s and answers 202 when it elapses
 const WAIT = "45s";
+// A job still queued or running after one wait is polled again (GET /jobs/{id}/wait) until it ends or this passes. A
+// sandbox call can sit behind the previous job's reset (a full-mode reboot), so one 45 s wait is not the job's budget;
+// the contract's timeout_ms is, and the desk ends the job by then.
+const JOB_MAX_MS = 15 * 60 * 1000;
 
 async function desk(path, { body, timeoutMs, signal } = {}) {
 	const signals = [AbortSignal.timeout(timeoutMs)];
@@ -66,13 +70,18 @@ export async function deskTools() {
 
 export async function deskCall(name, input, signal) {
 	const path = "/tools/" + encodeURIComponent(name) + "?wait=" + WAIT;
-	const job = await desk(path, { body: { input: input ?? {} }, timeoutMs: CALL_TIMEOUT_MS, signal });
+	const deadline = Date.now() + JOB_MAX_MS;
+	let job = await desk(path, { body: { input: input ?? {} }, timeoutMs: CALL_TIMEOUT_MS, signal });
+	while (job && (job.status === "queued" || job.status === "running") && Date.now() < deadline) {
+		if (typeof job.id !== "string" || !NAME_RE.test(job.id)) throw new Error(`desk returned a bad job id`);
+		job = await desk("/jobs/" + job.id + "/wait?timeout=" + WAIT, { timeoutMs: CALL_TIMEOUT_MS, signal });
+	}
 	const status = job && job.status;
 	if (status === "done") return job.result ?? null; // a null result is omitted from the job, not a failure
 	if (status === "failed" || status === "canceled")
 		throw new Error(`desk job ${job.id} ${status}: ${job.error || "no error message"}`);
 	if (status === "queued" || status === "running")
-		throw new Error(`desk job ${job.id} still ${status} after wait=${WAIT}`);
+		throw new Error(`desk job ${job.id} still ${status} after ${JOB_MAX_MS / 60000} min`);
 	throw new Error(`desk job ${job && job.id} has unknown status ${status}`);
 }
 

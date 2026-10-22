@@ -55,11 +55,15 @@ MAX_TIMEOUT = int(os.environ.get("SBX_MAX_TIMEOUT", "120"))
 # Run after every job to destroy/reset the sandbox (e.g. revert snapshot,
 # reboot + wait). Empty = no reset. The sandbox is unusable until it returns.
 RESET_CMD = os.environ.get("SBX_RESET_CMD", "")
+# The console's switch for the routine reset (its own directory; it never writes broker.env). Present = skip the reset
+# after a job, logged every time. It never skips the retry of a reset that failed: that box is in an unknown state.
+RESET_OFF = os.environ.get("SBX_RESET_OFF", "/etc/sbxfw/reset-off")
 # One sandbox lane: callers that arrive while a job runs wait in arrival
 # order, but only while fewer than QUEUE_MAX are already waiting and only for
 # QUEUE_WAIT_S seconds. Passing either bound answers 503 lane_busy.
 QUEUE_MAX = max(0, int(os.environ.get("SBX_QUEUE_MAX", "4")))
-QUEUE_WAIT_S = max(0.0, float(os.environ.get("SBX_QUEUE_WAIT_S", "60")))
+# The wait covers the previous job's reset (the reply goes out before it): a full-mode reboot takes up to 240 s.
+QUEUE_WAIT_S = max(0.0, float(os.environ.get("SBX_QUEUE_WAIT_S", "300")))
 
 # The desk (agent-desk -job-key) signs every job it starts; the broker checks the
 # signature. The key lives where only the broker and the desk's group can read it.
@@ -369,15 +373,21 @@ def _run_reset():
     return subprocess.run(RESET_CMD, shell=True, timeout=300).returncode
 
 
-def reset_sbx():
+def reset_sbx(routine=True):
     """Reset the sandbox and record whether it is safe for the next job.
 
     Returns True when there is nothing to reset (lite mode, where each job
     already gets a fresh bwrap) or when the command exits 0. A non-zero exit,
     timeout or failure to start is recorded; the next job is then refused
     until a reset succeeds. Called only while the lane is held.
+
+    routine is the reset after a job; the console's switch may skip that one.
+    The retry of a failed reset (ensure_reset) is never routine.
     """
     if not RESET_CMD:
+        return True
+    if routine and os.path.exists(RESET_OFF) and reset_status()["ok"]:
+        log("reset skipped: switched off in the console; the next job reuses this sandbox")
         return True
     try:
         rc = _run_reset()
@@ -397,7 +407,7 @@ def ensure_reset():
     """Called with the lane held: retry a failed reset once before the job."""
     if reset_status()["ok"]:
         return True
-    return reset_sbx()
+    return reset_sbx(routine=False)
 
 
 class H(BaseHTTPRequestHandler):
@@ -508,12 +518,17 @@ class H(BaseHTTPRequestHandler):
                 out["status"], out["body"] = run_on_sbx(
                     {"tool": tool, "input": inp, "files": files, "timeout_s": timeout},
                     wall_timeout=timeout + 15)
-            finally:
-                reset_sbx()  # a failure is recorded and gates the next job
+            except BaseException:
+                reset_sbx()
+                raise
+            # Answer first, then reset with the lane still held: the caller is not kept waiting for a reboot, and the
+            # next job still cannot start on a sandbox this one used. A failed reset is recorded and gates that job.
+            self._reply(tool, network, out, enqueued, job_started[0])
+            reset_sbx()
             return out["status"]
 
         try:
-            status = lane.run(tool, job)
+            lane.run(tool, job)
         except SandboxNotReset:
             reset = reset_status()
             log(f"SANDBOX NOT RESET tool={tool} rc={reset['rc']} at={reset['at']}")
@@ -525,14 +540,20 @@ class H(BaseHTTPRequestHandler):
         except LaneTimeout as q:
             log(f"QUEUE TIMEOUT tool={tool} queued={q.queued} depth_max={q.depth_max} wait_s={q.wait_s:g}")
             return self._lane_busy("queue_timeout", q, q.wait_s)
-        body = out.get("body", b"")
-        waited = (job_started[0] - enqueued) if job_started else 0.0
+
+    def _reply(self, tool, network, out, enqueued, started):
+        status, body = out["status"], out.get("body", b"")
         log(f"{'ALERT ' if status in ALERT else ''}tool={tool} net={int(network)} status={status} bytes={len(body)} "
             f"sha256={hashlib.sha256(body).hexdigest()[:16]} "
-            f"dur={time.time() - enqueued:.1f}s wait={waited:.1f}s")
-        if status == "ok":
-            return self._send(200, body)
-        return self._err(502, status)
+            f"dur={time.time() - enqueued:.1f}s wait={started - enqueued:.1f}s")
+        try:
+            if status == "ok":
+                self._send(200, body)
+            else:
+                self._err(502, status)
+            self.wfile.flush()
+        except OSError:                 # the caller went away; the reset still has to run
+            log(f"reply to a gone caller dropped tool={tool}")
 
 
 # Only constructed on Linux. The fallback base lets this module be imported on

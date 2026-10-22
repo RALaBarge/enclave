@@ -32,7 +32,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 # worst case. The literal here is only the floor for a hand-copied stub; a
 # timeout below that sum makes the client give up on a job the broker is still
 # running, and the desk records a failure for work that succeeded.
-CLIENT_TIMEOUT = 555
+CLIENT_TIMEOUT = 655
 
 
 class UnixConnection(http.client.HTTPConnection):

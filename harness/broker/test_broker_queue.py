@@ -57,7 +57,8 @@ class BrokerTest(unittest.TestCase):
         self._saved = (sbx_broker.TOOLLIST, sbx_broker.run_on_sbx,
                        sbx_broker.reset_sbx, sbx_broker.lane,
                        sbx_broker.RESET_CMD, sbx_broker._run_reset,
-                       sbx_broker._reset_state)
+                       sbx_broker._reset_state, sbx_broker.RESET_OFF)
+        sbx_broker.RESET_OFF = os.path.join(self.tmp.name, "reset-off")
         sbx_broker.TOOLLIST = self.tool_list
         sbx_broker.run_on_sbx = ok_run
         self._saved_key = (sbx_broker.JOB_KEY_PATH, sbx_broker.used_tokens)
@@ -81,7 +82,7 @@ class BrokerTest(unittest.TestCase):
         (sbx_broker.TOOLLIST, sbx_broker.run_on_sbx,
          sbx_broker.reset_sbx, sbx_broker.lane,
          sbx_broker.RESET_CMD, sbx_broker._run_reset,
-         sbx_broker._reset_state) = self._saved
+         sbx_broker._reset_state, sbx_broker.RESET_OFF) = self._saved
 
     def use_lane(self, depth_max, wait_s):
         sbx_broker.lane = sbx_broker.SerialLane(depth_max, wait_s)
@@ -276,6 +277,7 @@ class BrokerTest(unittest.TestCase):
         code, body = self.post()
         self.assertEqual(code, 200)
         self.assertEqual(body, {"output": {}, "files": {}})
+        self.wait_for(lambda: self.get_status()[1]["busy"] is False, "the lane to free after the reply")
 
         code, body = self.get_status()
         self.assertEqual(code, 200)
@@ -308,6 +310,7 @@ class BrokerTest(unittest.TestCase):
         code, body = self.post()
         self.assertEqual(code, 200)
         self.assertEqual(body, {"output": {}, "files": {}})
+        self.wait_for(lambda: self.get_status()[1]["busy"] is False, "the reset after the reply")
         code, status = self.get_status()
         self.assertEqual(code, 200)
         self.assertFalse(status["reset"]["ok"])
@@ -341,9 +344,61 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(body, {"output": {}, "files": {}})
         self.assertEqual(ran, [1])
+        self.wait_for(lambda: self.get_status()[1]["busy"] is False, "the reset after the reply")
         code, status = self.get_status()
         self.assertTrue(status["reset"]["ok"])
         self.assertEqual(status["reset"]["rc"], 0)
+
+    def test_reply_goes_out_before_the_reset_and_the_next_job_waits_for_it(self):
+        self.use_lane(2, 5)
+        sbx_broker.RESET_CMD = "reset"
+        in_reset, release, order = threading.Event(), threading.Event(), []
+
+        def slow_reset():
+            order.append("reset start")
+            in_reset.set()
+            release.wait(5)
+            order.append("reset end")
+            return 0
+
+        def tracked_run(request, wall_timeout):
+            order.append("job")
+            return "ok", OK_ENVELOPE
+
+        sbx_broker._run_reset, sbx_broker.run_on_sbx = slow_reset, tracked_run
+        self.assertEqual(self.post()[0], 200)              # job A answered while its reset is still running
+        self.assertTrue(in_reset.wait(5))
+        results = {}
+        t = self.post_async(results, "b")                  # job B queues behind the reset
+        time.sleep(0.3)
+        self.assertNotIn("b", results)
+        self.assertEqual(order, ["job", "reset start"])
+        release.set()
+        t.join(5)
+        self.assertEqual(results["b"][0], 200)
+        self.assertEqual(order[:4], ["job", "reset start", "reset end", "job"])
+
+    def test_the_console_switch_skips_routine_resets_only(self):
+        self.use_lane(2, 5)
+        sbx_broker.RESET_CMD = "reset"
+        calls, rc = [], {"v": 0}
+        sbx_broker._run_reset = lambda: calls.append(rc["v"]) or rc["v"]
+        self.assertEqual(self.post()[0], 200)
+        self.wait_for(lambda: self.get_status()[1]["busy"] is False, "the first reset")
+        self.assertEqual(calls, [0])                       # on by default
+        open(sbx_broker.RESET_OFF, "w").close()
+        self.assertEqual(self.post()[0], 200)
+        self.wait_for(lambda: self.get_status()[1]["busy"] is False, "the skipped reset")
+        self.assertEqual(calls, [0])                       # switched off: skipped
+        os.remove(sbx_broker.RESET_OFF)
+        rc["v"] = 1
+        self.assertEqual(self.post()[0], 200)              # this reset fails (after the reply)
+        self.wait_for(lambda: not self.get_status()[1]["reset"]["ok"], "the failed reset")
+        open(sbx_broker.RESET_OFF, "w").close()
+        rc["v"] = 0
+        self.assertEqual(self.post()[0], 200)
+        self.wait_for(lambda: self.get_status()[1]["busy"] is False, "the last job")
+        self.assertEqual(calls, [0, 1, 0])                 # the failed one is retried even while switched off
 
     # -- queue limits ----------------------------------------------------
 

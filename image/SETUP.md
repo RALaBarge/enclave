@@ -84,8 +84,8 @@ shipped unit does not set it). Each turn goes to `/log` as one assistant message
 results, and any Pi event the bridge does not recognise. One message is deliberate: `/log` stores only the last user message and
 the first assistant content, so splitting the transcript across messages would record turns that never happened.
 
-**One lane for every harness.** All broker callers share one serial lane: a job runs, `SBX_RESET_CMD` runs, then
-the next starts. A call arriving while a job runs waits in order for up to `SBX_QUEUE_WAIT_S`; if `SBX_QUEUE_MAX`
+**One lane for every harness.** All broker callers share one serial lane: a job runs, its reply goes out,
+`SBX_RESET_CMD` runs with the lane still held, then the next starts. A call arriving while a job runs waits in order for up to `SBX_QUEUE_WAIT_S`; if `SBX_QUEUE_MAX`
 callers already wait, or that wait expires, the broker answers `503` (`lane_busy`, with `queued`/`depth_max`) instead
 of hanging. Raise both settings for more harnesses; lower them to fail fast. `GET /status` reports `busy`, `queued`,
 `depth_max`, the last job, the `reset` state (`ok`, `rc`, `at`) and `"lane": "serial"`; a failed reset makes the next
@@ -169,8 +169,11 @@ greet tool running through the broker into the sandbox.
 On a physical sandbox box the same layout applies with a real second NIC pair or a crossover cable; set the core's `SBXC_SBX_IFACES`
 (default `eth1`) to the NIC that faces it.
 
-**Per-job reset.** The broker runs `SBX_RESET_CMD` after every job while holding its one-job lock, and the next job starts as
-soon as that command returns. A reset that returns early is worse than none: the broker would hand out work on a box in an
+**Per-job reset.** The broker answers the job, then runs `SBX_RESET_CMD` while holding its one-job lock, and the next job
+starts as soon as that command returns. `sbx-mode box` sets it to `sbx-reboot-and-wait` and `sbx-mode lite` clears it;
+the console's Settings tab can switch the routine reset off (`/etc/sbxfw/reset-off`, logged on every job), never the
+retry of a reset that failed. The queue wait (300 s) covers a reboot, and `sync.py --check` refuses a contract whose
+`timeout_ms` cannot cover queue + reset retry + tool. A reset that returns early is worse than none: the broker would hand out work on a box in an
 unknown state. The shipped choices:
 
 | Mode | `SBX_RESET_CMD=` | What it does |

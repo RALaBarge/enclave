@@ -55,19 +55,26 @@ def _norm(path):
     with open(path, encoding="utf-8") as f:
         return STUB_TIMEOUT_RE.sub("CLIENT_TIMEOUT = <per-tool>", f.read())
 
-QUEUE_WAIT_S = 60            # broker.env.example default
-RESET_BUDGET_S = 300         # sbx_broker.py: reset wall timeout
+QUEUE_WAIT_S = 300           # sbx_broker.py default: covers the previous job's reset, which runs after its reply
+RESET_BUDGET_S = 300         # sbx_broker.py: reset wall timeout (a failed reset is retried before the next job)
 MARGIN_S = 30
 STUB_TIMEOUT_RE = re.compile(r"^CLIENT_TIMEOUT = \d+$", re.M)
-TIMEOUT_MS_RE = re.compile(r"^\s*timeout_ms:[ \t]*(\d+)\s*$", re.M)
+TIMEOUT_MS_RE = re.compile(r"^\s*timeout_ms:[ \t]*(\d+)\s*(?:#.*)?$", re.M)
 
 
-def stub_timeout(tcs_path):
-    """What the stub's client timeout must be for this contract."""
+def stub_timeout(name):
+    """The broker's worst case for one call, in seconds: wait in the queue (which includes the previous job's reset),
+    retry a failed reset, run the tool for its tools.list budget plus sbx-run's 15 s, and a margin. The stub's client
+    timeout is this; the contract's timeout_ms must cover it too, or the desk kills a job the broker is still running
+    and records a failure for work that succeeded."""
+    return int(QUEUE_WAIT_S + RESET_BUDGET_S + tools[name]["timeout_s"] + 15 + MARGIN_S)
+
+
+def contract_timeout_s(tcs_path):
     with open(tcs_path, encoding="utf-8") as f:
         m = TIMEOUT_MS_RE.search(f.read())
-    tool_s = int(m.group(1)) / 1000 if m else 30
-    return int(QUEUE_WAIT_S + tool_s + 15 + RESET_BUDGET_S + MARGIN_S)
+    return int(m.group(1)) / 1000 if m else 0
+
 
 # The two facts a generated stub relies on. Textual on purpose: sync.py stays
 # stdlib-only, so it cannot parse YAML the way the desk does. tcs-verify is
@@ -116,6 +123,10 @@ for name in tools:
             problems.append(
                 f"contract name:      {os.path.relpath(tcs, ROOT)} says {m.group(1) if m else 'nothing'!r}, must be "
                 f"'{name}-sbx' (the broker only accepts a caller named <tool>-sbx)")
+        if contract_timeout_s(tcs) < stub_timeout(name) + 5:
+            problems.append(
+                f"contract timeout:   {os.path.relpath(tcs, ROOT)} timeout_ms is {contract_timeout_s(tcs):g}s, needs "
+                f">= {stub_timeout(name) + 5}s (the stub waits {stub_timeout(name)}s for the broker)")
         stub = os.path.join(ROOT, "harness", "stub", "run.py")
         copy = os.path.join(hdir, "run.py")
         # Read the copy's own number before the drift comparison blanks it.
@@ -123,7 +134,7 @@ for name in tools:
         # questions are independent, and burying the second one in an `else` is
         # how it stopped running in the first place.
         if check_only and os.path.isfile(copy):
-            want = stub_timeout(tcs)
+            want = stub_timeout(name)
             m = re.search(r"^CLIENT_TIMEOUT = (\d+)$", open(copy, encoding="utf-8").read(), re.M)
             have = int(m.group(1)) if m else 0
             if have < want:
@@ -138,7 +149,7 @@ for name in tools:
             with open(copy, encoding="utf-8") as fh:
                 text = fh.read()
             with open(copy, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(STUB_TIMEOUT_RE.sub(f"CLIENT_TIMEOUT = {stub_timeout(tcs)}", text))
+                fh.write(STUB_TIMEOUT_RE.sub(f"CLIENT_TIMEOUT = {stub_timeout(name)}", text))
         elif not os.path.isfile(copy) or _norm(copy) != _norm(stub):
             # A copy that has drifted from the stub is a tool running edited
             # code that nobody reviewed as a stub change. --check is what CI

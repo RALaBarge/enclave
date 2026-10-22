@@ -37,4 +37,4 @@ sandbox:
 execution:
   mode: queued
   max_retries: 0
-  timeout_ms: 150000
+  timeout_ms: 680000   # sync.py --check: queue (incl. the previous reset) + reset retry + tool + 15 s + margin

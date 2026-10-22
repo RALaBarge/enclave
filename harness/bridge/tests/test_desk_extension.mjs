@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const calls = [];
 let job = { id: "j1", status: "done", result: { greeting: "hi" } };
+let polls = [];
 const desk = http.createServer((req, res) => {
 	let body = "";
 	req.on("data", (c) => (body += c));
@@ -20,7 +21,9 @@ const desk = http.createServer((req, res) => {
 		if (req.url === "/tools") return send(200, [{ name: "greet-sbx", summary: "list summary" }]);
 		if (req.url === "/tools/greet-sbx")
 			return send(200, { name: "greet-sbx", summary: "Say hello", input: { properties: { name: { type: "string" } } } });
-		if (req.url.startsWith("/tools/greet-sbx?wait=")) return send(200, job);
+		if (req.url.startsWith("/tools/greet-sbx?wait=")) return send(job.status === "done" ? 200 : 202, job);
+		const m = req.url.match(/^\/jobs\/([^/]+)\/wait\?timeout=45s$/);
+		if (m) return send(200, polls.shift() ?? job);
 		send(404, { error: "no such route" });
 	});
 });
@@ -50,8 +53,19 @@ test("registers one tool per desk tool, with the contract's schema", async () =>
 	assert.deepEqual(JSON.parse(calls[0].body), { input: { name: "ryan" } });
 });
 
-test("a failed or unfinished job is an error, never a result", async () => {
-	for (const j of [{ id: "j2", status: "failed", error: "boom" }, { id: "j3", status: "running" }]) {
+test("a job still queued after the first wait is polled until it ends", async () => {
+	job = { id: "j5", status: "queued" };
+	polls = [{ id: "j5", status: "running" }, { id: "j5", status: "done", result: { greeting: "late" } }];
+	calls.length = 0;
+	assert.deepEqual(await ext.deskCall("greet-sbx", {}), { greeting: "late" });
+	assert.deepEqual(calls.map((c) => c.url), ["/tools/greet-sbx?wait=45s", "/jobs/j5/wait?timeout=45s", "/jobs/j5/wait?timeout=45s"]);
+	job = { id: "../x", status: "queued" };
+	await assert.rejects(ext.deskCall("greet-sbx", {}), /bad job id/);
+	job = { id: "j1", status: "done", result: { greeting: "hi" } };
+});
+
+test("a failed job is an error, never a result", async () => {
+	for (const j of [{ id: "j2", status: "failed", error: "boom" }, { id: "j3", status: "canceled" }]) {
 		job = j;
 		await assert.rejects(ext.deskCall("greet-sbx", {}), new RegExp(j.status));
 	}
