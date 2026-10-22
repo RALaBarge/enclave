@@ -152,6 +152,45 @@ class Firewall(unittest.TestCase):
                 c._pending["timer"].cancel()
             c._pending.update(timer=None, prev=None, text=None, deadline=0, policy=None)
 
+    def test_revert_is_one_transaction_with_fallbacks(self):
+        def run(calls):
+            base = c.validate_policy({"sbx_ifaces": ["eth1"]})
+            c._save(c.render_ruleset(base)[0], base)
+            c._nft = lambda args, stdin=None: (calls.append((args, stdin)) or (0, "table inet sbxfw { }" if args[0] == "list" else ""))
+            c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]})
+            del calls[:]
+            self.assertEqual(c.fw_cancel(), {"reverted": True, "restored": "previous live table"})
+            self.assertEqual(len(calls), 1)                                  # never a bare "delete table"
+            self.assertTrue(calls[0][1].startswith("table inet sbxfw\ndelete table inet sbxfw\n"))
+            # no rollback point and a restore that fails: the confirmed ruleset, then deny-all, never nothing
+            c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]})
+            c._pending["prev"] = None
+            del calls[:]
+            c._nft = lambda args, stdin=None: (calls.append((args, stdin)) or ((1, "boom") if "sbxfw-drop" in (stdin or "") else (0, "")))
+            self.assertEqual(c.fw_cancel()["restored"], "deny-all fallback")
+            self.assertTrue(all("delete table inet sbxfw\n" in s for _, s in calls))
+            self.assertEqual((len(calls), calls[-1][1]), (2, c.DENY_ALL))
+            c._nft = lambda args, stdin=None: (0, "")
+            c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]})
+            c._nft = lambda args, stdin=None: (1, "boom")                    # nothing applies: say so, loudly
+            with self.assertRaises(c.Bad):
+                c.fw_cancel()
+            self.assertIsNone(c._pending["timer"])
+        self._with_fake_nft(run)
+
+    def test_a_stale_timer_reverts_nothing(self):
+        def run(calls):
+            base = c.validate_policy({"sbx_ifaces": ["eth1"]})
+            c._save(c.render_ruleset(base)[0], base)
+            c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]})
+            old = c._pending["timer"]
+            c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 23}]})      # re-apply: a new generation
+            del calls[:]
+            self.assertEqual(c._revert(old), "nothing (superseded)")
+            self.assertEqual(calls, [])
+            self.assertIsNotNone(c._pending["timer"])
+        self._with_fake_nft(run)
+
     def test_instant_apply_saves_at_once_and_starts_no_timer(self):
         def run(calls):
             base = c.validate_policy({"sbx_ifaces": ["eth1"]})

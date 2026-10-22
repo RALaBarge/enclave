@@ -387,7 +387,7 @@ def fw_apply(policy, instant=False):
             raise Bad(f"nft failed to apply: {msg}")
         _pending["text"], _pending["policy"] = text, policy
         _pending["deadline"] = time.time() + REVERT_S
-        t = threading.Timer(REVERT_S, _revert)
+        t = threading.Timer(REVERT_S, lambda: _revert(t))   # names its own generation: a stale timer reverts nothing
         t.daemon = True
         _pending["timer"] = t
         t.start()
@@ -429,7 +429,8 @@ def fw_lockdown():
         t = _pending["timer"]
     if t:
         t.cancel()
-        _revert()
+        if _revert(t) is None:
+            raise Bad("rolling back the pending change failed; check the firewall before starting a session")
     was = load_policy()["active"]
     if was == "session":
         return {"profile": "session", "changed": False}
@@ -446,17 +447,44 @@ def _expiry_loop():
             print(f"expiry check failed: {e}", file=sys.stderr, flush=True)
 
 
-def _revert():
+DENY_ALL = """table inet sbxfw
+delete table inet sbxfw
+table inet sbxfw {
+  chain input { type filter hook input priority 0; policy drop; iif lo accept; ct state established,related accept; }
+  chain forward { type filter hook forward priority 0; policy drop; }
+}
+"""
+
+
+def _revert(gen):
+    """Put the rules from before the pending apply back, in one nft transaction. Returns what it restored, or None.
+
+    gen is the timer the pending apply started: a timer that fires after a newer apply replaced it reverts nothing.
+    The rollback point is the live table as listed at apply time; failing that, the last confirmed ruleset; failing
+    that, DENY_ALL. The table is never left deleted: every attempt replaces it inside the same transaction, so a
+    failed one leaves the current rules in place and the next attempt runs.
+    """
     with _fw_lock:
-        if not _pending["timer"]:
-            return
-        prev = _pending["prev"]
-        if prev:
-            _nft(["delete", "table", "inet", "sbxfw"])
-            _nft(["-f", "-"], prev)
-        else:
-            _nft(["delete", "table", "inet", "sbxfw"])
+        if _pending["timer"] is not gen:
+            return "nothing (superseded)"
+        attempts = []
+        if _pending["prev"]:
+            attempts.append(("previous live table", "table inet sbxfw\ndelete table inet sbxfw\n" + _pending["prev"] + "\n"))
+        try:
+            with open(os.path.join(ETC, "ruleset.nft"), encoding="utf-8") as f:
+                attempts.append(("last confirmed ruleset", f.read()))
+        except OSError:
+            pass
+        attempts.append(("deny-all fallback", DENY_ALL))
         _pending.update(timer=None, prev=None, text=None, deadline=0)
+        for what, text in attempts:
+            rc, msg = _nft(["-f", "-"], text)
+            if rc == 0:
+                if what != attempts[0][0]:
+                    print(f"firewall revert: restored the {what}", file=sys.stderr, flush=True)
+                return what
+            print(f"FIREWALL REVERT FAILED ({what}): {msg}", file=sys.stderr, flush=True)
+        return None
 
 
 def fw_confirm():
@@ -470,10 +498,14 @@ def fw_confirm():
 
 
 def fw_cancel():
-    if not _pending["timer"]:
+    t = _pending["timer"]
+    if not t:
         raise Bad("nothing pending")
-    _revert()
-    return {"reverted": True}
+    t.cancel()
+    what = _revert(t)
+    if what is None:
+        raise Bad("revert failed: nft refused every rollback, the unconfirmed rules are still live; see the console log")
+    return {"reverted": True, "restored": what}
 
 
 def fw_status():
