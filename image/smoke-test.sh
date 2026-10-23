@@ -351,6 +351,20 @@ check_secrets() {
   else fail secrets "sbx-fetch-secrets failed"; fi
 }
 
+# page/fetch gate token: when present, only root and the sbx group (the jobs) may read it, never pibridge.
+check_gate_files() {
+  n=0
+  for f in /opt/sbx/tools/page/gate /opt/sbx/tools/fetch/gate; do
+    [ -e "$f" ] || continue
+    n=$((n + 1))
+    m=$(stat -c '%a %U %G' "$f")
+    if [ "$m" != "640 root sbx" ]; then fail gate-files "$f is $m (want 640 root sbx)"; return; fi
+    if runuser -u pibridge -- test -r "$f" 2>/dev/null; then fail gate-files "pibridge can read $f"; return; fi
+  done
+  if [ "$n" = 0 ]; then pass gate-files "no gate files (SBX_GATE not set; page and fetch fail until it is)"
+  else pass gate-files "$n gate files 640 root:sbx, unreadable to pibridge"; fi
+}
+
 echo "sbx VM smoke test  $(date -Is)  quick=$QUICK"
 check_root
 check_mode
@@ -364,6 +378,7 @@ check_loom_http
 check_pi
 check_bridge
 check_secrets
+check_gate_files
 check_lockdown
 check_session_gate
 check_deskbox

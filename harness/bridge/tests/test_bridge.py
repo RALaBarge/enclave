@@ -737,6 +737,9 @@ class CwdRoots(unittest.TestCase):
             self.assertTrue(S.protected_root(home_path), home_path)
         work = os.path.realpath("/var/lib/pi-bridge-work")
         self.assertEqual(S.session_path(work, "notes.txt")[0], os.path.join(work, "notes.txt"))
+        # The sandbox tools' tree holds the browserbox gate token (tools/page/gate, tools/fetch/gate).
+        for gate in ("/opt/sbx", "/opt/sbx/tools/page/gate", "/opt/sbx/tools/fetch/gate"):
+            self.assertTrue(S.protected_root(gate), gate)
 
     def test_no_root_is_a_startup_refusal(self):
         buf = io.StringIO()

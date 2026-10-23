@@ -120,7 +120,7 @@ class TooLarge(Exception):
 PROTECTED_ROOTS = (
     "/run/sbx", "/run/sbx-gate", "/etc/sbxfw", "/etc/sbx", "/etc/ssh",
     "/etc/shadow", "/etc/sudoers", "/root", "/var/lib/pi-bridge",
-    "/var/lib/deskbox", "/var/lib/loom", "/proc", "/sys", "/dev", "/boot",
+    "/var/lib/deskbox", "/var/lib/loom", "/opt/sbx", "/proc", "/sys", "/dev", "/boot",
 )
 
 
