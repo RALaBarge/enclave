@@ -1,0 +1,36 @@
+name: write-sbx
+summary: |
+  Create or replace a UTF-8 text file in the sandbox box's workspace
+  (/deskbox/work; paths are relative to it). Parent directories are created.
+  Use edit-sbx to change part of an existing file.
+
+input:
+  type: object
+  additionalProperties: false
+  required: [file_path, content]
+  properties:
+    file_path: { type: string, minLength: 1, maxLength: 4096 }
+    content:   { type: string, maxLength: 500000 }
+
+output:
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      path:  { type: string, maxLength: 4200 }
+      bytes: { type: integer }
+      error: { type: string, maxLength: 4200 }
+
+allowed_side_effects:
+  files: []
+  network: false     # the stub reaches the broker over the bound socket; the box job itself has no network either
+
+sandbox:
+  bind:
+    - src: /run/sbx/broker.sock
+      dst: /deskbox/broker.sock
+
+execution:
+  mode: queued
+  max_retries: 0
+  timeout_ms: 680000   # sync.py --check: queue (incl. the previous reset) + reset retry + tool + 15 s + margin

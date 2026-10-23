@@ -1,0 +1,39 @@
+name: edit-sbx
+summary: |
+  Replace literal text in a file in the sandbox box's workspace
+  (/deskbox/work; paths are relative to it). old_string must occur exactly
+  once unless replace_all is true; include enough surrounding text to make it
+  unique. Read the file first.
+
+input:
+  type: object
+  additionalProperties: false
+  required: [file_path, old_string, new_string]
+  properties:
+    file_path:   { type: string, minLength: 1, maxLength: 4096 }
+    old_string:  { type: string, minLength: 1, maxLength: 200000 }
+    new_string:  { type: string, maxLength: 200000 }
+    replace_all: { type: boolean }
+
+output:
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      path:         { type: string, maxLength: 4200 }
+      replacements: { type: integer }
+      error:        { type: string, maxLength: 4200 }
+
+allowed_side_effects:
+  files: []
+  network: false     # the stub reaches the broker over the bound socket; the box job itself has no network either
+
+sandbox:
+  bind:
+    - src: /run/sbx/broker.sock
+      dst: /deskbox/broker.sock
+
+execution:
+  mode: queued
+  max_retries: 0
+  timeout_ms: 680000   # sync.py --check: queue (incl. the previous reset) + reset retry + tool + 15 s + margin

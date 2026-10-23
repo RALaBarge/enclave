@@ -1,0 +1,42 @@
+name: bash-sbx
+summary: |
+  Run a bash command on the sandbox box, in its workspace (/deskbox/work, the
+  box's disk: files persist between calls; nothing else is writable). No
+  network. Returns stdout and stderr (each cut at 30,000 characters), the exit
+  code, and whether the timeout (default and max 100 s) killed it. The box is
+  rebooted after every call when the reset switch is on, so background
+  processes do not survive; files in the workspace do.
+
+input:
+  type: object
+  additionalProperties: false
+  required: [command]
+  properties:
+    command:    { type: string, minLength: 1, maxLength: 100000 }
+    timeout_ms: { type: integer, minimum: 1000, maximum: 100000 }
+    workdir:    { type: string, maxLength: 4096 }   # relative to /deskbox/work
+
+output:
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      stdout:    { type: string, maxLength: 31000 }
+      stderr:    { type: string, maxLength: 31000 }
+      exit_code: { type: integer }
+      timed_out: { type: boolean }
+      error:     { type: string, maxLength: 4200 }
+
+allowed_side_effects:
+  files: []
+  network: false     # the stub reaches the broker over the bound socket; the box job itself has no network either
+
+sandbox:
+  bind:
+    - src: /run/sbx/broker.sock
+      dst: /deskbox/broker.sock
+
+execution:
+  mode: queued
+  max_retries: 0
+  timeout_ms: 780000   # sync.py --check: queue (incl. the previous reset) + reset retry + tool + 15 s + margin

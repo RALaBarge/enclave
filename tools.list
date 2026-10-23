@@ -21,3 +21,11 @@ greet   10
 netcheck 30 net
 page    60 net
 fetch   30 net
+# The box's workspace (/var/lib/sbx-work, at /deskbox/work in the job). bash runs what it is handed, so the box is reset
+# after it; the others run only their own code, so `keep` spares a reboot after each read or grep.
+bash    120 work
+read    20  work keep
+write   20  work keep
+edit    20  work keep
+glob    30  work keep
+grep    60  work keep

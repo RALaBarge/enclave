@@ -1,0 +1,40 @@
+name: grep-sbx
+summary: |
+  Search files in the sandbox box's workspace (/deskbox/work) for a regular
+  expression (Python re syntax), skipping .git and binary files. path is a
+  file or directory relative to the workspace (default the workspace);
+  include is one glob on the file name, e.g. "*.py". Returns at most 500
+  matches as "path:line:text".
+
+input:
+  type: object
+  additionalProperties: false
+  required: [pattern]
+  properties:
+    pattern:     { type: string, minLength: 1, maxLength: 1000 }
+    path:        { type: string, maxLength: 4096 }
+    include:     { type: string, maxLength: 200 }
+    ignore_case: { type: boolean }
+
+output:
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      matches:   { type: array, maxItems: 500, items: { type: string, maxLength: 5000 } }
+      truncated: { type: boolean }
+      error:     { type: string, maxLength: 4200 }
+
+allowed_side_effects:
+  files: []
+  network: false     # the stub reaches the broker over the bound socket; the box job itself has no network either
+
+sandbox:
+  bind:
+    - src: /run/sbx/broker.sock
+      dst: /deskbox/broker.sock
+
+execution:
+  mode: queued
+  max_retries: 0
+  timeout_ms: 720000   # sync.py --check: queue (incl. the previous reset) + reset retry + tool + 15 s + margin
