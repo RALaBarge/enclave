@@ -4,8 +4,10 @@ run through sudo like sbx-reset. Installed on the sandbox box only, as /usr/loca
 
 The tar holds tools.list and tools/<name>/run (plus anything else a tool keeps in its directory), as the core's
 sbx-push-tools sends it. Every listed tool must have an executable run; nothing is changed unless all of it checks out.
+A tool's gate file (page, fetch: the browserbox gate's URL and token) is made 0640 root:sbx, readable only by jobs.
 sbx-run reads tools.list and binds the tool's directory per job, so the new set applies from the next job on, and a job
 already running keeps the files it bound."""
+import grp
 import io
 import os
 import shutil
@@ -27,6 +29,10 @@ def die(msg):
 
 if os.getuid() != 0:
     die("must run as root")
+try:
+    SBX_GID = grp.getgrnam("sbx").gr_gid
+except KeyError:
+    die("no sbx group; a gate file would be readable by root only")
 data = sys.stdin.buffer.read(MAX + 1)
 if len(data) > MAX:
     die("tar larger than %d bytes" % MAX)
@@ -48,6 +54,12 @@ for name in listed:
     if not os.path.isfile(run) or not os.access(run, os.X_OK):
         shutil.rmtree(NEW, ignore_errors=True)
         die("listed tool %s has no executable run" % name)
+
+for name in os.listdir(NEW + "/tools"):
+    gate = "%s/tools/%s/gate" % (NEW, name)
+    if os.path.isfile(gate):
+        os.chown(gate, 0, SBX_GID)
+        os.chmod(gate, 0o640)
 
 # Swap the directory in one step (renameat2 RENAME_EXCHANGE), then the list.
 subprocess.run(["mv", "--exchange", "-T", NEW + "/tools", SBX + "/tools"], check=True)
