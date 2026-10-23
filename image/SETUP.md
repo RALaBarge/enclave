@@ -127,19 +127,25 @@ The workspace survives a reset (the reset clears RAM/processes, not the disk). `
 
 Tools are not installable from the console. Add one by hand:
 
-1. Add a line to `tools.list`: `name [timeout_seconds] [net]` (timeout default 30, max 120). Add `net` only if the tool
-   needs the sandbox's network namespace; without it the tool runs with no network. The console's Tools tab can toggle it later.
-2. Write `sbx/tools/<name>/run` (runs on the sandbox side; reads JSON on stdin, writes JSON on stdout).
-3. Write `harness/tools/<name>-sbx/tcs.yaml` (the contract, on the trusted side). It must keep
+Tools live in the DeskboxTools repo, checked out here as the `tools/` submodule (`git submodule update --init` after a
+clone). Work in that repo, then move the submodule pointer in Enclave.
+
+1. Add a line to `tools/tools.list`: `name [timeout_seconds] [flags]` (timeout default 30, max 120; flags `net`, `work`,
+   `keep`, see the file's header). Add `net` only if the tool needs the sandbox's network namespace; without it the tool
+   runs with no network.
+2. Write `tools/<name>/run` (runs on the sandbox side; reads JSON on stdin, writes JSON on stdout).
+3. Write `tools/<name>/tcs.yaml` (the contract, `name: <name>-sbx`, on the trusted side). It must keep
    `allowed_side_effects.network: false` and declare the broker socket in `sandbox.bind`; `sync.py` refuses a contract that
    drops either, because a stub with no socket and no network cannot call anything.
-4. Run `python3 sync.py`. It generates the stub and validates everything.
-5. Deploy: `tools.list` goes to `/etc/sbx/tools.list` (harness) and to the sandbox side's `tools.list`
-   (see Known limits). Copy `sbx/tools/<name>` to `/opt/sbx/tools/`. Then
-   `sudo python3 sync.py --deploy /opt/deskbox/tools && sudo chown -R deskbox:deskbox /opt/deskbox/tools` — the desk only
-   serves what is in that directory, and 0700 on the run scripts is what stops anything but the desk from executing them.
-6. Pin the stub: `agent-desk -pin /opt/deskbox/tools/<name>-sbx`, then paste `integrity.run_sha256` into the repo's
-   `tcs.yaml` and re-deploy. The desk checks the pin at load and again per job.
+4. Run `python3 sync.py --check`. It validates everything; the desk's `run.py` (the generic stub, sized per tool) is
+   generated at deploy, never committed.
+5. Deploy: `tools/tools.list` goes to `/etc/sbx/tools.list` (harness) and `/opt/sbx/tools.list` (sandbox side), and
+   `tools/<name>` to `/opt/sbx/tools/<name>` (without `tcs.yaml`); in full mode `sbx-push-tools` then sends them to the
+   box. Then `sudo python3 sync.py --deploy /opt/deskbox/tools && sudo chown -R deskbox:deskbox /opt/deskbox/tools` — the
+   desk only serves what is in that directory, and 0700 on the run scripts is what stops anything but the desk from
+   executing them.
+6. Pin the stub: `agent-desk -pin /opt/deskbox/tools/<name>-sbx`, then paste `integrity.run_sha256` into
+   `tools/<name>/tcs.yaml` and re-deploy. The desk checks the pin at load and again per job.
 
 If `tcs-verify` is on `PATH`, `sync.py` runs it over every contract and fails on what it finds; it is the only thing here
 that parses the schema the way the gate does, so it is what notices a keyword the validator would silently drop (a

@@ -24,7 +24,8 @@ its gateway: the sandbox's traffic goes out only as far as an allowlist says, an
 | `harness/gate/` | **session gate**: the one place a new session's firewall profile is forced. Holds the tighten-only token, exposes `lockdown` and nothing that loosens, on a unix socket owned by the bridge's group. |
 | `harness/broker/` | **broker**: sends tool calls from the core to the sandbox over SSH (forced command), on a unix socket only the desk's group may connect to. |
 | `deskbox` (pinned in `image/manifest.env`) | the **desk** every tool call goes through: contract check in, contract check out, each run in its own bwrap. Runs as its own account; the tools it serves live in `/opt/deskbox/tools`, deployed by `sync.py --deploy`. |
-| `sbx/` | the sandbox side: `sbx-run` and the tools, each in its own `bwrap` with no network unless its `tools.list` line says `net`. |
+| `sbx/` | the sandbox side: `sbx-run`, which runs each tool in its own `bwrap` with no network unless its `tools.list` line says `net`. |
+| `tools/` | the tools themselves: the [DeskboxTools](https://github.com/RALaBarge/DeskboxTools) submodule (`tools.list`, and per tool its `run` and its contract). Clone with `--recurse-submodules`. |
 | `image/` | builds the VM images with Packer + QEMU: the **core** (`sbx-vm`) and the lean **sandbox** (`sbx-node`, no secrets), plus `enclave.ps1` (repo root), the launcher. |
 | `docs/HARNESS-ADMISSION.md` | what a second harness must give up before it may run next to Pi: what the core actually enforces, the admission checklist, the disqualifiers, and the cost. |
 

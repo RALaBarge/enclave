@@ -29,7 +29,7 @@ class Tools(unittest.TestCase):
         shutil.rmtree(self.tmp)
 
     def run_tool(self, tool, doc, work=True):
-        args = sbx_run.bwrap_args(os.path.join(HERE, "tools", tool), os.path.join(self.tmp, "in"),
+        args = sbx_run.bwrap_args(os.path.join(HERE, "..", "tools", tool), os.path.join(self.tmp, "in"),
                                   os.path.join(self.tmp, "out"), False, self.work if work else None)
         p = subprocess.run(args, input=json.dumps(doc).encode(), capture_output=True, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr.decode())
@@ -92,7 +92,7 @@ class Tools(unittest.TestCase):
         self.assertIn("[cut: 10000 more characters]", r["stdout"])
 
     def test_no_work_flag_no_workspace(self):
-        args = sbx_run.bwrap_args(os.path.join(HERE, "tools", "greet"), os.path.join(self.tmp, "in"),
+        args = sbx_run.bwrap_args(os.path.join(HERE, "..", "tools", "greet"), os.path.join(self.tmp, "in"),
                                   os.path.join(self.tmp, "out"), False, None)
         self.assertNotIn("/deskbox/work", args)
 

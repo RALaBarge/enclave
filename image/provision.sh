@@ -118,9 +118,6 @@ install -m 755 "$HERE/artifacts/tcs-shim" /usr/bin/tcs-shim    # shimmed tools e
 # run scripts 0700 so only that account can execute them. sync.py refuses to
 # ship a contract whose stub would need the network, which is what keeps every
 # call on the broker socket.
-# The repo was uploaded from a Windows host, which drops Unix execute bits, and
-# tcs-verify (run by sync.py) rejects a contract whose run.py is not executable.
-chmod 755 "$ROOT"/harness/tools/*/run.py "$ROOT"/harness/stub/run.py
 python3 "$ROOT/sync.py" --deploy /opt/deskbox/tools
 chown -R deskbox:deskbox /opt/deskbox/tools
 install -m 644 "$ROOT/harness/systemd/deskbox.service" /etc/systemd/system/
@@ -145,11 +142,13 @@ install -m 644 "$ROOT/common/toollist.py" /opt/sbx/              # sbx-run impor
 install -m 644 "$ROOT/harness/broker/sbx_broker.py" /opt/sbx-broker/
 install -m 644 "$ROOT/console/nftables.conf" /etc/nftables.conf
 install -m 644 "$ROOT/console/sbx-console.service" "$ROOT/harness/systemd/sbx-broker.service" /etc/systemd/system/
-install -m 644 "$ROOT/tools.list" /etc/sbx/tools.list           # harness side (broker, console)
+install -m 644 "$ROOT/tools/tools.list" /etc/sbx/tools.list           # harness side (broker, console)
 chgrp sbxconsole /etc/sbx/tools.list; chmod 0664 /etc/sbx/tools.list   # console writes it; broker reads; group only
-install -m 644 "$ROOT/tools.list" /opt/sbx/tools.list            # sandbox side (sbx-run hardcodes this path)
+install -m 644 "$ROOT/tools/tools.list" /opt/sbx/tools.list            # sandbox side (sbx-run hardcodes this path)
 install -m 755 "$ROOT/sbx/sbx-run" /opt/sbx/sbx-run
-cp -r "$ROOT/sbx/tools/." /opt/sbx/tools/
+for d in "$ROOT"/tools/*/; do      # DeskboxTools: the box needs each tool's run (and files), not its contract
+  n=$(basename "$d"); install -d "/opt/sbx/tools/$n"; cp -r "$d." "/opt/sbx/tools/$n/"; rm -f "/opt/sbx/tools/$n/tcs.yaml"
+done
 # Uploads from a Windows build host lose Unix modes; tool entry points must be executable for sbx-run.
 chmod 755 /opt/sbx/sbx-run /opt/sbx/tools/*/run
 

@@ -304,8 +304,8 @@ build {
   }
 
   provisioner "file" {
-    source      = "${local.repo}/tools.list"
-    destination = "/tmp/repo/tools.list"
+    source      = "${local.repo}/tools"
+    destination = "/tmp/repo/" # the DeskboxTools submodule: tools.list and one directory per tool
   }
 
   provisioner "file" {
@@ -433,8 +433,8 @@ build {
   }
 
   provisioner "file" {
-    source      = "${local.repo}/tools.list"
-    destination = "/tmp/repo/tools.list"
+    source      = "${local.repo}/tools"
+    destination = "/tmp/repo/" # the DeskboxTools submodule: tools.list and one directory per tool
   }
 
   provisioner "file" {

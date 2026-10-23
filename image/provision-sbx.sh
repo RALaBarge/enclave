@@ -31,7 +31,7 @@ chmod 600 "$SBX_HOME/.ssh/authorized_keys"
 install -d /opt/sbx/tools
 install -d -m 700 -o sbx -g sbx /var/lib/sbx-work    # the `work` tools' workspace: the box's disk, sbx's alone
 install -m 644 "$ROOT/common/toollist.py" /opt/sbx/
-install -m 644 "$ROOT/tools.list" /opt/sbx/tools.list
+install -m 644 "$ROOT/tools/tools.list" /opt/sbx/tools.list
 install -m 755 "$ROOT/sbx/sbx-run" /opt/sbx/sbx-run
 install -m 755 "$ROOT/sbx/sbx-channel" /opt/sbx/sbx-channel    # forced command: sbx-run, or reset
 install -m 755 "$HERE/sbx-reset.sh" /usr/local/sbin/sbx-reset  # root helper behind the reset verb
@@ -40,7 +40,9 @@ install -m 755 "$HERE/sbx-install.py" /usr/local/sbin/sbx-install  # root helper
 printf '%s\n' 'Defaults:sbx !requiretty' 'sbx ALL=(root) NOPASSWD: /usr/local/sbin/sbx-reset, /usr/local/sbin/sbx-install' >/etc/sudoers.d/sbx-reset
 chmod 440 /etc/sudoers.d/sbx-reset
 visudo -cf /etc/sudoers.d/sbx-reset
-cp -r "$ROOT/sbx/tools/." /opt/sbx/tools/
+for d in "$ROOT"/tools/*/; do      # DeskboxTools: the box needs each tool's run (and files), not its contract
+  n=$(basename "$d"); install -d "/opt/sbx/tools/$n"; cp -r "$d." "/opt/sbx/tools/$n/"; rm -f "/opt/sbx/tools/$n/tcs.yaml"
+done
 chmod 755 /opt/sbx/sbx-run /opt/sbx/sbx-channel /opt/sbx/tools/*/run     # uploads from Windows lose Unix modes
 
 # ---- host key: fixed at build time so the core can pin it (the core's known_hosts.box has this public key) ----

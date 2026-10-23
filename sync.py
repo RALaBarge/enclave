@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
-"""Reads tools.list and keeps the repo consistent with it.
+"""Checks the tools (the DeskboxTools submodule at tools/) and installs them into the desk.
 
-  python3 sync.py                generate stubs, then validate
+  python3 sync.py                validate (the same as --check)
   python3 sync.py --check        validate only (CI / pre-deploy)
-  python3 sync.py --deploy DIR   validate like --check, then install into DIR (the desk's tools dir);
-                                 never writes the checkout
+  python3 sync.py --deploy DIR   validate, then install into DIR (the desk's tools dir); never writes the checkout
 
-For each tool in tools.list it checks sbx/tools/<name>/run and
-harness/tools/<name>-sbx/tcs.yaml exist, (re)writes the generic stub
-harness/stub/run.py into harness/tools/<name>-sbx/run.py, and checks the
-contract still says what the stub assumes: network:false, and a bind of the
-broker's socket. That pair is what makes "all tool calls go through the desk"
-true without giving the job the host network. Reports -sbx tool dirs that are
-no longer listed. Never deletes anything.
+For each tool in tools/tools.list it checks tools/<name>/run and tools/<name>/tcs.yaml exist, and that the contract
+still says what the stub assumes: network:false, and a bind of the broker's socket. That pair is what makes "all tool
+calls go through the desk" true without giving the job the host network. Reports tool dirs that are not listed.
 
---deploy is the step that was missing: the desk loads /opt/deskbox/tools, and
-nothing used to put anything there. It copies each contract's folder in with
-the run script at 0700, so only the desk's account can execute it.
+The desk's run.py for every tool is the generic stub harness/stub/run.py with its client timeout sized for that tool;
+it is generated here, at check and deploy time, and never committed, so it cannot drift from the stub.
+
+--deploy is the step that puts tools where the desk loads them (/opt/deskbox/tools): DIR/<name>-sbx/tcs.yaml (0600)
+and the generated run.py (0700), so only the desk's account can execute it.
 """
 import os
 import re
@@ -24,13 +21,13 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.dont_write_bytecode = True     # --deploy runs as root over a user's checkout: not even __pycache__
 sys.path.insert(0, os.path.join(ROOT, "common"))
 import toollist  # noqa: E402
 
-check_only = "--check" in sys.argv
 deploy_dir = None
 if "--deploy" in sys.argv:
     i = sys.argv.index("--deploy")
@@ -38,23 +35,12 @@ if "--deploy" in sys.argv:
         print("--deploy needs a directory", file=sys.stderr)
         sys.exit(2)
     deploy_dir = sys.argv[i + 1]
-    # --deploy validates exactly as --check does, then installs: nothing ships
-    # that --check would refuse, and nothing in the checkout is written. It
-    # runs as root over a tree a user owns; regenerating stubs is the
-    # developer's `python3 sync.py`, never the deploy's.
-    check_only = True
+    # --deploy validates exactly as --check does, then installs: nothing ships that --check would refuse, and nothing
+    # in the checkout is written. It runs as root over a tree a user owns.
 
-tools = toollist.load(os.path.join(ROOT, "tools.list"))
+TOOLS = os.path.join(ROOT, "tools")
+tools = toollist.load(os.path.join(TOOLS, "tools.list"))
 problems = []
-
-def _norm(path):
-    """The stub as deployed, with the per-tool timeout blanked.
-
-    The copy differs from the source by exactly that one line, so comparing
-    bytes would report drift for every tool forever.
-    """
-    with open(path, encoding="utf-8") as f:
-        return STUB_TIMEOUT_RE.sub("CLIENT_TIMEOUT = <per-tool>", f.read())
 
 QUEUE_WAIT_S = 300           # sbx_broker.py default: covers the previous job's reset, which runs after its reply
 RESET_BUDGET_S = 300         # sbx_broker.py: reset wall timeout (a failed reset is retried before the next job)
@@ -107,79 +93,63 @@ def contract_problems(path):
     return out
 
 
+with open(os.path.join(ROOT, "harness", "stub", "run.py"), encoding="utf-8") as fh:
+    STUB = fh.read()
+
+
+def stub_for(name):
+    """The desk's run.py for one tool: the stub, with the client timeout sized to the broker's worst case."""
+    return STUB_TIMEOUT_RE.sub(f"CLIENT_TIMEOUT = {stub_timeout(name)}", STUB).encode()
+
+
 for name in tools:
-    run = os.path.join(ROOT, "sbx", "tools", name, "run")
-    hdir = os.path.join(ROOT, "harness", "tools", f"{name}-sbx")
-    tcs = os.path.join(hdir, "tcs.yaml")
+    run = os.path.join(TOOLS, name, "run")
+    tcs = os.path.join(TOOLS, name, "tcs.yaml")
     if not os.path.isfile(run):
         problems.append(f"missing sandbox tool: {os.path.relpath(run, ROOT)}")
     if not os.path.isfile(tcs):
-        problems.append(f"missing contract:     {os.path.relpath(hdir, ROOT)}/tcs.yaml")
-    else:
-        problems.extend(contract_problems(tcs))
-        # The desk sets DESKBOX_TOOL to the contract's name, the stub sends it as
-        # `caller`, and the broker accepts only "<tool>-sbx". The directory name is
-        # the convention everything else uses, so the contract must say the same.
-        with open(tcs, encoding="utf-8") as fh:
-            m = re.search(r"^name:[ \t]*['\"]?([^\s'\"#]+)", fh.read(), re.M)
-        if not m or m.group(1) != f"{name}-sbx":
-            problems.append(
-                f"contract name:      {os.path.relpath(tcs, ROOT)} says {m.group(1) if m else 'nothing'!r}, must be "
-                f"'{name}-sbx' (the broker only accepts a caller named <tool>-sbx)")
-        if contract_timeout_s(tcs) < stub_timeout(name) + 5:
-            problems.append(
-                f"contract timeout:   {os.path.relpath(tcs, ROOT)} timeout_ms is {contract_timeout_s(tcs):g}s, needs "
-                f">= {stub_timeout(name) + 5}s (the stub waits {stub_timeout(name)}s for the broker)")
-        stub = os.path.join(ROOT, "harness", "stub", "run.py")
-        copy = os.path.join(hdir, "run.py")
-        # Read the copy's own number before the drift comparison blanks it.
-        # This runs every time, not in an `else` after the drift test: the two
-        # questions are independent, and burying the second one in an `else` is
-        # how it stopped running in the first place.
-        if check_only and os.path.isfile(copy):
-            want = stub_timeout(name)
-            m = re.search(r"^CLIENT_TIMEOUT = (\d+)$", open(copy, encoding="utf-8").read(), re.M)
-            have = int(m.group(1)) if m else 0
-            if have < want:
-                problems.append(
-                    f"stub timeout short:  {os.path.relpath(copy, ROOT)} is {have}s, needs "
-                    f">= {want}s (queue wait + tool budget + reset + margin; run `python sync.py`)")
-        if not check_only:
-            shutil.copyfile(stub, copy)
-            # Size the stub's client timeout to the broker's own worst case:
-            # queue wait + the tool's budget + 15 s + reset + margin. Written
-            # into the copy so the two cannot drift.
-            with open(copy, encoding="utf-8") as fh:
-                text = fh.read()
-            with open(copy, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(STUB_TIMEOUT_RE.sub(f"CLIENT_TIMEOUT = {stub_timeout(name)}", text))
-        elif not os.path.isfile(copy) or _norm(copy) != _norm(stub):
-            # A copy that has drifted from the stub is a tool running edited
-            # code that nobody reviewed as a stub change. --check is what CI
-            # runs, so it has to notice.
-            problems.append(
-                f"stub out of date:    {os.path.relpath(copy, ROOT)} differs from "
-                f"harness/stub/run.py (run `python sync.py`)")
+        problems.append(f"missing contract:     {os.path.relpath(tcs, ROOT)}")
+        continue
+    problems.extend(contract_problems(tcs))
+    # The desk sets DESKBOX_TOOL to the contract's name, the stub sends it as `caller`, and the broker accepts only
+    # "<tool>-sbx". The contract must say the same.
+    with open(tcs, encoding="utf-8") as fh:
+        m = re.search(r"^name:[ \t]*['\"]?([^\s'\"#]+)", fh.read(), re.M)
+    if not m or m.group(1) != f"{name}-sbx":
+        problems.append(
+            f"contract name:      {os.path.relpath(tcs, ROOT)} says {m.group(1) if m else 'nothing'!r}, must be "
+            f"'{name}-sbx' (the broker only accepts a caller named <tool>-sbx)")
+    if contract_timeout_s(tcs) < stub_timeout(name) + 5:
+        problems.append(
+            f"contract timeout:   {os.path.relpath(tcs, ROOT)} timeout_ms is {contract_timeout_s(tcs):g}s, needs "
+            f">= {stub_timeout(name) + 5}s (the stub waits {stub_timeout(name)}s for the broker)")
 
-hroot = os.path.join(ROOT, "harness", "tools")
-for d in sorted(os.listdir(hroot)):
-    if d.endswith("-sbx") and d[:-4] not in tools:
-        problems.append(f"unlisted tool dir:   harness/tools/{d} (not in tools.list)")
+if not STUB_TIMEOUT_RE.search(STUB):
+    problems.append("harness/stub/run.py has no `CLIENT_TIMEOUT = <n>` line to size")
 
-# If the desk's own linter is on PATH, use it. The checks above are textual and
-# deliberately cheap; tcs-verify parses the contract the way the gate does, so
-# it is what catches a schema keyword the validator would silently ignore (a
-# `default:` is the one that got through once). Absent, this step is skipped
-# rather than failing: a build host without the Go binary should still be able
-# to run sync.py.
+for d in sorted(os.listdir(TOOLS)):
+    if os.path.isdir(os.path.join(TOOLS, d)) and not d.startswith(".") and d not in tools:
+        problems.append(f"unlisted tool dir:   tools/{d} (not in tools/tools.list)")
+
+# If the desk's own linter is on PATH, use it on each tool as the desk will load it (the contract plus the generated
+# stub, in a scratch dir). The checks above are textual and deliberately cheap; tcs-verify parses the contract the way
+# the gate does, so it is what catches a schema keyword the validator would silently ignore (a `default:` is the one
+# that got through once). Absent, this step is skipped rather than failing: a build host without the Go binary should
+# still be able to run sync.py.
 verifier = shutil.which("tcs-verify")
-if verifier:
-    for name in tools:
-        tdir = os.path.join(hroot, f"{name}-sbx")
-        r = subprocess.run([verifier, tdir], capture_output=True, text=True)
-        if r.returncode != 0:
-            detail = "; ".join(ln.strip() for ln in (r.stdout or "").splitlines() if "FAIL" in ln)
-            problems.append(f"tcs-verify:         harness/tools/{name}-sbx: {detail or 'rejected'}")
+if verifier and not problems:
+    with tempfile.TemporaryDirectory() as scratch:
+        for name in tools:
+            tdir = os.path.join(scratch, f"{name}-sbx")
+            os.mkdir(tdir)
+            shutil.copyfile(os.path.join(TOOLS, name, "tcs.yaml"), os.path.join(tdir, "tcs.yaml"))
+            with open(os.path.join(tdir, "run.py"), "wb") as fh:
+                fh.write(stub_for(name))
+            os.chmod(os.path.join(tdir, "run.py"), 0o755)
+            r = subprocess.run([verifier, tdir], capture_output=True, text=True)
+            if r.returncode != 0:
+                detail = "; ".join(ln.strip() for ln in (r.stdout or "").splitlines() if "FAIL" in ln)
+                problems.append(f"tcs-verify:         tools/{name}: {detail or 'rejected'}")
 
 print(f"{len(tools)} tool(s): {', '.join(tools)}")
 for p in problems:
@@ -206,7 +176,7 @@ if deploy_dir:
     except OSError as e:
         sys.exit(f"refusing --deploy: {deploy_dir}: {e.strerror}")
     for name in tools:
-        src = os.path.join(hroot, f"{name}-sbx")
+        src = os.path.join(TOOLS, name)
         dst = os.path.join(deploy_dir, f"{name}-sbx")
         try:
             try:
@@ -218,12 +188,15 @@ if deploy_dir:
             sys.exit(f"refusing --deploy: {dst}: {e.strerror}")
         try:
             for f in ("run.py", "tcs.yaml"):
-                # The source is a user's checkout: a link there must not make root copy some other file in.
-                sfd = os.open(os.path.join(src, f), os.O_RDONLY | os.O_NOFOLLOW)
-                with os.fdopen(sfd, "rb") as fh:
-                    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-                        sys.exit(f"refusing --deploy: {src}/{f} is not a regular file")
-                    data = fh.read()
+                if f == "run.py":
+                    data = stub_for(name)
+                else:
+                    # The source is a user's checkout: a link there must not make root copy some other file in.
+                    sfd = os.open(os.path.join(src, f), os.O_RDONLY | os.O_NOFOLLOW)
+                    with os.fdopen(sfd, "rb") as fh:
+                        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                            sys.exit(f"refusing --deploy: {src}/{f} is not a regular file")
+                        data = fh.read()
                 tmp = f".{f}.deploy-{os.getpid()}"
                 fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                              0o700 if f == "run.py" else 0o600, dir_fd=dfd)
@@ -234,5 +207,5 @@ if deploy_dir:
             os.close(dfd)
         print(f"deployed {dst}")
     os.close(pfd)
-    print("Re-pin after any edit to a run script: agent-desk -pin <tool dir>, then paste "
+    print("Re-pin after any change to the stub or a timeout: agent-desk -pin <tool dir>, then paste "
           "integrity.run_sha256 into that tool's tcs.yaml and re-deploy.")

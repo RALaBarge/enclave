@@ -6,6 +6,7 @@ Run from the repo root:  python3 test_sync_deploy.py
 """
 import hashlib
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -87,11 +88,11 @@ class DeployNeverWritesTheCheckout(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = os.path.join(self.tmp.name, "repo")
-        for part in ("sync.py", "tools.list", "common", "harness/stub", "harness/tools", "sbx/tools"):
+        for part in ("sync.py", "common", "harness/stub", "tools"):
             src, dst = os.path.join(ROOT, part), os.path.join(self.repo, part)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if os.path.isdir(src):
-                shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+                shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", ".git"))
             else:
                 shutil.copy2(src, dst)
         self.dest = os.path.join(self.tmp.name, "tools")
@@ -114,21 +115,20 @@ class DeployNeverWritesTheCheckout(unittest.TestCase):
         self.assertEqual({k: h for k, (_, h) in after.items()}, {k: h for k, (_, h) in before.items()})
         self.assertTrue(os.path.isfile(os.path.join(self.dest, "greet-sbx", "run.py")))
 
-    def test_a_stale_stub_is_refused_not_regenerated(self):
-        stub = os.path.join(self.repo, "harness", "tools", "greet-sbx", "run.py")
-        with open(stub, "a") as f:
-            f.write("# edited\n")
-        r = self.run_deploy()
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("stub out of date", r.stdout)
-        self.assertTrue(open(stub).read().endswith("# edited\n"))
-        self.assertFalse(os.path.exists(self.dest))
+    def test_the_desk_gets_the_stub_sized_per_tool(self):
+        self.assertEqual(self.run_deploy().returncode, 0)
+        with open(os.path.join(self.repo, "harness", "stub", "run.py")) as f:
+            stub = f.read()
+        for name, secs in (("greet", 655), ("bash", 765)):
+            with open(os.path.join(self.dest, f"{name}-sbx", "run.py")) as f:
+                got = f.read()
+            self.assertEqual(got, re.sub(r"^CLIENT_TIMEOUT = \d+$", f"CLIENT_TIMEOUT = {secs}", stub, flags=re.M))
 
     def test_a_link_in_the_checkout_is_not_followed(self):
         secret = os.path.join(self.tmp.name, "secret")
         with open(secret, "w") as f:
             f.write("SECRET\n")
-        tcs = os.path.join(self.repo, "harness", "tools", "greet-sbx", "tcs.yaml")
+        tcs = os.path.join(self.repo, "tools", "greet", "tcs.yaml")
         real = open(tcs).read()
         os.remove(tcs)
         with open(secret, "a") as f:            # passes the textual checks, so only the open can refuse it
@@ -148,11 +148,11 @@ class ContractChecks(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = os.path.join(self.tmp.name, "repo")
-        for part in ("sync.py", "tools.list", "common", "harness/stub", "harness/tools", "sbx/tools"):
+        for part in ("sync.py", "common", "harness/stub", "tools"):
             src, dst = os.path.join(ROOT, part), os.path.join(self.repo, part)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if os.path.isdir(src):
-                shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+                shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", ".git"))
             else:
                 shutil.copy2(src, dst)
 
@@ -161,7 +161,7 @@ class ContractChecks(unittest.TestCase):
                               capture_output=True, text=True)
 
     def test_a_broker_bind_at_the_wrong_destination_is_refused(self):
-        tcs = os.path.join(self.repo, "harness", "tools", "greet-sbx", "tcs.yaml")
+        tcs = os.path.join(self.repo, "tools", "greet", "tcs.yaml")
         text = open(tcs).read()
         self.assertIn("dst: /deskbox/broker.sock", text)
         open(tcs, "w").write(text.replace("dst: /deskbox/broker.sock", "dst: /deskbox/other"))

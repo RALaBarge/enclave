@@ -5,7 +5,7 @@ Local control panel for Enclave's sandbox gateway: **Firewall** (nftables gatewa
 Stdlib Python, one static page, no framework. Binds `127.0.0.1:8787`; every API call needs the bearer token.
 
 Tools are deliberately **not** installable from the UI. Adding one means writing sandbox code, a contract and a
-pinned stub by hand (`sync.py`), then re-pinning in agent-desk. The Tools tab shows the stub hash to pin.
+pinned stub by hand (in DeskboxTools, the `tools/` submodule; `sync.py --check`), then re-pinning in agent-desk. The Tools tab shows the stub hash to pin.
 
 ## The strongest setup
 

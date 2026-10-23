@@ -111,6 +111,7 @@ function Invoke-Verify {
   }
 }
 function Invoke-Build($which) {
+  if (-not (Test-Path "$root\tools\tools.list")) { throw "tools\ is empty: the DeskboxTools submodule is not checked out (git submodule update --init)" }
   $basePath = "$out\base\base.qcow2"
   $env:PATH += ";$qemu"                                  # packer finds qemu-system-x86_64 here
   $env:PACKER_CACHE_DIR = "$env:TEMP\packer_cache"      # outside the repo: image/ is uploaded into the VM
