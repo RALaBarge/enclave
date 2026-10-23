@@ -3,19 +3,21 @@
 run through sudo like sbx-reset. Installed on the sandbox box only, as /usr/local/sbin/sbx-install.
 
 The tar holds tools.list, toollist.py, sbx-run and tools/<name>/run (plus anything else a tool keeps in its directory),
-as the core's sbx-push-tools sends it. tools.list is checked with the toollist.py that comes with it, sbx-run must
-compile, and every listed tool must have an executable run; nothing is changed unless all of it checks out. So a change
-to sbx-run or to the tools.list format reaches the box with a normal push. sbx-channel is not in it: that stays a
+as the core's sbx-push-tools sends it. Nothing in the tar runs here as root: the tool names are read from tools.list
+with a pattern (the core's sync.py and broker have parsed it in full, and sbx-run parses it again, as sbx, with the
+toollist.py that comes with it), sbx-run must compile, and every listed tool must have an executable run. Nothing is
+changed unless all of that checks out; the install itself (four renames) is not one transaction. So a change to sbx-run
+or to the tools.list format reaches the box with a normal push. sbx-channel is not in it: that stays a
 change made at the box's keyboard. The `work` tools' workspace, /var/lib/sbx-work, is made if missing.
 A tool's gate file (page, fetch: the browserbox gate's URL and token) is made 0640 root:sbx, readable only by jobs.
 sbx-run reads tools.list and binds the tool's directory per job, so the new set applies from the next job on, and a job
 already running keeps the files it bound."""
 import grp
-import importlib.util
 import io
 import os
 import pwd
 import py_compile
+import re
 import shutil
 import subprocess
 import sys
@@ -25,9 +27,25 @@ SBX, MAX = "/opt/sbx", 16 << 20
 NEW = SBX + "/tools.new"
 FILES = ("tools.list", "toollist.py", "sbx-run")      # top-level files the tar must carry, besides tools/
 WORK = "/var/lib/sbx-work"
+NAME_RE = re.compile(r"^([a-z0-9][a-z0-9-]{0,63})(?:\s|$)")      # toollist.TOOL_RE, as the first word of a line
+
+
+def names(path):
+    """The tool names in a tools.list, without running its parser."""
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for ln in f:
+            ln = ln.split("#", 1)[0].strip()
+            if ln:
+                m = NAME_RE.match(ln)
+                if not m:
+                    raise ValueError("tools.list: bad line %r" % ln[:80])
+                out.append(m.group(1))
+    return out
 
 
 def die(msg):
+    shutil.rmtree(NEW, ignore_errors=True)    # never leave a half-checked tree behind
     print("sbx-install: " + msg, file=sys.stderr)
     sys.exit(1)
 
@@ -54,18 +72,13 @@ try:
     for f in FILES:
         if not os.path.isfile(os.path.join(NEW, f)):
             raise ValueError("the tar has no %s" % f)
-    spec = importlib.util.spec_from_file_location("toollist", NEW + "/toollist.py")
-    toollist = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(toollist)        # the parser that comes with the list checks it
-    listed = toollist.load(NEW + "/tools.list")
+    listed = names(NEW + "/tools.list")
     py_compile.compile(NEW + "/sbx-run", cfile=NEW + "/.sbx-run.pyc", doraise=True)
-except (tarfile.TarError, OSError, ValueError, SyntaxError, py_compile.PyCompileError) as e:
-    shutil.rmtree(NEW, ignore_errors=True)
+except (tarfile.TarError, OSError, ValueError, py_compile.PyCompileError) as e:
     die(str(e))
 for name in listed:
     run = "%s/tools/%s/run" % (NEW, name)
     if not os.path.isfile(run) or not os.access(run, os.X_OK):
-        shutil.rmtree(NEW, ignore_errors=True)
         die("listed tool %s has no executable run" % name)
 
 for name in os.listdir(NEW + "/tools"):
