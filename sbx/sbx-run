@@ -9,6 +9,7 @@ Runs /opt/sbx/tools/<tool>/run in bubblewrap with the SAME layout the desk uses:
   /deskbox/in/<name>   input files (read-only)
   /deskbox/out/        writable output dir
   /deskbox/tool/       the tool dir (read-only)
+  /deskbox/work/       the box's workspace, WORK (writable, persists), only for a `work` tool, which is also the cwd
 no network unless the tool's tools.list entry says `net`, cleared env, tmpfs
 /tmp, read-only /usr.  `input` goes to the tool's stdin as JSON.
 
@@ -39,6 +40,7 @@ import toollist  # noqa: E402
 
 TOOLS = "/opt/sbx/tools"
 TOOLLIST = "/opt/sbx/tools.list"
+WORK = "/var/lib/sbx-work"          # sbx's, 0700; the box's disk, so it survives the reboot between jobs
 MAX_IN = 1 << 20
 MAX_OUT = 1 << 20
 MAX_FILES = 16
@@ -46,7 +48,7 @@ FILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 TOOL_RE = toollist.TOOL_RE
 
 
-def bwrap_args(tool_dir, in_dir, out_dir, network=False):
+def bwrap_args(tool_dir, in_dir, out_dir, network=False, work=None):
     a = ["bwrap", "--unshare-all"]
     if network:
         a += ["--share-net"]        # --unshare-all would give an empty netns; the entry opts back into the sandbox's
@@ -61,6 +63,8 @@ def bwrap_args(tool_dir, in_dir, out_dir, network=False):
     a += ["--ro-bind", tool_dir, "/deskbox/tool",
           "--ro-bind", in_dir, "/deskbox/in",
           "--bind", out_dir, "/deskbox/out"]
+    if work:
+        a += ["--bind", work, "/deskbox/work"]  # toollist refuses `work` with `net`: the workspace never meets a network
     if network:
         # A network tool that shells out (ssh, git, curl) needs the name service
         # and the trust store inside the job: without /etc/resolv.conf the DNS
@@ -72,7 +76,7 @@ def bwrap_args(tool_dir, in_dir, out_dir, network=False):
             if os.path.exists(p):
                 a += ["--ro-bind", p, p]
     a += ["--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
-          "--setenv", "LANG", "C.UTF-8", "--chdir", "/deskbox", "/deskbox/tool/run"]
+          "--setenv", "LANG", "C.UTF-8", "--chdir", "/deskbox/work" if work else "/deskbox", "/deskbox/tool/run"]
     return a
 
 
@@ -135,16 +139,16 @@ def main():
                 return 2
             with open(os.path.join(in_dir, name), "wb") as f:
                 f.write(base64.b64decode(b64, validate=True))
-        return run_tool(tool_dir, in_dir, out_dir, payload, timeout, work, network)
+        return run_tool(tool_dir, in_dir, out_dir, payload, timeout, work, network, WORK if listed["work"] else None)
     except (ValueError, OSError):
         return 2
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def run_tool(tool_dir, in_dir, out_dir, payload, timeout, work, network=False):
+def run_tool(tool_dir, in_dir, out_dir, payload, timeout, work, network=False, workspace=None):
     err = open(os.path.join(work, "stderr"), "w+b")  # never forwarded, only classified
-    p = subprocess.Popen(bwrap_args(tool_dir, in_dir, out_dir, network), stdin=subprocess.PIPE,
+    p = subprocess.Popen(bwrap_args(tool_dir, in_dir, out_dir, network, workspace), stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=err,
                          start_new_session=True, preexec_fn=limits(timeout))
     timed_out = threading.Event()

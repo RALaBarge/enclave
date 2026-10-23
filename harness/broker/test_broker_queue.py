@@ -406,6 +406,22 @@ class BrokerTest(unittest.TestCase):
         self.wait_for(lambda: self.get_status()[1]["busy"] is False, "the last job")
         self.assertEqual(calls, [0, 1, 0])                 # the failed one is retried even while switched off
 
+    def test_a_keep_tool_is_not_followed_by_a_reset(self):
+        self.use_lane(2, 5)
+        sbx_broker.RESET_CMD = "reset"
+        calls = []
+        sbx_broker._run_reset = lambda: calls.append(1) or 0
+        with open(self.tool_list, "w", encoding="utf-8") as f:
+            f.write("greet 5 keep\n")
+        self.assertEqual(self.post()[0], 200)
+        self.wait_for(lambda: self.get_status()[1]["busy"] is False, "the keep job")
+        self.assertEqual(calls, [])
+        with open(self.tool_list, "w", encoding="utf-8") as f:
+            f.write("greet 5\n")
+        self.assertEqual(self.post()[0], 200)
+        self.wait_for(lambda: self.get_status()[1]["busy"] is False, "the plain job")
+        self.assertEqual(calls, [1])
+
     # -- queue limits ----------------------------------------------------
 
     def test_queue_full_answers_503_with_depth(self):

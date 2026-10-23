@@ -619,42 +619,57 @@ def _read_toollist_lines():
         return []
 
 
-OFF_RE = re.compile(r"^#\s*off:\s*([a-z0-9][a-z0-9-]{0,63})(?:\s+(\d+))?(?:\s+(" + toollist.NET_FIELD + r"))?\s*$")
+OFF_RE = re.compile(r"^#\s*off:\s*([a-z0-9][a-z0-9-]{0,63}(?:\s+\S+)*)\s*$")
 
 
-def _fields(parts):
-    """name plus the rest of a tools.list line -> (timeout_s, network). Unparseable fields are ignored, as before."""
-    t, network = toollist.DEFAULT_TIMEOUT, False
+def _entry(ln):
+    """One tools.list line -> (name, enabled, timeout_s, flags) or None. Unparseable fields are ignored, as before."""
+    m = OFF_RE.match(ln.strip())
+    if m:
+        parts, enabled = m.group(1).split(), False
+    else:
+        parts, enabled = ln.split("#", 1)[0].split(), True
+        if not parts or not NAME_RE.match(parts[0]):
+            return None
+    t, flags = toollist.DEFAULT_TIMEOUT, []
     for p in parts[1:]:
-        if p == toollist.NET_FIELD:
-            network = True
+        if p in toollist.FLAGS and p not in flags:
+            flags.append(p)
         elif p.isdigit():
             t = int(p)
-    return max(1, min(t, toollist.MAX_TIMEOUT)), network
+    return parts[0], enabled, max(1, min(t, toollist.MAX_TIMEOUT)), [f for f in toollist.FLAGS if f in flags]
 
 
-def _fmt(name, t, network, enabled=True):
-    body = f"{name} {t}" + (f" {toollist.NET_FIELD}" if network else "")
+def _fmt(name, t, flags, enabled=True):
+    body = " ".join([name, str(t)] + flags)
     return body if enabled else f"# off: {body}"
 
 
 def parse_tools():
-    """-> [{name, enabled, timeout_s, network}] from tools.list incl. '# off: name t net' disabled lines."""
+    """-> [{name, enabled, timeout_s, network, work, keep}] from tools.list incl. '# off: name t flags' lines."""
     tools = []
     for ln in _read_toollist_lines():
-        m = OFF_RE.match(ln.strip())
-        if m:
-            t = int(m.group(2) or toollist.DEFAULT_TIMEOUT)
-            tools.append({"name": m.group(1), "enabled": False,
-                          "timeout_s": max(1, min(t, toollist.MAX_TIMEOUT)), "network": m.group(3) is not None})
-            continue
-        body = ln.split("#", 1)[0].strip()
-        if body:
-            parts = body.split()
-            if NAME_RE.match(parts[0]):
-                t, network = _fields(parts)
-                tools.append({"name": parts[0], "enabled": True, "timeout_s": t, "network": network})
+        e = _entry(ln)
+        if e:
+            name, enabled, t, flags = e
+            tools.append({"name": name, "enabled": enabled, "timeout_s": t, "network": toollist.NET_FIELD in flags,
+                          "work": "work" in flags, "keep": "keep" in flags})
     return tools
+
+
+def _rewrite(name, enabled=None, t=None):
+    """Rewrite name's line, keeping its flags (the console never changes net, work or keep)."""
+    def mut(lines):
+        out = []
+        for ln in lines:
+            e = _entry(ln)
+            if e and e[0] == name:
+                _, was, old_t, flags = e
+                out.append(_fmt(name, old_t if t is None else t, flags, was if enabled is None else enabled))
+            else:
+                out.append(ln)
+        return out
+    _write_toollist(mut)
 
 
 def _sha(path):
@@ -693,21 +708,7 @@ def _write_toollist(mutator):
 def tool_toggle(name, enabled):
     if not any(t["name"] == name for t in parse_tools()):
         raise Bad("unknown tool")
-
-    def mut(lines):
-        out = []
-        for ln in lines:
-            m = OFF_RE.match(ln.strip())
-            body = ln.split("#", 1)[0].split()
-            if m and m.group(1) == name:
-                out.append(_fmt(name, int(m.group(2) or toollist.DEFAULT_TIMEOUT), m.group(3) is not None, enabled))
-            elif body and body[0] == name and not ln.lstrip().startswith("#"):
-                t, network = _fields(body)
-                out.append(_fmt(name, t, network, enabled))
-            else:
-                out.append(ln)
-        return out
-    _write_toollist(mut)
+    _rewrite(name, enabled=enabled)
     return {"ok": True, "note": "Deploy tools.list to the sandbox box too (full mode); the broker reads it per request."}
 
 
@@ -717,21 +718,7 @@ def tool_timeout(name, t):
         raise Bad(f"timeout must be 1..{toollist.MAX_TIMEOUT}")
     if not any(x["name"] == name for x in parse_tools()):
         raise Bad("unknown tool")
-
-    def mut(lines):
-        out = []
-        for ln in lines:
-            m = OFF_RE.match(ln.strip())
-            body = ln.split("#", 1)[0].split()
-            if m and m.group(1) == name:
-                out.append(_fmt(name, t, m.group(3) is not None, False))
-            elif body and body[0] == name and not ln.lstrip().startswith("#"):
-                _, network = _fields(body)
-                out.append(_fmt(name, t, network, True))
-            else:
-                out.append(ln)
-        return out
-    _write_toollist(mut)
+    _rewrite(name, t=t)
     return {"ok": True}
 
 

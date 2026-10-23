@@ -383,6 +383,25 @@ class Tools(unittest.TestCase):
             with self.assertRaises(ValueError, msg=bad):
                 toollist.load(c.TOOLLIST)
 
+    def test_work_and_keep_flags(self):
+        import toollist
+        with open(c.TOOLLIST, "w") as f:
+            f.write("read 20 work keep\nbash 120 work\n# off: grep 30 keep work\n")
+        parsed = toollist.load(c.TOOLLIST)
+        self.assertEqual([(parsed[n]["work"], parsed[n]["keep"], parsed[n]["network"]) for n in ("read", "bash")],
+                         [(True, True, False), (True, False, False)])
+        c.tool_timeout("read", 45)
+        c.tool_toggle("bash", False)
+        c.tool_toggle("grep", True)                    # flags come back in one order, none dropped
+        self.assertEqual(open(c.TOOLLIST).read(), "read 45 work keep\n# off: bash 120 work\ngrep 30 work keep\n")
+        self.assertEqual([(t["name"], t["work"], t["keep"]) for t in c.parse_tools()],
+                         [("read", True, True), ("bash", True, False), ("grep", True, True)])
+        for bad in ("x 10 net work\n", "x work net\n", "x 10 keep keep\n", "x 10 kept\n"):
+            with open(c.TOOLLIST, "w") as f:
+                f.write(bad)
+            with self.assertRaises(ValueError, msg=bad):
+                toollist.load(c.TOOLLIST)
+
     def test_disabled_tool_invisible_to_broker(self):
         import toollist
         c.tool_toggle("other", False)

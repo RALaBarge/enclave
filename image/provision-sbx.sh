@@ -29,6 +29,7 @@ chmod 600 "$SBX_HOME/.ssh/authorized_keys"
 
 # ---- sandbox side of the tool bridge ----
 install -d /opt/sbx/tools
+install -d -m 700 -o sbx -g sbx /var/lib/sbx-work    # the `work` tools' workspace: the box's disk, sbx's alone
 install -m 644 "$ROOT/common/toollist.py" /opt/sbx/
 install -m 644 "$ROOT/tools.list" /opt/sbx/tools.list
 install -m 755 "$ROOT/sbx/sbx-run" /opt/sbx/sbx-run

@@ -527,7 +527,8 @@ class H(BaseHTTPRequestHandler):
             # Answer first, then reset with the lane still held: the caller is not kept waiting for a reboot, and the
             # next job still cannot start on a sandbox this one used. A failed reset is recorded and gates that job.
             self._reply(tool, network, out, enqueued, job_started[0])
-            reset_sbx()
+            if not entry["keep"]:   # `keep`: the tool ran no code it was handed (read, grep, ...); no reboot after it
+                reset_sbx()
             return out["status"]
 
         try:

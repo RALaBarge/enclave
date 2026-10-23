@@ -62,6 +62,8 @@ done
 [ -z "$leak" ] && pass no-core-secrets "no Pi, Ollama, Loom, broker key or console" || fail no-core-secrets "found:$leak"
 
 # Sandbox plumbing.
+w=$(stat -c '%a %U' /var/lib/sbx-work 2>/dev/null)
+[ "$w" = "700 sbx" ] && pass workspace "/var/lib/sbx-work 700 sbx" || fail workspace "/var/lib/sbx-work is ${w:-missing} (want 700 sbx)"
 if [ -x /opt/sbx/sbx-run ] && [ -x /opt/sbx/tools/greet/run ]; then pass sbx-run "installed with the greet tool"; else fail sbx-run "missing /opt/sbx/sbx-run or the greet tool"; fi
 # The broker key is locked to the channel: sbx-run for tool requests, reset for the per-job reboot.
 if grep -q 'command="/opt/sbx/sbx-channel"' /home/sbx/.ssh/authorized_keys 2>/dev/null && grep -q restrict /home/sbx/.ssh/authorized_keys \

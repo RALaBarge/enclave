@@ -30,6 +30,7 @@ id sbx >/dev/null 2>&1 || useradd --create-home --home-dir "$SBX_HOME" --shell /
 usermod -s /bin/sh -p '!' sbx
 chown sbx:sbx "$SBX_HOME"
 chmod 755 "$SBX_HOME"
+install -d -m 700 -o sbx -g sbx /var/lib/sbx-work    # the `work` tools' workspace (lite: on the core, sbx's alone)
 
 # ---- key pair (broker side private key, sbx side authorized key) ----
 install -d -m 755 -o root -g root /etc/sbx
