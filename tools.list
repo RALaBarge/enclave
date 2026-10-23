@@ -1,15 +1,18 @@
-# The ONE place tool names live.  Format:  name  [timeout_seconds]  [net]
+# The ONE place tool names live.  Format:  name  [timeout_seconds]  [flags]
 #   timeout_seconds: default 30, max 120
-#   net: the literal word net gives that tool the sandbox's network namespace
-#        (bwrap --share-net). Without it the tool runs with no network. What a
-#        network tool can reach is still decided by the core's firewall. The
-#        console writes a timeout explicitly; `name net` is also accepted.
+#   net:  the sandbox's network namespace (bwrap --share-net). Without it the
+#         tool has no network. What a net tool reaches is the core's firewall's call.
+#   work: bind the box's persistent /var/lib/sbx-work at /deskbox/work and run
+#         there; never together with net.
+#   keep: skip the routine reset after this tool; only for tools that run no
+#         code they are handed. A failed reset is still retried.
+# The console writes a timeout explicitly; `name net` is also accepted.
 #
 # Never give `net` to a tool that runs code it is handed: an interpreter, a shell,
 # a test runner, a build or a package manager. That is code execution plus an
 # exit, and this file is where the review that prevents it happens.
 #
-# Disable a tool by commenting it out:  # off: name [timeout_seconds] [net]
+# Disable a tool by commenting it out:  # off: name [timeout_seconds] [flags]
 #
 # Add a tool:
 #   1. add a line here, e.g. `fetch 30 net` for a tool that needs the network

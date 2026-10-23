@@ -12,9 +12,15 @@ import sys
 W, CAP = "/deskbox/work", 500
 req = json.load(sys.stdin)
 base = os.path.realpath(os.path.join(W, req.get("path") or "."))
-if base != W and not base.startswith(W + "/") or not os.path.isdir(base) or os.path.isabs(req["pattern"]):
+pattern = req["pattern"]
+if (base != W and not base.startswith(W + "/") or not os.path.isdir(base) or os.path.isabs(pattern)
+        or any(part == ".." for part in pattern.split("/"))):
     json.dump({"error": "path must be a directory under %s, pattern relative to it" % W}, sys.stdout)
     sys.exit()
-hits = [p for p in glob.glob(os.path.join(base, req["pattern"]), recursive=True) if os.path.isfile(p)]
+hits = []
+for p in glob.glob(os.path.join(base, pattern), recursive=True):
+    real = os.path.realpath(p)
+    if (real == W or real.startswith(W + "/")) and os.path.isfile(real):
+        hits.append(real)
 hits.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 json.dump({"files": hits[:CAP], "truncated": len(hits) > CAP}, sys.stdout)

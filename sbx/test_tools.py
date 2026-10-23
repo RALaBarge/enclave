@@ -71,6 +71,13 @@ class Tools(unittest.TestCase):
                          ["/deskbox/work/a.py:1:import os", "/deskbox/work/sub/b.py:2:IMPORT re"])
         self.assertIn("bad pattern", self.run_tool("grep", {"pattern": "("})["error"])
 
+    def test_glob_and_grep_do_not_follow_a_symlink_out(self):
+        os.symlink("/deskbox/tool/run", os.path.join(self.work, "tool-link"))
+        self.assertEqual(self.run_tool("glob", {"pattern": "tool-link"})["files"], [])
+        self.assertIn("error", self.run_tool("glob", {"pattern": "../tool/*"}))
+        self.assertEqual(self.run_tool("grep", {"pattern": "#!"})["matches"], [])
+        self.assertIn("error", self.run_tool("grep", {"pattern": "#", "path": "tool-link"}))
+
     def test_bash(self):
         r = self.run_tool("bash", {"command": "mkdir -p d && echo hi > d/f && cat d/f && pwd && echo err >&2; exit 3"})
         self.assertEqual(r, {"stdout": "hi\n/deskbox/work\n", "stderr": "err\n", "exit_code": 3, "timed_out": False})

@@ -45,11 +45,12 @@ Then follow `image/SETUP.md`. On the core: `sudo sbx-mode box`, `sudo sbx-smoke-
 ## Tests
 
 ```
-python console/test_console.py                           # 40 tests
+python console/test_console.py                           # 41 tests
 python -B -m unittest discover -s harness/bridge/tests    # 49 tests
 node --test harness/bridge/tests/test_desk_extension.mjs  # Pi's desk extension against a fake desk
+python3 -B sbx/test_tools.py                              # 6 tests, the workspace tools in sbx-run's bwrap
 python -B -m unittest discover -s harness/gate            # 15 tests, Linux (AF_UNIX + grp)
-python -m unittest discover -s harness/broker -p "test_*.py"   # 23 tests, Linux for the socket cases
+python -m unittest discover -s harness/broker -p "test_*.py"   # 24 tests, Linux for the socket cases
 bash console/test_netns.sh                               # 28 checks, real nftables, throwaway namespaces (WSL/Linux, root)
 ```
 

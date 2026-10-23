@@ -35,8 +35,16 @@ def files():
                 yield os.path.join(d, n)
 
 
+def in_workspace(path):
+    real = os.path.realpath(path)
+    return real if real == W or real.startswith(W + "/") else None
+
+
 matches = []
 for path in files():
+    path = in_workspace(path)
+    if path is None:                 # a symlink out of the workspace is not a result
+        continue
     try:
         with open(path, "rb") as f:
             data = f.read(16 << 20)

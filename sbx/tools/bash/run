@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 
 W, CAP = "/deskbox/work", 30000
 req = json.load(sys.stdin)
@@ -20,20 +21,28 @@ if cwd != W and not cwd.startswith(W + "/") or not os.path.isdir(cwd):
     json.dump({"error": "workdir must be a directory under %s" % W}, sys.stdout)
     sys.exit()
 timeout = min(max(req.get("timeout_ms", 100000), 1000), 100000) / 1000   # tools.list allows the job 120 s
-p = subprocess.Popen(["bash", "-c", req["command"]], cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                     stderr=subprocess.PIPE, start_new_session=True)
-try:
-    out, err = p.communicate(timeout=timeout)
-    timed_out = False
-except subprocess.TimeoutExpired:
-    os.killpg(p.pid, signal.SIGKILL)
-    out, err = p.communicate()
-    timed_out = True
+with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+    # Files, not pipes: a command that prints without end must not make the tool
+    # buffer it in memory. sbx-run's RLIMIT_FSIZE caps each file at 64 MiB.
+    p = subprocess.Popen(["bash", "-c", req["command"]], cwd=cwd, stdin=subprocess.DEVNULL,
+                         stdout=out_f, stderr=err_f, start_new_session=True)
+    try:
+        p.wait(timeout=timeout)
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.wait()
+        timed_out = True
 
+    def cut(f):
+        size = os.fstat(f.fileno()).st_size
+        f.seek(0)
+        s = f.read(CAP).decode("utf-8", "replace")
+        return s if size <= CAP else s + "\n[cut: %d more characters]" % (size - CAP)
 
-def cut(b):
-    s = b.decode("utf-8", "replace")
-    return s if len(s) <= CAP else s[:CAP] + "\n[cut: %d more characters]" % (len(s) - CAP)
+    out, err = cut(out_f), cut(err_f)
 
-
-json.dump({"stdout": cut(out), "stderr": cut(err), "exit_code": p.returncode, "timed_out": timed_out}, sys.stdout)
+json.dump({"stdout": out, "stderr": err, "exit_code": p.returncode, "timed_out": timed_out}, sys.stdout)

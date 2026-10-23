@@ -109,6 +109,20 @@ box, and `pi-bridge.service` runs it from an `ExecStartPre=+` line for lite mode
 removes both files, so the tools fail loudly instead of using a stale credential; `SBX_GATE*` is never put in Pi's
 environment.
 
+## Workspace tools (bash, read, write, edit, glob, grep)
+
+These run on the sandbox box in its persistent workspace, `/var/lib/sbx-work`, mounted at `/deskbox/work` only for
+tools whose `tools.list` line says `work`; a `work` tool never gets `net`. Paths are relative to the workspace and
+anything that resolves outside it (`..`, an absolute path, a symlink out) is an error the model sees. `bash` runs
+`bash -c`, kills its process group at its timeout, cuts each stream at 30,000 characters and has **no** `keep`; the
+box is reset after it when the reset switch is on. The read/glob/grep and write/edit tools carry `keep`, so a read
+does not cost a reboot.
+
+The workspace survives a reset (the reset clears RAM/processes, not the disk). `provision-sbx.sh` and
+`setup-lite.sh` create it for a new image. An existing full-mode box also needs the current `/opt/sbx/sbx-run`:
+`sbx-install` only replaces `tools/`, so the one-time update is the box bootstrap (install `sbx-run`, create
+`/var/lib/sbx-work` as `sbx:sbx 0700`). The box smoke test checks the workspace.
+
 ## Adding a tool
 
 Tools are not installable from the console. Add one by hand:
