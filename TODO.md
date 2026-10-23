@@ -86,7 +86,7 @@ Made (2026-10-18):
 | Decision | Answer |
 |---|---|
 | MCP | Declined. It does not move the enforcement floor — that is contract + bwrap + the VM split, all below the protocol. Against that it makes the tool surface dynamic prompt text served at runtime instead of pinned files (`integrity.run_sha256`), and makes "trust a stranger's tool server" one config line in a core that holds keys. Harness adapters generate from `GET /tools` instead (task 17). If MCP is ever revisited: one long-lived server on a unix socket, never stdio-per-client, which would fork the desk into one instance per harness session. |
-| Where tools live | On disk under `sbx/tools/<name>/run` + `harness/tools/<name>-sbx/tcs.yaml`, with the desk as the only executor. "Agents refer to them directly" must mean a generated tool definition that calls the desk, not the agent exec'ing the run script — the latter drops the contract and the sandbox at once. |
+| Where tools live | In the DeskboxTools repo, checked out as `tools/`: `tools/<name>/run` + `tools/<name>/tcs.yaml`, with the desk as the only executor. `sync.py` generates the desk's `run.py` from `harness/stub/run.py`; "agents refer to them directly" must mean a generated tool definition that calls the desk, not the agent exec'ing the run script — the latter drops the contract and the sandbox at once. |
 
 Still open:
 

@@ -119,9 +119,10 @@ box is reset after it when the reset switch is on. The read/glob/grep and write/
 does not cost a reboot.
 
 The workspace survives a reset (the reset clears RAM/processes, not the disk). `provision-sbx.sh` and
-`setup-lite.sh` create it for a new image. An existing full-mode box also needs the current `/opt/sbx/sbx-run`:
-`sbx-install` only replaces `tools/`, so the one-time update is the box bootstrap (install `sbx-run`, create
-`/var/lib/sbx-work` as `sbx:sbx 0700`). The box smoke test checks the workspace.
+`setup-lite.sh` create it for a new image. An existing full-mode box also needs the current `/usr/local/sbin/sbx-install`
+and `/opt/sbx/sbx-run`: the one-time box bootstrap installs the new `sbx-install`, `sbx-run` and `/var/lib/sbx-work`
+(`sbx:sbx 0700`). After that, `sbx-push-tools` carries `tools.list`, `toollist.py`, `sbx-run` and `tools/` on every push.
+The box smoke test checks the workspace.
 
 ## Adding a tool
 

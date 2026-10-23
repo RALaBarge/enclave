@@ -4,8 +4,9 @@ Local control panel for Enclave's sandbox gateway: **Firewall** (nftables gatewa
 **Tools** (health of what's in `tools.list`, enable/disable, timeouts; the network flag is shown, and set only by editing `tools.list`) and **Settings** (read-only broker env, lite/full mode, reset switch).
 Stdlib Python, one static page, no framework. Binds `127.0.0.1:8787`; every API call needs the bearer token.
 
-Tools are deliberately **not** installable from the UI. Adding one means writing sandbox code, a contract and a
-pinned stub by hand (in DeskboxTools, the `tools/` submodule; `sync.py --check`), then re-pinning in agent-desk. The Tools tab shows the stub hash to pin.
+Tools are deliberately **not** installable from the UI. Adding one means writing sandbox code and a contract in
+DeskboxTools (the `tools/` submodule); `sync.py` generates the desk stub and validates the pair, then re-pin in agent-desk.
+The Tools tab shows the stub hash to pin.
 
 ## The strongest setup
 
@@ -28,7 +29,8 @@ DNS from the sandbox is redirected to the first resolver you list, sandbox traff
   fresh tmpfs per job).
   Set `SBX_HOST=127.0.0.1` and run `sshd` locally with the forced-command key (see the main setup).
 - **Full:** `SBX_HOST` points at a separate physical box. The broker key is forced through `sbx-channel`, which runs
-  `sbx-run`, `reset` and `install`; `sbx-push-tools` sends `tools.list` and the tools, including the page/fetch gate token.
+  `sbx-run`, `reset` and `install`; `sbx-push-tools` sends `tools.list`, `toollist.py`, `sbx-run` and the tools, including
+  the page/fetch gate token.
 
 ## Install (Debian 13)
 
