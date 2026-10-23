@@ -23,6 +23,7 @@ the sandbox sends through this host. Changing management access or the sandbox i
 live, then reverts after REVERT_S seconds unless confirmed. Everything applied is saved to $SBXC_ETC/ruleset.nft,
 which Debian's nftables.service loads at boot. (Needs net.ipv4.ip_forward=1, set by the image.)
 """
+import errno
 import hashlib
 import hmac
 import ipaddress
@@ -329,14 +330,55 @@ def load_policy():
         return default_policy()
 
 
+def _write_in_place(path, data, mode):
+    """Write an existing file through its own descriptor.
+
+    tools.list lives in /etc/sbx, owned root:sbxconsole 0664; the console may
+    write the file but not create a temporary in that directory. O_NOFOLLOW
+    keeps a link at the path from redirecting the write elsewhere.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+    try:
+        try:
+            os.fchmod(fd, mode)          # only the owner may; provisioning already set the mode
+        except PermissionError:
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(data)
+            f.truncate()                 # a shorter write must not leave the old tail
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
 def _atomic_write(path, data, mode=0o644):
     d = os.path.dirname(path)
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".sbxc-")
+    try:
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".sbxc-")
+    except OSError as e:
+        if e.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise
+        return _write_in_place(path, data, mode)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(data)
         os.chmod(tmp, mode)
         os.replace(tmp, path)
+    except OSError as e:
+        if e.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise
+        # The directory is read-only to us (or the target is group-writable
+        # only): fall back to the existing file, never to a broader directory.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return _write_in_place(path, data, mode)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -644,7 +686,7 @@ def _write_toollist(mutator):
     lines = _read_toollist_lines()
     lines = mutator(lines)
     os.makedirs(os.path.dirname(TOOLLIST), exist_ok=True)
-    _atomic_write(TOOLLIST, "\n".join(lines) + "\n")
+    _atomic_write(TOOLLIST, "\n".join(lines) + "\n", 0o664)   # group sbxconsole writes it; others read
     toollist.load(TOOLLIST)         # raises if we produced something malformed
 
 
@@ -775,32 +817,17 @@ def settings_get():
 
 
 def settings_set(body):
-    changes = {}
-    for k, v in (body.get("broker") or {}).items():
-        if k not in SETTINGS:
-            raise Bad(f"unknown setting {k}")
-        changes[k] = SETTINGS[k](str(v).strip())
+    # broker.env holds the broker key path, the reset command and the lane
+    # limits. sbx-mode and provisioning own it; the console only reads it.
+    if body.get("broker"):
+        raise Bad("broker settings are managed by sbx-mode and provisioning; this console only reads them")
     mode = body.get("mode")
     if mode is not None and mode not in ("lite", "full"):
         raise Bad("mode must be lite or full")
-    if changes:
-        vals, lines = _read_env()
-        seen, out = set(), []
-        for ln in lines:
-            m = re.match(r"^([A-Z_]+)=", ln)
-            if m and m.group(1) in changes:
-                out.append(f"{m.group(1)}={changes[m.group(1)]}")
-                seen.add(m.group(1))
-            else:
-                out.append(ln)
-        out += [f"{k}={v}" for k, v in changes.items() if k not in seen]
-        os.makedirs(os.path.dirname(BROKER_ENV), exist_ok=True)
-        _atomic_write(BROKER_ENV, "\n".join(out) + "\n", 0o640)
     if mode is not None:
         os.makedirs(ETC, exist_ok=True)
         _atomic_write(os.path.join(ETC, "console.json"), json.dumps({"mode": mode}) + "\n")
-    return {"saved": True, "restart_required": bool(changes),
-            "hint": "sudo systemctl restart sbx-broker" if changes else ""}
+    return {"saved": True, "restart_required": False, "hint": ""}
 
 
 # ----------------------------------------------------------------------- http
@@ -864,17 +891,22 @@ class Handler(BaseHTTPRequestHandler):
         route = ROUTES.get((method, path))
         if not route:
             return self._send(404, {"error": "not found"})
-        auth = self.headers.get("Authorization", "")
-        ok = bool(self.token) and hmac.compare_digest(auth, f"Bearer {self.token}")
+        auth = self.headers.get("Authorization", "").encode("utf-8", "replace")
+        ok = bool(self.token) and hmac.compare_digest(auth, f"Bearer {self.token}".encode())
         if not ok and path == LOCKDOWN_PATH and self.tighten_token:
-            ok = hmac.compare_digest(auth, f"Bearer {self.tighten_token}")
+            ok = hmac.compare_digest(auth, f"Bearer {self.tighten_token}".encode())
         if not ok:
             return self._send(401, {"error": "bad or missing token"})
         body = {}
         if method == "POST":
             if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                 return self._send(415, {"error": "application/json required"})
-            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return self._send(400, {"error": "bad Content-Length"})
+            if n < 0:
+                return self._send(400, {"error": "bad Content-Length"})
             if n > MAX_BODY:
                 return self._send(413, {"error": "body too large"})
             try:

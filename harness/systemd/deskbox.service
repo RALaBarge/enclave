@@ -9,7 +9,7 @@ User=deskbox
 Group=deskbox
 # The only group that may connect to sbx-broker's socket, and the socket is
 # the only way tool calls leave this box. Membership is not a convenience:
-# /run/sbx is 0750 sbxbroker:sbxdesk, so without this the desk cannot stat the
+# /run/sbx is 0755 sbxbroker:sbxdesk, so without this the desk cannot stat the
 # socket the job sandbox needs to bind.
 SupplementaryGroups=sbxdesk
 WorkingDirectory=/var/lib/deskbox

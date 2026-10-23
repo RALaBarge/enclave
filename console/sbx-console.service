@@ -24,7 +24,7 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
-ReadWritePaths=/etc/sbxfw /etc/sbx
+ReadWritePaths=/etc/sbxfw /etc/sbx/tools.list
 ReadOnlyPaths=/opt/sbx/tools /opt/deskbox/tools
 
 [Install]

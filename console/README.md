@@ -1,7 +1,7 @@
 # sbx-console (Enclave console)
 
 Local control panel for Enclave's sandbox gateway: **Firewall** (nftables gateway for the sandbox's traffic),
-**Tools** (health of what's in `tools.list`, enable/disable, timeouts; the network flag is shown, and set only by editing `tools.list`) and **Settings** (broker env, lite/full mode).
+**Tools** (health of what's in `tools.list`, enable/disable, timeouts; the network flag is shown, and set only by editing `tools.list`) and **Settings** (read-only broker env, lite/full mode, reset switch).
 Stdlib Python, one static page, no framework. Binds `127.0.0.1:8787`; every API call needs the bearer token.
 
 Tools are deliberately **not** installable from the UI. Adding one means writing sandbox code, a contract and a
@@ -27,8 +27,8 @@ DNS from the sandbox is redirected to the first resolver you list, sandbox traff
 - **Lite (default):** sandbox runs in this VM; each tool in its own `bwrap` (no network unless its `tools.list` line says `net`,
   fresh tmpfs per job).
   Set `SBX_HOST=127.0.0.1` and run `sshd` locally with the forced-command key (see the main setup).
-- **Full:** `SBX_HOST` points at a separate physical box. Add the two-NIC rules from the design notes there.
-  The broker's SSH key is locked to `sbx-run`, so tools and `tools.list` are copied to that box by hand.
+- **Full:** `SBX_HOST` points at a separate physical box. The broker key is forced through `sbx-channel`, which runs
+  `sbx-run`, `reset` and `install`; `sbx-push-tools` sends `tools.list` and the tools, including the page/fetch gate token.
 
 ## Install (Debian 13)
 
@@ -42,7 +42,9 @@ sudo install -m 644 common/toollist.py /opt/sbx-console/common/
 sudo install -m 644 console/nftables.conf /etc/nftables.conf      # Debian's stock path
 sudo install -m 644 console/sbx-console.service /etc/systemd/system/
 sudo -u sbxconsole SBXC_ETC=/etc/sbxfw python3 /opt/sbx-console/sbx_console.py --init   # token + default-deny ruleset
-sudo chgrp sbxconsole /etc/sbx /etc/sbx/*  2>/dev/null; sudo chmod g+w /etc/sbx /etc/sbx/tools.list /etc/sbx/broker.env
+sudo chgrp sbxconsole /etc/sbx/tools.list /etc/sbx/broker.env
+sudo chmod 0664 /etc/sbx/tools.list      # the Tools tab writes it
+sudo chmod 0640 /etc/sbx/broker.env      # the Settings tab only reads it; sbx-mode owns the file
 sudo systemctl enable --now nftables sbx-console
 sudo cat /etc/sbxfw/token      # paste into the page at http://127.0.0.1:8787
 ```

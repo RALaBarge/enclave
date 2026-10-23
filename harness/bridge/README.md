@@ -155,4 +155,4 @@ The body is exactly the shape `/log` accepts:
 * The envelope is a mitigation against prompt injection, not a boundary. The sandbox still does the real enforcement.
 * Run on the harness side only. The sbx box has no route out and must not run this.
 * Verified on one machine (real pairing and signed messages through the live tailnet address). Not yet between two machines.
-* The VM image does not ship Tailscale or this service yet.
+* The VM image installs Tailscale and `pi-bridge`; peer messaging stays off until you add `--peers`.

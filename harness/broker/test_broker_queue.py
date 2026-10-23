@@ -180,7 +180,7 @@ class BrokerTest(unittest.TestCase):
             ("a token from the future", signed(base, now=now + sbx_broker.TOKEN_MAX_AGE_S + 60), 403),
             ("no token at all", dict(base), 400),
             ("an empty mac", dict(signed(base), mac=""), 400),
-            ("a mac that is not hex", dict(signed(base), mac="z" * 64), 403),
+            ("a mac that is not hex", dict(signed(base), mac="z" * 64), 400),
             ("attempt as a string", dict(signed(base), attempt="1"), 400),
         ]:
             with self.subTest(label):
@@ -259,6 +259,12 @@ class BrokerTest(unittest.TestCase):
             with self.subTest(label):
                 code, body_out = self.raw_post(body, clen)
                 self.assertEqual(code, want, body_out)
+
+    def test_non_ascii_mac_is_a_400_not_a_dropped_connection(self):
+        doc = signed({"tool": "greet", "caller": "greet-sbx", "input": {}})
+        doc["mac"] = "é" * 64
+        code, body = self.post_body(doc)
+        self.assertEqual(code, 400, body)
 
     # -- /status ---------------------------------------------------------
 

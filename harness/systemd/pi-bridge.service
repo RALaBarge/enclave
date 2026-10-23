@@ -18,17 +18,15 @@ WorkingDirectory=/var/lib/pi-bridge-work
 Environment=HOME=/var/lib/pi-bridge PI_OFFLINE=1 PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1
 # Root fetches the secrets before the service user's process exists (the token stays unreadable to Pi); "+" = run privileged.
 ExecStartPre=+/usr/local/bin/sbx-fetch-secrets
-# Lite mode runs page and fetch from this /opt/sbx, so their gate token is refreshed here too. "-": it never stops the bridge.
+# Lite mode runs page and fetch from this /opt/sbx, so their gate token is refreshed here too. "+" means this line
+# keeps full privileges and is not subject to ProtectSystem= or ReadWritePaths=; it never stops the bridge.
 ExecStartPre=-+/usr/local/sbin/sbx-fetch-gate
 EnvironmentFile=-/run/sbx/secrets.env
 ExecStart=/usr/bin/python3 -B /opt/pi-bridge/server.py --pi-bin /usr/local/bin/pi --cwd-root /var/lib/pi-bridge-work --listen 127.0.0.1:9760 --state-dir /var/lib/pi-bridge/state --gate-socket /run/sbx-gate/gate.sock
-# Sessions survive a restart of this unit. The default KillMode=control-group
-# would take every Pi down with the bridge, which makes the session records
-# pointless; with `process` the children keep running and the restarted bridge
-# reattaches to them over their FIFOs (requiring a real get_state reply before
-# it calls one alive). `systemctl stop pi-bridge` therefore leaves the Pi
-# processes up by design — delimit them with `systemctl kill -s TERM pi-bridge`
-# or by deleting the sessions through the API.
+# Sessions survive the bridge process dying (a crash or SIGKILL), not a clean
+# `systemctl stop`: main() stops every Pi on SIGTERM. KillMode=process keeps the
+# children in the cgroup when the bridge is killed unexpectedly, and a restarted
+# bridge reattaches to them over their FIFOs (requiring a real get_state reply).
 KillMode=process
 Restart=on-failure
 RestartSec=10

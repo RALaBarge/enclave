@@ -1,7 +1,7 @@
 # Enclave VM images (Packer + QEMU)
 
-Built and booted on Windows 11 with QEMU 11.1 + WHPX acceleration; the booted image passes `sbx-smoke-test`
-(16/16). Not yet tried: Linux/KVM hosts, the VirtualBox/OVA source, UEFI.
+Built and booted on Windows 11 with QEMU 11.1 + WHPX acceleration; the booted image passes the current
+`sbx-smoke-test`. Not yet tried: Linux/KVM hosts, the VirtualBox/OVA source, UEFI.
 
 ## Two stages
 
@@ -23,7 +23,7 @@ cd image\packer
 $env:PACKER_CACHE_DIR = "$env:TEMP\packer_cache"      # MUST be outside the repo: image/ is uploaded into the VM
 $env:PKR_VAR_build_password = "<12-64 letters/digits>"
 $env:PKR_VAR_ssh_authorized_key = (Get-Content ~\.ssh\id_ed25519.pub -Raw).Trim()
-# sbx.auto.pkrvars.hcl: iso_url, iso_checksum (from manifest.env) and accelerator = "whpx" | "kvm" | "tcg"
+Copy-Item sbx.auto.pkrvars.hcl.example sbx.auto.pkrvars.hcl   # once; then set accelerator = whpx | kvm | tcg
 packer init .
 packer build -force -only='base.qemu.install' -var base_image=x .
 packer build -force -only='sbx-vm.qemu.sbx' -var "base_image=$((Resolve-Path ..\..\build\packer-out\base\base.qcow2).Path)" .
@@ -47,6 +47,7 @@ Run both with `enclave.cmd` (see `image/SETUP.md`, Full mode). The core build ne
 ## First boot
 
 Console login `sbxadmin` / `sbx-change-me`, forced to change on first login. sshd listens on 127.0.0.1 only and
-admits only the `sbx` forced-command user, so that password is not usable over the network. SSH host keys and
+admits `sbx` (the broker's forced command) and `sbxadmin` (key-only operator login), so that password is not usable
+over the network. SSH host keys and
 machine-id are regenerated on first boot, and the broker's pinned host key is refreshed by `sbx-regen-hostkeys`.
 Then run `sudo sbx-smoke-test`.

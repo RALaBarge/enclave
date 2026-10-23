@@ -1,0 +1,6 @@
+# Copy to sbx.auto.pkrvars.hcl (gitignored) before the first build, then set
+# accelerator for this host: whpx (Windows), kvm (Linux), or tcg (software).
+# The ISO values come from image/manifest.env; keep them in step.
+iso_url      = "https://cdimage.debian.org/cdimage/release/13.7.0/amd64/iso-cd/debian-13.7.0-amd64-netinst.iso"
+iso_checksum = "sha256:a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355"
+accelerator  = "whpx"

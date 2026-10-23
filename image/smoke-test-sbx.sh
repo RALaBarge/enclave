@@ -41,7 +41,7 @@ else pass listeners "$n listeners, all on $ME or loopback"; fi
 
 # Firewall: default drop everywhere.
 rs=$(nft list ruleset 2>&1); miss=""
-for h in input forward output; do printf '%s\n' "$rs" | grep -Eq "hook $h[^;]*;[[:space:]]*policy drop;" || miss="$miss $h"; done
+for h in input forward output; do printf '%s\n' "$rs" | grep -Eq "hook ${h}[^;]*;[[:space:]]*policy drop;" || miss="$miss $h"; done
 [ -z "$miss" ] && pass nft-policy "input, forward and output default drop" || fail nft-policy "no default drop on:$miss"
 printf '%s\n' "$rs" | grep -Eq 'oifname "eth0" accept' && pass nft-output "output only out the link to the core (eth0)" || fail nft-output "no rule for the link to the core"
 

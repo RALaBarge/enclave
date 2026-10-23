@@ -13,6 +13,7 @@ sshd -t
 # IPv6 is off: the core only NATs IPv4.
 grep -q '^nohook resolv.conf' /etc/dhcpcd.conf 2>/dev/null || echo 'nohook resolv.conf' >> /etc/dhcpcd.conf
 echo "net.ipv6.conf.all.disable_ipv6=1" >/etc/sysctl.d/90-sbx-box.conf
+chattr -i /etc/resolv.conf 2>/dev/null || true   # re-run: the previous run made it immutable
 rm -f /etc/resolv.conf
 install -m 644 "$S/resolv.conf" /etc/resolv.conf
 # The DHCP daemon that is still running from the build keeps its OLD config and rewrites resolv.conf at power-off, so

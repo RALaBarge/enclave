@@ -85,6 +85,7 @@ def contract_timeout_s(tcs_path):
 # two `network:` keys (the last one wins in YAML, so counting matters), or a
 # value that is not the literal `false`.
 BIND_RE = re.compile(r"^[ \t]*-[ \t]*src:[ \t]*\S*/broker\.sock[ \t]*(?:#.*)?$", re.M)
+BIND_DST_RE = re.compile(r"^[ \t]+dst:[ \t]*/deskbox/broker\.sock[ \t]*(?:#.*)?$", re.M)
 NET_KEY_RE = re.compile(r"^[ \t]*network:[ \t]*(\S+)[ \t]*(?:#.*)?$", re.M)
 
 
@@ -98,10 +99,11 @@ def contract_problems(path):
             f"{path}: allowed_side_effects.network must be exactly one `network: false` "
             f"(found {nets or 'none'}) — the stub reaches the broker over a bound unix "
             f"socket, never the network")
-    if not BIND_RE.search(text):
+    if not BIND_RE.search(text) or not BIND_DST_RE.search(text):
         out.append(
-            f"{path}: sandbox.bind must mount sbx-broker's socket (src .../broker.sock) — "
-            f"without it a network:false stub cannot call the broker at all")
+            f"{path}: sandbox.bind must mount sbx-broker's socket at /deskbox/broker.sock "
+            f"(src .../broker.sock, dst /deskbox/broker.sock) — without both, a network:false "
+            f"stub cannot call the broker")
     return out
 
 

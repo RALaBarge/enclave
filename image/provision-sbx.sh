@@ -7,6 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 KEYS="$ROOT/keys"                   # staged by Packer from build/keys/sbx (see image/gen-keys.sh)
+[ -d "$KEYS" ] || KEYS="$ROOT/build/keys/sbx"   # a manual run from the repo root
 die() { echo "ERROR: $*" >&2; exit 1; }
 for f in broker_ed25519.pub sbx_host_ed25519 sbx_host_ed25519.pub; do [ -f "$KEYS/$f" ] || die "missing $KEYS/$f (run image/gen-keys.sh)"; done
 [ ! -f "$KEYS/broker_ed25519" ] || die "the broker PRIVATE key must not be staged into the sandbox image"

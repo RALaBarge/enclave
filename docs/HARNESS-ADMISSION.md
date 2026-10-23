@@ -57,10 +57,10 @@ It is not a jail:
 
 What a process in the core can reach, whatever its account:
 
-- The broker listener: no authentication. In this tree it is a unix socket (`SBX_SOCKET`, `/run/sbx/broker.sock`) created
-  `0660` group `sbxdesk`, and TCP only if `SBX_LISTEN` is set (`harness/broker/sbx_broker.py`). Whatever can open it runs any
-  tool in `tools.list` without a contract, so `sbxdesk` membership is equivalent to tool access; `check_greet_e2e` in
-  `image/smoke-test.sh` calls it that way over the socket.
+- The broker listener: a unix socket (`SBX_SOCKET`, `/run/sbx/broker.sock`) created `0660` group `sbxdesk`, and TCP only if
+  `SBX_LISTEN` is set (`harness/broker/sbx_broker.py`). It requires the caller name to equal `<tool>-sbx` and a desk HMAC over
+  caller, job id, attempt and time; a job can present only its own token. Membership of `sbxdesk` can still read the job key and
+  mint a token, so it remains equivalent to tool access.
 - `127.0.0.1:8080` (desk): `-strict`, but `check_desk_e2e` calls it with no credential, and whether DeskBox authenticates its
   callers is not verified here. Any local process that can reach the port can ask the desk to run a declared tool.
 - `127.0.0.1:9760` (pi-bridge): no login; a loopback `Host` and same-origin `Origin` only (`harness/bridge/server.py`, `_guard`),
@@ -140,9 +140,9 @@ image hash and harness version. Run the checks as the candidate's own account on
 7. It accepts one sandbox lane.
    Must: tolerate its tool calls queuing behind another harness's, with a timeout that accounts for the queue.
    Settled by: one call from each harness at the same time, both completing, the second's wall time covering the first's.
-   The numbers do not fit today: the broker caps a job at `MAX_TIMEOUT` (120 s) plus 15 s of grace
-   (`harness/broker/sbx_broker.py`), while `harness/tools/greet-sbx/tcs.yaml` declares `execution.timeout_ms: 150000` and the
-   stub waits 150 s (`harness/stub/run.py`, `UnixConnection(timeout=150)`). A queued job can outlive the stub that waits for it.
+   The budget is set from the same worst case in `sync.py`: queue (300 s, which covers the previous job's reset) + a failed-reset
+   retry (300 s) + the tool's `tools.list` budget + 15 s + margin. The stub and every contract are sized from it, and
+   `sync.py --check` refuses a contract that is shorter.
 
 8. It treats everything from outside the session's user as data.
    Must: load no instruction files from the workspace (`AGENTS.md`, `.pi/`, skills, prompt templates); put tool results,
@@ -172,9 +172,10 @@ whether deployed tools match the repo (`sync.py` checks the repo, deployment is 
   means giving the core a shell, which gives up items 1, 2 and 3 at once.
 - It needs general network egress from the core. An agent-facing fetch or curl tool running in the harness process, a listener
   that is not loopback, or a proxy the agent controls, is unfiltered core egress: the console's rules are the forward chain for
-  the sandbox interface, and the core's output is `policy accept`. A tool with `net` in `tools.list` is not this; it runs in the
-  The forward chain filters what the sandbox *forwards*, which is the full-mode path. In lite mode the sandbox is this VM, so a net tool shares the core's namespace and reaches loopback (desk, bridge, console, Loom) without the forward chain ever seeing it.
-  not this either; an arbitrary request primitive is.
+  the sandbox interface, and the core's output is `policy accept`. A tool with `net` in `tools.list` is not this: it runs in
+  the sandbox, and the forward chain filters what the sandbox forwards (full mode). In lite mode the sandbox is this VM, so a
+  net tool shares the core's namespace and reaches loopback (desk, bridge, console, Loom) without the forward chain. A `page`
+  or `fetch` request primitive is not this either; it is a fixed browser-gate client, not general egress.
 - It installs its own tool protocol server in the core. MCP is declined (`TODO.md`, 2026-10-18) because it turns a pinned tool
   surface into prompt text served at runtime by a server inside the key-holding VM. A harness that only speaks MCP adds that
   surface next to the desk and does not move the enforcement floor, which is below the protocol.

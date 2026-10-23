@@ -619,7 +619,7 @@ def ui_csp(html):
     def pins(tag):
         return " ".join("'sha256-%s'" % base64.b64encode(hashlib.sha256(b.replace("\r\n", "\n").encode()).digest()).decode()
                         for t, b in INLINE.findall(html) if t == tag)
-    return ("default-src 'none'; script-src 'self' %s; style-src 'self' %s; connect-src 'self'; worker-src 'self'; base-uri 'none'"
+    return ("default-src 'none'; script-src 'self' %s; style-src 'self' %s; connect-src 'self'; worker-src 'self'; base-uri 'none'; frame-ancestors 'none'"
             % (pins("script"), pins("style")))
 
 
@@ -652,10 +652,18 @@ def make_handler(app: App):
             return True
 
         def _body(self):
-            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise ValueError("bad Content-Length")
+            if n < 0:
+                raise ValueError("bad Content-Length")
             if n > MAX_BODY:
                 raise ValueError("body too large")
-            return json.loads(self.rfile.read(n) or b"{}") if n else {}
+            doc = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            if not isinstance(doc, dict):
+                raise ValueError("body must be a JSON object")
+            return doc
 
         def _route(self, method):
             if not self._guard():
@@ -698,6 +706,7 @@ def make_handler(app: App):
             self.send_header("Cache-Control", "no-store")
             if f[1].startswith("text/html"):
                 self.send_header("Content-Security-Policy", ui_csp(raw.decode()))
+                self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
             self.wfile.write(raw)
 

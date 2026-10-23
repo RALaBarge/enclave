@@ -185,13 +185,12 @@ async function loadSettings(){
   rb.onchange=()=>act(async()=>{await api("/api/settings/reset",{enabled:rb.checked});toast(rb.checked?"Reboot after every job: on":"Reboot after every job: off",!rb.checked);loadSettings()});
   s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},"Reboot sandbox after every job"),rb,note));
   for(const k in LABELS){
-    const inp=el("input",{id:"s-"+k,value:cur.broker[k]||"",size:24});
+    const inp=el("input",{id:"s-"+k,value:cur.broker[k]||"",size:24,readOnly:true,title:"read-only; sbx-mode and provisioning own broker.env"});
     s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},LABELS[k]),inp));
   }
-  s.append(el("p",{className:"mut"},"Per-tool timeouts are on the Tools tab. Queue and reset waits are fixed (300 s each) so the contracts can be sized for them."));
+  s.append(el("p",{className:"mut"},"Broker settings are read-only here; sbx-mode and provisioning own /etc/sbx/broker.env. Per-tool timeouts are on the Tools tab. Queue and reset waits are fixed (300 s each) so the contracts can be sized for them."));
 }
-$("save").onclick=()=>act(async()=>{const broker={};for(const k in LABELS){const v=$("s-"+k).value;if(v!==(cur.broker[k]||""))broker[k]=v}
-  const body={broker};if($("s-mode").value!==cur.mode)body.mode=$("s-mode").value;
+$("save").onclick=()=>act(async()=>{const body={};if($("s-mode").value!==cur.mode)body.mode=$("s-mode").value;
   const r=await api("/api/settings",body);$("save-note").textContent=r.restart_required?"Saved. Run: "+r.hint:"Saved.";loadSettings()});
 
 // ---- shell

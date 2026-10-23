@@ -20,7 +20,8 @@
    `tailscaled` (no account until you run `tailscale up`), `nftables`, `ssh`.
 2. Log in on the VM console as `sbxadmin` with the initial password `sbx-change-me`. You are forced to set a new
    password immediately. Nothing on the network can use the initial password: sshd listens on 127.0.0.1 only and
-   admits only the `sbx` forced-command user. Everything else listens on loopback (127.0.0.1 / ::1) only too.
+   admits `sbx` (the broker's forced command) and `sbxadmin` (your key-only operator login). Everything else listens
+   on loopback (127.0.0.1 / ::1) only too.
 3. Check that everything came up: `sudo sbx-smoke-test` (see Verify below).
 
 ## Console (firewall, tools, settings)
@@ -30,6 +31,8 @@
   ```sh
   sudo cat /etc/sbxfw/token
   ```
+- The Settings tab shows `broker.env` read-only; `sbx-mode` owns it. The reset checkbox writes
+  `/etc/sbxfw/reset-off`, which the broker checks before every routine reset.
 
 ## Firewall: what the sandbox may reach
 
@@ -90,6 +93,21 @@ callers already wait, or that wait expires, the broker answers `503` (`lane_busy
 of hanging. Raise both settings for more harnesses; lower them to fail fast. `GET /status` reports `busy`, `queued`,
 `depth_max`, the last job, the `reset` state (`ok`, `rc`, `at`) and `"lane": "serial"`; a failed reset makes the next
 call retry it and, if that also fails, answer `503 sandbox_not_reset`.
+
+## Page and fetch (browserbox gate)
+
+`page` and `fetch` reach Ryan's browser through browserbox's gate on the Windows host. The gate enforces a host
+allowlist (`browserbox/gate.hosts`: job boards and ATS sites only) before it opens a page or makes a request, checks
+the tab's final URL before returning content, and refuses fetch redirects. Run the gate from a Chrome profile signed
+in only to those sites, and after every extension change confirm that a redirect to an off-list host is refused
+before the token is enabled.
+
+The gate address and bearer token are the Bitwarden secret `SBX_GATE` in the same project as the model keys:
+`http://HOST:9011 TOKEN`, token 32-128 non-space characters. `sbx-fetch-gate` (root) writes
+`/opt/sbx/tools/{page,fetch}/gate` as `0640 root:sbx`; `sbx-push-tools` refreshes it before every push to a full-mode
+box, and `pi-bridge.service` runs it from an `ExecStartPre=+` line for lite mode. A missing token or invalid `SBX_GATE`
+removes both files, so the tools fail loudly instead of using a stale credential; `SBX_GATE*` is never put in Pi's
+environment.
 
 ## Adding a tool
 
@@ -199,9 +217,8 @@ way the disk is not reverted, which is the fake this setup deliberately does not
 sandbox overlay on every start, so stop/start is the clean-disk operation today. If you add a host-side channel, the helper it
 calls must meet the same contract as `sbx-reboot-and-wait`: bounded, non-zero on failure, and it must not return until the
 box's SSH answers again. That helper cannot be written and called correctly without testing on the host, so it is documentation
-here, not code. The console's reset dropdown still offers `/usr/local/bin/sbx-vm-revert`; choosing it while the file is absent
-makes every reset fail (the broker logs it and the sandbox is not reset). Leave the setting empty on a VM unless you have
-installed a host-side helper and a way for the core to call it.
+here, not code. `sbx-mode` sets only the shipped reboot command; the console shows it read-only. To use a host-side helper
+instead, set `SBX_RESET_CMD` by hand in `/etc/sbx/broker.env` (root) and restart `sbx-broker`.
 
 Notes: the sandbox's `/etc/resolv.conf` is immutable (`chattr -i` before changing it). Tools in the sandbox run in `bwrap` with no
 network unless their `tools.list` line says `net`; a network tool shares the sandbox's network namespace and reaches only what the
@@ -242,11 +259,9 @@ sudo systemctl edit --full pi-bridge     # append  --peers  to the ExecStart lin
 sudo systemctl restart pi-bridge
 ```
 
-The peer listener binds this node's tailnet address on TCP 9761 only; the local API stays on `127.0.0.1:9760`. Peers
-are still refused by the firewall's default-deny input chain, because the console's generated ruleset has no
-`tailscale0` rule: `console/nftables.conf` records the one interface-scoped rule that is missing and why it cannot
-live in that file (the console rewrites `/etc/sbxfw/ruleset.nft` on every Apply). Until that rule is in the console's
-generated input chain, inbound peer connections to 9761 are dropped and logged as `sbxfw-drop`.
+The peer listener binds this node's tailnet address on TCP 9761 only; the local API stays on `127.0.0.1:9760`. The
+console's generated input chain includes `iifname "tailscale0" tcp dport 9761 accept`, so peers can reach the
+listener; peers remain off until you add `--peers`.
 
 ## Verify
 
@@ -267,12 +282,8 @@ after every firewall change, and after any tool change.
 - **Lite mode is not a boundary.** The `bwrap` jail protects the sandbox box from tools. It does not protect this
   VM from a hostile tool that escapes `bwrap`.
 - **`sbx-vm-revert` is not shipped.** A VM disk revert is a host-side QEMU operation, but the broker runs `SBX_RESET_CMD` on
-  the core. The shipped full-mode hook is `sbx-reboot-and-wait` (a reboot, not a disk revert). See Full mode for the contract.
-  The console's reset dropdown still offers the `sbx-vm-revert` path; choosing it without the file makes the reset fail.
-- **Provisioning gaps (check before relying on tools):** `provision.sh` installs `tools.list` only to
-  `/etc/sbx/tools.list`, but `sbx-run` reads `/opt/sbx/tools.list`, which it does not install. It also does not
-  create the `sbx` SSH user, does not enable `sbx-broker`, and does not write the forced-command key or set
-  `SBX_HOST` (both are manual steps it lists). Until these are fixed, the greet check will FAIL.
+  the core. The shipped full-mode hook is `sbx-reboot-and-wait` (a reboot, not a disk revert). The console shows the
+  command read-only; `sbx-mode` owns it.
 
 ## Secrets (Bitwarden Secrets Manager)
 

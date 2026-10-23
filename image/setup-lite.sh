@@ -9,6 +9,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SBX_HOME=/home/sbx
 KEY=/etc/sbx/id_ed25519
 KEYSRC="$HERE/../keys"   # staged by Packer from build/keys/core (see image/gen-keys.sh); absent = generate
+[ -d "$KEYSRC" ] || KEYSRC="$HERE/../build/keys/core"   # a manual run from the repo root
 KH=/etc/sbx/known_hosts
 ENV_FILE=/etc/sbx/broker.env
 SSHD_SNIP=/etc/ssh/sshd_config.d/10-sbx-lite.conf
@@ -73,6 +74,8 @@ set_kv SBX_KEY "$KEY"
 set_kv SBX_KNOWN_HOSTS "$KH"
 chown root:root "$ENV_FILE"
 chmod 640 "$ENV_FILE"
+# The console reads broker.env for display; only sbx-mode/provisioning write it.
+if getent group sbxconsole >/dev/null; then chgrp sbxconsole "$ENV_FILE"; fi
 
 # ---- sshd: loopback only, key auth only; sbx (forced command, no tty) and the operator sbxadmin (tty) ----
 # The operator reaches it from the tailnet through `tailscale serve --tcp 22 tcp://127.0.0.1:22` (SETUP.md); nothing

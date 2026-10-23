@@ -1,5 +1,5 @@
 # sbx VM image: Debian 13 (trixie, amd64) built with Packer.
-# STATUS: built and booted on Windows (QEMU+WHPX), smoke test 16/16. See README.md for the two-stage flow.
+# STATUS: built and booted on Windows (QEMU+WHPX), current smoke test. See README.md for the two-stage flow.
 #
 # Run from image/packer. See README.md.
 # Secrets come from the environment, never from this file:
@@ -394,7 +394,8 @@ build {
       if [ "$SBX_ZERO" = 1 ]; then dd if=/dev/zero of=/zero.fill bs=1M status=none || true; rm -f /zero.fill; fi
 
       # 6) Replace the random build password with a documented one that MUST be changed at first console login
-      #    (expired). Nothing on the network can use it: sshd only listens on 127.0.0.1 and only admits user `sbx`.
+      #    (expired). Nothing on the network can use it: sshd only listens on 127.0.0.1 and admits `sbx` and
+      #    the operator `sbxadmin`.
       echo 'sbxadmin:sbx-change-me' | chpasswd
       passwd -e sbxadmin
       sync
@@ -467,7 +468,7 @@ build {
       rm -rf /var/lib/apt/lists/* /tmp/repo /tmp/sbx-*
       find /var/log -type f -exec truncate -s 0 {} +
       rm -f /var/cache/debconf/passwords.dat /root/.bash_history /home/sbxadmin/.bash_history
-      # Console-only admin login with a documented password that must be changed at first login. sshd admits only sbx@core.
+      # Console-only admin login with a documented password that must be changed at first login. sshd admits sbx and sbxadmin on loopback.
       echo 'sbxadmin:sbx-change-me' | chpasswd
       passwd -e sbxadmin
       sync

@@ -122,7 +122,10 @@ function Invoke-Build($which) {
     if (Test-Path $basePath) { Write-Host "  No saved build password for the existing OS base: rebuilding the base too." -ForegroundColor Yellow; $which = "all" }
   }
   $env:PKR_VAR_build_password = (Get-Content $pw -Raw).Trim()
-  $env:PKR_VAR_ssh_authorized_key = (Get-Content "$HOME\.ssh\sbx_build_ed25519.pub" -Raw).Trim()
+  $key = "$HOME\.ssh\sbx_build_ed25519.pub"
+  if (-not (Test-Path $key)) { $key = "$HOME\.ssh\id_ed25519.pub" }
+  if (-not (Test-Path $key)) { throw "no SSH public key: expected $HOME\.ssh\sbx_build_ed25519.pub or id_ed25519.pub" }
+  $env:PKR_VAR_ssh_authorized_key = (Get-Content $key -Raw).Trim()
   if (-not (Test-Path "$root\build\keys\core")) { & "C:\Program Files\Git\bin\bash.exe" "$root\image\gen-keys.sh"; if ($LASTEXITCODE) { throw "gen-keys failed" } }
   $steps = switch ($which) {
     "sbx" { @("sbx-node.qemu.sbxnode") }
@@ -130,6 +133,11 @@ function Invoke-Build($which) {
     "all" { @("base.qemu.install", "sbx-vm.qemu.sbx", "sbx-node.qemu.sbxnode") }
   }
   $packer = Find-Packer; if (-not $packer) { throw "packer not found (winget install Hashicorp.Packer)" }
+  $vars = "$root\image\packer\sbx.auto.pkrvars.hcl"
+  if (-not (Test-Path $vars)) {
+    Copy-Item "${vars}.example" $vars
+    Write-Host "  Created sbx.auto.pkrvars.hcl from the example; set accelerator if this host is not Windows/whpx." -ForegroundColor Yellow
+  }
   Push-Location "$root\image\packer"
   try {
     & $packer init .

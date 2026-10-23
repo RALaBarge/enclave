@@ -31,7 +31,7 @@ output:
           additionalProperties: false
           required: [name, ok, detail]
           properties:
-            name:   { type: string, maxLength: 80 }
+            name:   { type: string, maxLength: 300 }   # "egress:" + a hostname up to 253
             ok:     { type: boolean }
             detail: { type: string, maxLength: 300 }
 

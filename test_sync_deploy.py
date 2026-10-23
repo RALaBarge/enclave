@@ -140,5 +140,35 @@ class DeployNeverWritesTheCheckout(unittest.TestCase):
         self.assertFalse(os.path.exists(copied) and "SECRET" in open(copied).read())
 
 
+@unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "POSIX only")
+class ContractChecks(unittest.TestCase):
+    """sync.py --check must notice a bind that mounts the broker at the wrong path."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(self.tmp.name, "repo")
+        for part in ("sync.py", "tools.list", "common", "harness/stub", "harness/tools", "sbx/tools"):
+            src, dst = os.path.join(ROOT, part), os.path.join(self.repo, part)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+            else:
+                shutil.copy2(src, dst)
+
+    def check(self):
+        return subprocess.run([sys.executable, "-B", os.path.join(self.repo, "sync.py"), "--check"],
+                              capture_output=True, text=True)
+
+    def test_a_broker_bind_at_the_wrong_destination_is_refused(self):
+        tcs = os.path.join(self.repo, "harness", "tools", "greet-sbx", "tcs.yaml")
+        text = open(tcs).read()
+        self.assertIn("dst: /deskbox/broker.sock", text)
+        open(tcs, "w").write(text.replace("dst: /deskbox/broker.sock", "dst: /deskbox/other"))
+        r = self.check()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("/deskbox/broker.sock", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

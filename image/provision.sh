@@ -146,6 +146,7 @@ install -m 644 "$ROOT/harness/broker/sbx_broker.py" /opt/sbx-broker/
 install -m 644 "$ROOT/console/nftables.conf" /etc/nftables.conf
 install -m 644 "$ROOT/console/sbx-console.service" "$ROOT/harness/systemd/sbx-broker.service" /etc/systemd/system/
 install -m 644 "$ROOT/tools.list" /etc/sbx/tools.list           # harness side (broker, console)
+chgrp sbxconsole /etc/sbx/tools.list; chmod 0664 /etc/sbx/tools.list   # console writes it; broker reads; group only
 install -m 644 "$ROOT/tools.list" /opt/sbx/tools.list            # sandbox side (sbx-run hardcodes this path)
 install -m 755 "$ROOT/sbx/sbx-run" /opt/sbx/sbx-run
 cp -r "$ROOT/sbx/tools/." /opt/sbx/tools/
@@ -245,6 +246,7 @@ install -m 755 "$HERE/smoke-test.sh" /usr/local/sbin/sbx-smoke-test
 install -m 755 "$HERE/sbx-mode.sh" /usr/local/sbin/sbx-mode
 install -m 755 "$HERE/sbx-regen-hostkeys.sh" /usr/local/sbin/sbx-regen-hostkeys
 [ -f /etc/sbx/broker.env ] || install -m 640 "$ROOT/harness/broker/broker.env.example" /etc/sbx/broker.env
+chgrp sbxconsole /etc/sbx/broker.env; chmod 0640 /etc/sbx/broker.env   # console reads it, only sbx-mode/provisioning write
 runuser -u sbxconsole -- env SBXC_ETC=/etc/sbxfw SBX_COMMON=/opt/sbx-console/common python3 /opt/sbx-console/sbx_console.py --init
 # The tighten-only token belongs to sbx-session-gate, which is the only thing that may call /api/fw/lockdown. It is NOT
 # readable by pibridge: pibridge is in sbxgatecall (the socket), never in sbxgate (the token). The bridge asks the gate over

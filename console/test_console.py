@@ -1,4 +1,5 @@
 """Run: python3 console/test_console.py   (stdlib unittest; no root needed)"""
+import errno
 import http.client
 import json
 import os
@@ -6,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 
 TMP = tempfile.mkdtemp()
 os.environ.update(
@@ -404,16 +406,49 @@ class Tools(unittest.TestCase):
 
 
 class Settings(unittest.TestCase):
-    def test_set_and_preserve(self):
+    def test_mode_is_writable_but_broker_env_is_read_only(self):
         open(c.BROKER_ENV, "w").write("# keep me\nSBX_HOST=10.77.0.2\nSBX_KEY=/etc/sbx/id_ed25519\n")
-        r = c.settings_set({"broker": {"SBX_HOST": "127.0.0.1", "SBX_PORT": "2222"}, "mode": "full"})
-        self.assertTrue(r["restart_required"])
-        t = open(c.BROKER_ENV).read()
-        self.assertIn("# keep me", t)
-        self.assertIn("SBX_KEY=/etc/sbx/id_ed25519", t)
-        self.assertIn("SBX_HOST=127.0.0.1", t)
-        self.assertIn("SBX_PORT=2222", t)
+        before = open(c.BROKER_ENV).read()
+        r = c.settings_set({"mode": "full"})
+        self.assertFalse(r["restart_required"])
+        self.assertEqual(open(c.BROKER_ENV).read(), before)                    # the console never wrote broker.env
         self.assertEqual(c.get_mode(), "full")
+        for body in ({"broker": {"SBX_HOST": "127.0.0.1"}}, {"broker": {"SBX_PORT": "2222"}}):
+            with self.assertRaises(c.Bad, msg=str(body)):
+                c.settings_set(body)
+        self.assertEqual(open(c.BROKER_ENV).read(), before)
+
+    def test_atomic_write_falls_back_in_place_without_a_writable_directory(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "tools.list")
+        with open(path, "w") as f:
+            f.write("old tail\n")
+        os.chmod(path, 0o664)
+        os.chmod(d, 0o555)
+        try:
+            c._atomic_write(path, "new\n", 0o664)
+            self.assertEqual(open(path).read(), "new\n")          # the old tail is gone
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o664)
+        finally:
+            os.chmod(d, 0o755)
+            for n in os.listdir(d):
+                os.unlink(os.path.join(d, n))
+            os.rmdir(d)
+
+    def test_atomic_write_falls_back_on_erofs_too(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "tools.list")
+        with open(path, "w") as f:
+            f.write("long old value\n")
+        os.chmod(path, 0o664)
+        try:
+            with unittest.mock.patch.object(c.tempfile, "mkstemp", side_effect=OSError(errno.EROFS, "read-only")):
+                c._atomic_write(path, "x\n", 0o664)
+            self.assertEqual(open(path).read(), "x\n")
+        finally:
+            for n in os.listdir(d):
+                os.unlink(os.path.join(d, n))
+            os.rmdir(d)
 
     def test_refuses_dangerous(self):
         for body in ({"broker": {"SBX_KEY": "/etc/shadow"}}, {"broker": {"SBX_RESET_CMD": "rm -rf /"}}, {"broker": {"SBX_RESET_CMD": ""}},
@@ -461,11 +496,28 @@ class Http(unittest.TestCase):
     def test_auth_and_host(self):
         self.assertEqual(self.req("GET", "/api/tools")[0], 401)
         self.assertEqual(self.req("GET", "/api/tools", headers={"Authorization": "Bearer wrong"})[0], 401)
+        self.assertEqual(self.req("GET", "/api/tools", headers={"Authorization": "Bearer toké"})[0], 401)   # not a TypeError
         self.assertEqual(self.req("GET", "/api/tools", headers={"Authorization": "Bearer tok123"}, host="evil.example.com")[0], 403)
         open(c.TOOLLIST, "w").write("greet 10\n")
         code, body = self.req("GET", "/api/tools", headers={"Authorization": "Bearer tok123"})
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)["tools"][0]["name"], "greet")
+
+    def test_bad_content_length_is_a_400_not_a_dropped_connection(self):
+        for value in ("abc", "-1"):
+            with self.subTest(value):
+                c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+                try:
+                    c.putrequest("POST", "/api/settings")
+                    c.putheader("Host", "127.0.0.1:%d" % self.port)
+                    c.putheader("Authorization", "Bearer tok123")
+                    c.putheader("Content-Type", "application/json")
+                    c.putheader("Content-Length", value)
+                    c.endheaders()
+                    r = c.getresponse()
+                    self.assertEqual(r.status, 400, r.read())
+                finally:
+                    c.close()
 
     def test_tighten_token_can_only_lock_down(self):
         open(os.path.join(c.ETC, "tighten-token"), "w").write("tight9\n")

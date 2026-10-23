@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """sbx-broker: runs on the trusted harness box.
 
-Accepts {"tool": ..., "caller": ..., "input": {...}} on a unix socket from the
-*-sbx stub tools, runs the matching tool on the sandbox box over SSH (harness initiates,
-sandbox never connects back), and returns the tool's JSON stdout.
+Accepts {"tool", "caller", "input", "files", "job_id", "attempt", "ts", "mac"}
+on a unix socket from the *-sbx stub tools, checks the caller and the desk's
+HMAC over caller/job/attempt/time, runs the matching tool on the sandbox box
+over SSH (harness initiates, sandbox never connects back), and returns the
+tool's JSON stdout. The reply goes out before the post-job reset, with the
+serial lane held until the reset ends.
 
 The socket is the point: every stub runs with no network at all (network:false
 in its contract) and the desk binds this one socket into the job's sandbox, so
@@ -458,7 +461,7 @@ class H(BaseHTTPRequestHandler):
             job_id, attempt, ts, mac = req["job_id"], req["attempt"], req["ts"], req["mac"]
             if (not isinstance(job_id, str) or not JOB_ID_RE.match(job_id)
                     or type(attempt) is not int or type(ts) is not int
-                    or not isinstance(mac, str) or len(mac) != 64):
+                    or not isinstance(mac, str) or not re.fullmatch(r"[0-9a-f]{64}", mac)):
                 raise ValueError
             inp = req.get("input", {})
             files = req.get("files", {})
@@ -595,8 +598,10 @@ def open_socket(path):
         try:
             probe.settimeout(1.0)
             probe.connect(path)
-        except OSError:
-            os.unlink(path)  # nothing answered: stale
+        except ConnectionRefusedError:
+            os.unlink(path)  # nobody listening: stale
+        except OSError as e:
+            raise SystemExit(f"refusing to start: cannot tell whether {path} is live ({e})")
         else:
             raise SystemExit(f"refusing to start: another broker is listening on {path}")
         finally:

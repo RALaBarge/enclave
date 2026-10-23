@@ -32,7 +32,13 @@ check_root() {
 
 MODE=$(/usr/local/sbin/sbx-mode 2>/dev/null || echo lite)
 
-check_mode() { pass mode "$MODE (sandbox ${MODE/lite/in this VM})"; }
+check_mode() {
+  case "$MODE" in
+    lite) pass mode "lite (sandbox in this VM)" ;;
+    box)  pass mode "box (separate sandbox at 10.77.0.2)" ;;
+    *)    fail mode "$MODE (want lite or box)" ;;
+  esac
+}
 
 check_units() {
   local u state
@@ -87,7 +93,7 @@ check_nft_policy() {
   local rs missing="" h
   rs=$(nft list ruleset 2>&1) || { fail nft-policy "nft list ruleset failed: $(printf '%s' "$rs" | head -c 200)"; return; }
   for h in input forward; do
-    printf '%s\n' "$rs" | grep -Eq "hook $h[^;]*;[[:space:]]*policy drop;" || missing="$missing $h"
+    printf '%s\n' "$rs" | grep -Eq "hook ${h}[^;]*;[[:space:]]*policy drop;" || missing="$missing $h"
   done
   printf '%s\n' "$rs" | grep -Eq "hook output[^;]*;[[:space:]]*policy accept;" || missing="$missing output(open)"
   if [ -z "$missing" ]; then pass nft-policy "input and forward default drop; core output open by design"
@@ -101,8 +107,10 @@ check_gateway() {
   if [ "$fwd" != 1 ]; then fail gateway "net.ipv4.ip_forward=$fwd (want 1)"; return; fi
   if ! printf '%s\n' "$rs" | grep -Eq 'oifname != (\{ )?"eth1"( \})? masquerade'; then fail gateway "no masquerade rule for the sandbox link (eth1)"; return; fi
   # Forwarding must be allowlist-only: every accept in the forward chain is tied to the sandbox interface or to established flows.
-  local loose
-  loose=$(printf '%s\n' "$rs" | awk '/chain forward/{f=1} f&&/}/{f=0} f&&/accept/' | grep -v -E 'iifname|ct state established' || true)
+  local loose chain
+  chain=$(nft list chain inet sbxfw forward 2>/dev/null) \
+    || { fail gateway "cannot list inet sbxfw forward"; return; }
+  loose=$(printf '%s\n' "$chain" | grep -E '[[:space:]]accept([[:space:]]|$)' | grep -v -E 'iifname|ct state established' || true)
   if [ -n "$loose" ]; then fail gateway "forward chain has accepts not tied to the sandbox interface: $(printf '%s' "$loose" | head -c 160)"; return; fi
   pass gateway "forwarding on, sandbox traffic masqueraded, forward chain is allowlist-only"
 }
@@ -351,6 +359,26 @@ check_secrets() {
   else fail secrets "sbx-fetch-secrets failed"; fi
 }
 
+# The console owns tools.list (write) and reads broker.env; neither is writable by the bridge.
+check_console_files() {
+  local f m
+  for f in /etc/sbx/tools.list /etc/sbx/broker.env; do
+    [ -e "$f" ] || { fail console-files "$f missing"; return; }
+  done
+  m=$(stat -c '%a %U %G' /etc/sbx/tools.list)
+  if [ "$m" != "664 root sbxconsole" ]; then fail console-files "/etc/sbx/tools.list is $m (want 664 root sbxconsole)"; return; fi
+  m=$(stat -c '%a %U %G' /etc/sbx/broker.env)
+  if [ "$m" != "640 root sbxconsole" ]; then fail console-files "/etc/sbx/broker.env is $m (want 640 root sbxconsole)"; return; fi
+  runuser -u sbxconsole -- test -w /etc/sbx/tools.list 2>/dev/null \
+    || { fail console-files "sbxconsole cannot write tools.list"; return; }
+  runuser -u sbxconsole -- test -r /etc/sbx/broker.env 2>/dev/null \
+    || { fail console-files "sbxconsole cannot read broker.env"; return; }
+  if runuser -u pibridge -- test -r /etc/sbx/broker.env 2>/dev/null; then
+    fail console-files "pibridge can read broker.env"; return
+  fi
+  pass console-files "tools.list 664 root:sbxconsole; broker.env 640 root:sbxconsole; bridge cannot read it"
+}
+
 # page/fetch gate token: when present, only root and the sbx group (the jobs) may read it, never pibridge.
 check_gate_files() {
   n=0
@@ -359,6 +387,8 @@ check_gate_files() {
     n=$((n + 1))
     m=$(stat -c '%a %U %G' "$f")
     if [ "$m" != "640 root sbx" ]; then fail gate-files "$f is $m (want 640 root sbx)"; return; fi
+    runuser -u sbx -- test -r "$f" 2>/dev/null \
+      || { fail gate-files "sbx cannot read $f"; return; }
     if runuser -u pibridge -- test -r "$f" 2>/dev/null; then fail gate-files "pibridge can read $f"; return; fi
   done
   if [ "$n" = 0 ]; then pass gate-files "no gate files (SBX_GATE not set; page and fetch fail until it is)"
@@ -378,6 +408,7 @@ check_loom_http
 check_pi
 check_bridge
 check_secrets
+check_console_files
 check_gate_files
 check_lockdown
 check_session_gate

@@ -1,6 +1,6 @@
 # Enclave: status, tasks, decisions
 
-Last updated 2026-10-18 (branch `desk-tools`). `main` is the last settled state; work happens on short-lived branches.
+Last updated 2026-10-22 (branch `harness-hardening`). `main` is the last settled state; work happens on short-lived branches.
 
 ## Done
 

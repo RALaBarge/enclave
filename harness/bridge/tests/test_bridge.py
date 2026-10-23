@@ -158,6 +158,7 @@ class Local(unittest.TestCase):
         self.assertEqual(req(self.base, "/sessions/aaaaaaaaaaaa/command", "POST", {"type": "x"})[0], 404)
         sid = req(self.base, "/sessions", "POST", {"cwd": tempfile.gettempdir()})[1]["id"]
         self.assertEqual(req(self.base, "/sessions/%s/command" % sid, "POST", {})[0], 400)
+        self.assertEqual(req(self.base, "/sessions", "POST", [])[0], 400)          # a non-object body is not a session
         req(self.base, "/sessions/%s/ui-response" % sid, "POST", {"type": "extension_ui_response", "id": "crash", "cancelled": True})
         for _ in range(50):
             if not req(self.base, "/sessions")[1][0]["alive"]:
