@@ -1,0 +1,463 @@
+<title>Enclave Atlas</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Atkinson+Hyperlegible+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap">
+<style>
+/* Layout: one 3D field filling the screen; a control rail on the left, an inspector drawer on the right,
+   both floating over the field like instrument panels. Deliberately single-theme (night survey chart). */
+:root {
+  color-scheme: dark;
+  --ink: #0d131d;          /* field */
+  --panel: #141c29ee;      /* floating panels */
+  --panel-solid: #141c29;
+  --line: #2a3648;
+  --fg: #e6e9ef;
+  --mut: #8c98ab;
+  --accent: #f0c36a;       /* brass: selection, focus */
+  --ok: #7fc98a; --warn: #e6a35a; --bad: #e57373;
+  --a-console: #e8a646; --a-harness: #45b8a9; --a-image: #7397db; --a-sbx: #e2795d;
+  --a-tools: #b08de3; --a-common: #cdbb8c; --a-root: #9aa7bb; --a-deskbox: #84c26f; --a-runtime: #f4efe2;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "Atkinson Hyperlegible Mono", ui-monospace, Menlo, Consolas, monospace;
+  --label-bg: #0d131de0;   /* label backing: the field, nearly opaque */
+}
+html, body { height: 100%; }
+body { background: var(--ink); color: var(--fg); font: 13px/1.45 var(--f-body); overflow: hidden; }
+#graph { position: fixed; inset: 0; }
+#labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+.lbl { position: absolute; transform: translate(-50%, -140%); white-space: nowrap; font: 700 12px/1.2 var(--f-body);
+       color: var(--fg); background: var(--label-bg); border: 1px solid var(--line); border-radius: 3px; padding: 2px 6px; }
+.lbl.area { font-size: 14px; letter-spacing: .06em; text-transform: uppercase; border-color: currentColor; padding: 3px 8px; }
+.lbl.rt { color: var(--a-runtime); font: 500 12px/1.2 var(--f-mono); border-color: #f4efe244; }
+.panel { position: fixed; background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+         backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+#rail { top: calc(12px + env(safe-area-inset-top, 0px)); left: max(12px, env(safe-area-inset-left, 0px)); width: 300px;
+        max-height: calc(100% - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+        display: flex; flex-direction: column; overflow: hidden; }
+.rail-scroll { overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+h1 { margin: 0; font: 700 22px/1.05 var(--f-display); letter-spacing: .01em; text-wrap: balance; }
+h1 span { color: var(--accent); }
+.meta { font: 11px/1.4 var(--f-mono); color: var(--mut); }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.stat b { display: block; font: 600 17px/1 var(--f-display); font-variant-numeric: tabular-nums; }
+.stat span { font-size: 10px; color: var(--mut); text-transform: uppercase; letter-spacing: .06em; }
+.eyebrow { font: 600 10px/1 var(--f-display); text-transform: uppercase; letter-spacing: .12em; color: var(--mut); }
+.group { display: flex; flex-direction: column; gap: 7px; }
+input[type=search] { width: 100%; box-sizing: border-box; background: var(--ink); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 7px 9px; font: 13px var(--f-body); }
+input[type=search]:focus-visible, button:focus-visible, .chk:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+#results { display: flex; flex-direction: column; max-height: 220px; overflow-y: auto; }
+#results button, .linklist button { all: unset; cursor: pointer; display: flex; gap: 8px; align-items: baseline; padding: 4px 6px;
+  border-radius: 3px; min-width: 0; }
+#results button:hover, .linklist button:hover, #results button:focus-visible, .linklist button:focus-visible { background: #ffffff12; }
+.rname { font: 500 12px var(--f-mono); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rpath { font: 10.5px var(--f-mono); color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.views { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.views button { background: var(--ink); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 7px 4px; cursor: pointer;
+  font: 600 12px var(--f-display); letter-spacing: .03em; }
+.views button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+.chk { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 12.5px; }
+.chk input { accent-color: var(--accent); margin: 0; }
+.chk small { color: var(--mut); margin-left: auto; font: 11px var(--f-mono); }
+.legend { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+.legend button { all: unset; cursor: pointer; display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 2px 0; }
+.legend button[aria-pressed=false] { opacity: .35; }
+.sw { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.shape-note { font-size: 11.5px; color: var(--mut); }
+#drawer { top: calc(12px + env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); width: 380px;
+  max-height: calc(100% - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); overflow-y: auto; }
+.dr { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.dr-head { display: flex; align-items: flex-start; gap: 8px; }
+.dr-head h2 { margin: 0; font: 600 18px/1.15 var(--f-mono); word-break: break-word; flex: 1; min-width: 0; }
+.x { all: unset; cursor: pointer; color: var(--mut); font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 3px; }
+.x:hover { color: var(--fg); background: #ffffff12; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip { font: 600 10.5px/1 var(--f-display); letter-spacing: .05em; text-transform: uppercase; padding: 4px 7px; border-radius: 3px;
+  border: 1px solid var(--line); color: var(--mut); }
+.chip.fix { color: var(--ok); border-color: #7fc98a66; }
+.chip.unused { color: var(--bad); border-color: #e5737366; }
+.chip.untested { color: var(--warn); border-color: #e6a35a66; }
+.chip.tested { color: var(--ok); border-color: #7fc98a44; }
+.loc { font: 12px var(--f-mono); color: var(--accent); word-break: break-all; }
+pre.sig { margin: 0; padding: 8px 10px; background: var(--ink); border: 1px solid var(--line); border-radius: 4px;
+  font: 12px/1.45 var(--f-mono); white-space: pre-wrap; word-break: break-word; }
+.doc { color: var(--fg); max-width: 65ch; }
+.note { color: var(--mut); font-size: 12px; }
+.fixnote { border-left: 2px solid var(--ok); padding-left: 9px; color: var(--fg); }
+.linklist { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
+.kv dt { color: var(--mut); } .kv dd { margin: 0; font-family: var(--f-mono); word-break: break-word; }
+#tip { position: fixed; pointer-events: none; background: var(--panel-solid); border: 1px solid var(--line); border-radius: 4px;
+  padding: 5px 8px; font: 12px var(--f-mono); max-width: 340px; z-index: 5; }
+#tip[hidden] { display: none; }
+#tip small { display: block; color: var(--mut); font-size: 10.5px; }
+#railToggle { display: none; }
+.findings .row { display: flex; gap: 8px; align-items: baseline; }
+.findings .n { font: 600 15px var(--f-display); font-variant-numeric: tabular-nums; min-width: 2.2em; text-align: right; }
+.findings button.link { all: unset; cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.findings button.link:hover { text-decoration-color: var(--accent); }
+@media (max-width: 760px) {
+  #rail { width: auto; right: max(12px, env(safe-area-inset-right, 0px)); max-height: 46%; }
+  #rail.collapsed .rail-scroll > :not(.always) { display: none; }
+  #railToggle { display: inline-block; }
+  #drawer { top: auto; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); left: max(12px, env(safe-area-inset-left, 0px)); width: auto; max-height: 48%; }
+  .lbl:not(.area) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div id="graph" aria-label="3D map of the Enclave project"></div>
+<div id="labels" aria-hidden="true"></div>
+<div id="tip" hidden></div>
+
+<aside id="rail" class="panel">
+  <div class="rail-scroll">
+    <div class="always" style="display:flex;gap:8px;align-items:flex-start">
+      <div style="flex:1;min-width:0">
+        <h1>Enclave <span>Atlas</span></h1>
+        <div class="meta" id="meta"></div>
+      </div>
+      <button id="railToggle" class="x" aria-label="Show or hide controls">☰</button>
+    </div>
+    <div class="stats always" id="stats"></div>
+    <div class="group always">
+      <label class="eyebrow" for="q">Find any file, function or service</label>
+      <input id="q" type="search" placeholder="fw_lockdown, broker.sock, netcheck…" autocomplete="off">
+      <div id="results" role="listbox" aria-label="Search results"></div>
+    </div>
+    <div class="group">
+      <div class="eyebrow">View</div>
+      <div class="views" role="group" aria-label="View">
+        <button data-view="all" aria-pressed="true">Everything</button>
+        <button data-view="runtime" aria-pressed="false">Runtime</button>
+        <button data-view="findings" aria-pressed="false">Findings</button>
+      </div>
+      <div class="shape-note" id="viewNote"></div>
+    </div>
+    <div class="group">
+      <div class="eyebrow">Layers</div>
+      <label class="chk"><input type="checkbox" id="l-calls" checked> Calls between functions <small id="c-calls"></small></label>
+      <label class="chk"><input type="checkbox" id="l-tests" checked> Test code <small id="c-tests"></small></label>
+      <label class="chk"><input type="checkbox" id="l-runtime" checked> Runtime (services, sockets, machines) <small id="c-rt"></small></label>
+      <label class="chk"><input type="checkbox" id="l-dbx" checked> deskbox (Go, pinned) <small id="c-dbx"></small></label>
+    </div>
+    <div class="group">
+      <div class="eyebrow">Areas</div>
+      <div class="legend" id="legend"></div>
+      <div class="shape-note">Big spheres are areas, then components, then files; the smallest are functions, methods and classes. Hover for a name, click to inspect.</div>
+    </div>
+    <div class="group findings" id="findings"></div>
+  </div>
+</aside>
+
+<aside id="drawer" class="panel" hidden><div class="dr" id="dr"></div></aside>
+
+<script src="https://cdn.jsdelivr.net/npm/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"></script>
+<script>
+const DATA = /*DATA*/null;
+const RUNTIME = /*RUNTIME*/null;
+
+const css = getComputedStyle(document.documentElement);
+const AREA = {};
+for (const a of ["console","harness","image","sbx","tools","common","root","deskbox","runtime"]) AREA[a] = css.getPropertyValue("--a-" + a).trim();
+const AREA_NAME = { console: "Firewall console", harness: "Harness (bridge, broker, gate…)", image: "Image & install", sbx: "Sandbox box",
+  tools: "Sandbox tools", common: "Shared", root: "Repo root", deskbox: "deskbox (agent-desk)", runtime: "Runtime" };
+const ACCENT = css.getPropertyValue("--accent").trim(), OK = css.getPropertyValue("--ok").trim(),
+      BAD = css.getPropertyValue("--bad").trim(), WARN = css.getPropertyValue("--warn").trim();
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const areaOf = (comp) => comp.split("/")[0] === "deskbox" ? "deskbox" : comp.split("/")[0];
+
+// ---------- build nodes and links
+const nodes = [], links = [], byId = new Map();
+function node(n) { byId.set(n.id, n); nodes.push(n); return n; }
+const areas = new Set(), comps = new Set();
+for (const f of DATA.files) { comps.add(f.comp); areas.add(areaOf(f.comp)); }
+for (const a of areas) node({ id: "area:" + a, t: "area", name: AREA_NAME[a] || a, area: a, val: 60 });
+for (const c of comps) {
+  const a = areaOf(c);
+  if (c !== a) { node({ id: "comp:" + c, t: "comp", name: c, area: a, val: 18 }); links.push({ source: "area:" + a, target: "comp:" + c, t: "contain" }); }
+}
+const compNode = (c) => (byId.has("comp:" + c) ? "comp:" + c : "area:" + areaOf(c));
+for (const f of DATA.files) {
+  const a = areaOf(f.comp);
+  node({ id: "file:" + f.id, t: "file", name: f.id.split("/").pop(), path: f.id, area: a, lang: f.lang, lines: f.lines, head: f.head,
+         fix: f.fix, test: /(^|\/)test_|\.test\.|_test\.go$|smoke-test|\/tests\//.test(f.id), val: 3 + Math.min(9, f.lines / 180) });
+  links.push({ source: compNode(f.comp), target: "file:" + f.id, t: "contain" });
+}
+const symCount = {};
+for (const s of DATA.symbols) {
+  const fnode = byId.get("file:" + s.file);
+  const n = node({ id: "sym:" + s.id, t: "sym", name: s.name, kind: s.kind, path: s.file, line: s.line, end: s.end, sig: s.sig, doc: s.doc,
+    parent: s.parent, area: fnode.area, test: s.test || fnode.test, tested: s.tested, unused: s.unused, fix: s.fix,
+    callers: s.callers, callees: s.callees, val: s.kind === "class" || s.kind === "type" ? 1.6 : 0.6 });
+  symCount[s.file] = (symCount[s.file] || 0) + 1;
+}
+// methods hang off their class when the class is in the same file, otherwise off the file
+const classIn = new Map();
+for (const s of DATA.symbols) if (s.kind === "class" || s.kind === "type") classIn.set(s.file + "#" + s.name, "sym:" + s.id);
+for (const s of DATA.symbols) {
+  const holder = s.parent && classIn.get(s.file + "#" + s.parent);
+  links.push({ source: holder || "file:" + s.file, target: "sym:" + s.id, t: "contain" });
+}
+for (const [a, b] of DATA.calls) links.push({ source: "sym:" + a, target: "sym:" + b, t: "call" });
+// runtime layer
+for (const r of RUNTIME.nodes) {
+  node({ id: "rt:" + r.id, t: "rt", name: r.name, area: "runtime", where: r.where, what: r.what, val: r.kind === "machine" ? 40 : 10, rkind: r.kind });
+  for (const f of r.files || []) if (byId.has("file:" + f)) links.push({ source: "rt:" + r.id, target: "file:" + f, t: "impl" });
+  if (r.on) links.push({ source: "rt:" + r.on, target: "rt:" + r.id, t: "host" });
+}
+for (const [a, b, label, off] of RUNTIME.flows) links.push({ source: "rt:" + a, target: "rt:" + b, t: "flow", label, off: !!off });
+
+// adjacency for highlight and the inspector
+const nbr = new Map(), callIn = new Map(), callOut = new Map(), flowIn = new Map(), flowOut = new Map();
+const push = (m, k, v) => { (m.get(k) || m.set(k, []).get(k)).push(v); };
+for (const l of links) {
+  push(nbr, l.source, l); push(nbr, l.target, l);
+  if (l.t === "call") { push(callOut, l.source, l.target); push(callIn, l.target, l.source); }
+  if (l.t === "flow") { push(flowOut, l.source, l); push(flowIn, l.target, l); }
+}
+
+// ---------- stats and meta
+const syms = DATA.symbols, fnLike = syms.filter((s) => !s.test && ["function", "method", "shell function"].includes(s.kind));
+$("meta").textContent = `enclave ${DATA.meta.enclave} · tools ${DATA.meta.tools} · deskbox ${DATA.meta.deskbox}`;
+$("stats").innerHTML = [[DATA.files.length, "files"], [syms.filter((s) => s.kind !== "class" && s.kind !== "type").length, "functions"],
+  [syms.filter((s) => s.kind === "class" || s.kind === "type").length, "classes"], [DATA.calls.length, "calls"]]
+  .map(([n, l]) => `<div class="stat"><b>${n.toLocaleString()}</b><span>${l}</span></div>`).join("");
+$("c-calls").textContent = DATA.calls.length; $("c-tests").textContent = syms.filter((s) => s.test).length;
+$("c-rt").textContent = RUNTIME.nodes.length; $("c-dbx").textContent = syms.filter((s) => s.file.startsWith("deskbox/")).length;
+
+// ---------- state
+const state = { view: "all", calls: true, tests: true, runtime: true, dbx: true, hidden: new Set(), sel: null, hl: new Set(), hlLinks: new Set() };
+function visibleNode(n) {
+  if (state.hidden.has(n.area)) return false;
+  if (!state.tests && n.test) return false;
+  if (!state.runtime && n.t === "rt") return false;
+  if (!state.dbx && n.area === "deskbox") return false;
+  if (state.view === "runtime") return n.t === "rt" || n.t === "file" && (nbr.get(n.id) || []).some((l) => l.t === "impl");
+  if (state.view === "findings") return n.t !== "sym" || n.fix || n.unused || state.hl.has(n.id) || n.kind === "class";
+  return true;
+}
+function visibleLink(l) {
+  const s = typeof l.source === "object" ? l.source : byId.get(l.source), t = typeof l.target === "object" ? l.target : byId.get(l.target);
+  if (!visibleNode(s) || !visibleNode(t)) return false;
+  if (l.t === "call" && !state.calls) return false;
+  if (state.view === "runtime" && l.t === "contain") return false;
+  return true;
+}
+function colorOf(n) {
+  if (state.sel && state.hl.size && !state.hl.has(n.id)) return "#3a4558";
+  if (state.view === "findings" && n.t === "sym") return n.fix ? OK : n.unused ? BAD : AREA[n.area];
+  if (n.t === "rt") return AREA.runtime;
+  return AREA[n.area] || "#9aa7bb";
+}
+const linkColor = (l) => {
+  if (state.hlLinks.has(l)) return ACCENT;
+  if (l.t === "flow") return l.off ? "#f4efe266" : "#f4efe2";
+  if (l.t === "call") return state.sel ? "#ffffff10" : "#8fb3ff40";
+  if (l.t === "impl") return "#f4efe255";
+  if (l.t === "host") return "#f4efe230";
+  return "#ffffff1c";
+};
+
+// ---------- graph
+const el = $("graph");
+const Graph = ForceGraph3D({ controlType: "orbit" })(el)
+  .backgroundColor(css.getPropertyValue("--ink").trim())
+  .showNavInfo(false)
+  .nodeRelSize(3.2).nodeResolution(10).nodeOpacity(0.95)
+  .nodeVal((n) => n.val).nodeColor(colorOf)
+  .nodeVisibility(visibleNode).linkVisibility(visibleLink)
+  .linkColor(linkColor).linkOpacity(0.9)
+  .linkWidth((l) => (state.hlLinks.has(l) ? 1.6 : l.t === "flow" ? 1.4 : 0))
+  .linkDirectionalArrowLength((l) => (l.t === "flow" || state.hlLinks.has(l) && l.t === "call" ? 5 : 0))
+  .linkDirectionalArrowRelPos(0.92)
+  .linkDirectionalParticles((l) => (reduced ? 0 : l.t === "flow" && !l.off ? 2 : state.hlLinks.has(l) && l.t === "call" ? 2 : 0))
+  .linkDirectionalParticleWidth(2).linkDirectionalParticleSpeed(0.006)
+  .linkCurvature((l) => (l.t === "call" ? 0.18 : l.t === "flow" ? 0.12 : 0))
+  .nodeLabel(() => "")
+  .onNodeHover(hover)
+  .onNodeClick((n) => select(n.id, true))
+  .onBackgroundClick(() => select(null))
+  .graphData({ nodes, links });
+Graph.d3Force("charge").strength((n) => (n.t === "area" ? -900 : n.t === "rt" ? -260 : n.t === "comp" ? -200 : n.t === "file" ? -60 : -14));
+Graph.d3Force("link").distance((l) => (l.t === "contain" ? ({ area: 90, comp: 46, file: 16 }[(typeof l.source === "object" ? l.source : byId.get(l.source)).t] || 12) :
+  l.t === "flow" ? 70 : l.t === "host" ? 55 : l.t === "impl" ? 80 : 40)).strength((l) => (l.t === "call" ? 0.04 : l.t === "impl" ? 0.08 : l.t === "flow" ? 0.5 : 0.9));
+function resize() { Graph.width(innerWidth).height(innerHeight); }
+addEventListener("resize", resize); resize();
+setTimeout(() => Graph.zoomToFit(reduced ? 0 : 900, 40), 2600);
+const refresh = () => { Graph.nodeColor(colorOf).linkColor(linkColor).nodeVisibility(visibleNode).linkVisibility(visibleLink)
+  .linkWidth(Graph.linkWidth()).linkDirectionalParticles(Graph.linkDirectionalParticles()).linkDirectionalArrowLength(Graph.linkDirectionalArrowLength()); };
+
+// ---------- tooltip
+const tip = $("tip");
+function hover(n) {
+  el.style.cursor = n ? "pointer" : "";
+  if (!n) { tip.hidden = true; return; }
+  const sub = n.t === "sym" ? `${n.kind} · ${n.path}:${n.line}` : n.t === "file" ? `${n.lang} · ${n.lines} lines` : n.t === "rt" ? n.where : n.t === "comp" ? "component" : "area";
+  tip.innerHTML = `${esc(n.t === "file" ? n.path : n.name)}<small>${esc(sub)}</small>`;
+  tip.hidden = false;
+}
+addEventListener("pointermove", (e) => { tip.style.left = Math.min(innerWidth - 350, e.clientX + 14) + "px"; tip.style.top = e.clientY + 14 + "px"; });
+
+// ---------- labels for areas, components and runtime nodes
+const labelEls = new Map(), lblBox = $("labels");
+for (const n of nodes) if (n.t === "area" || n.t === "comp" || n.t === "rt") {
+  const d = document.createElement("div");
+  d.className = "lbl " + (n.t === "area" ? "area" : n.t === "rt" ? "rt" : "");
+  d.textContent = n.t === "comp" ? n.name.split("/").slice(1).join("/") || n.name : n.name;
+  if (n.t === "area") d.style.color = AREA[n.area];
+  lblBox.appendChild(d); labelEls.set(n, d);
+}
+function tick() {
+  const cam = Graph.camera(), V = cam.position.constructor, dir = new V(); cam.getWorldDirection(dir);
+  const p = new V();
+  for (const [n, d] of labelEls) {
+    const show = visibleNode(n) && n.x !== undefined && !(state.sel && state.hl.size && !state.hl.has(n.id) && n.t !== "area");
+    if (!show) { d.style.display = "none"; continue; }
+    p.set(n.x, n.y, n.z).sub(cam.position);
+    if (p.dot(dir) <= 0) { d.style.display = "none"; continue; }
+    const c = Graph.graph2ScreenCoords(n.x, n.y, n.z);
+    d.style.display = ""; d.style.left = c.x + "px"; d.style.top = c.y + "px";
+    d.style.opacity = n.t === "comp" ? Math.max(0.25, Math.min(1, 900 / p.length())) : 1;
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// ---------- selection and inspector
+function idOf(x) { return typeof x === "object" ? x.id : x; }
+function select(id, fly) {
+  state.sel = id; state.hl = new Set(); state.hlLinks = new Set();
+  const dr = $("drawer");
+  if (!id) { dr.hidden = true; refresh(); return; }
+  const n = byId.get(id);
+  state.hl.add(id);
+  for (const l of nbr.get(id) || []) { state.hlLinks.add(l); state.hl.add(idOf(l.source)); state.hl.add(idOf(l.target)); }
+  if (n.t === "file") for (const l of nbr.get(id) || []) if (l.t === "contain" && idOf(l.source) === id)
+    for (const l2 of nbr.get(idOf(l.target)) || []) { state.hl.add(idOf(l2.source)); state.hl.add(idOf(l2.target)); if (l2.t === "call") state.hlLinks.add(l2); }
+  refresh();
+  renderDrawer(n);
+  dr.hidden = false;
+  if (fly && n.x !== undefined) {
+    const dist = n.t === "area" ? 420 : n.t === "rt" && n.rkind === "machine" ? 380 : n.t === "comp" ? 220 : 120;
+    const r = Math.hypot(n.x, n.y, n.z) || 1, k = 1 + dist / r;
+    Graph.cameraPosition({ x: n.x * k, y: n.y * k, z: n.z * k }, n, reduced ? 0 : 900);
+  }
+}
+const chip = (cls, t) => `<span class="chip ${cls}">${esc(t)}</span>`;
+function listOf(ids, title) {
+  if (!ids || !ids.length) return "";
+  const items = [...new Set(ids)].map((i) => byId.get(i)).filter(Boolean)
+    .sort((a, b) => (a.path || "").localeCompare(b.path || "") || a.name.localeCompare(b.name));
+  return `<div class="eyebrow">${esc(title)} · ${items.length}</div><div class="linklist">` + items.map((m) =>
+    `<button data-go="${esc(m.id)}"><span class="rname">${esc(m.parent ? m.parent + "." + m.name : m.name)}</span><span class="rpath">${esc(m.t === "sym" ? m.path + ":" + m.line : m.t === "file" ? m.path : m.where || "")}</span></button>`).join("") + "</div>";
+}
+function renderDrawer(n) {
+  let h = `<div class="dr-head"><h2>${esc(n.t === "sym" && n.parent ? n.parent + "." + n.name : n.t === "file" ? n.name : n.name)}</h2><button class="x" data-close aria-label="Close">×</button></div>`;
+  const chips = [];
+  const kindLabel = { area: "area", comp: "component", file: "file · " + n.lang, rt: "runtime · " + n.rkind }[n.t] || n.kind;
+  chips.push(chip("", kindLabel));
+  if (n.t !== "rt") chips.push(`<span class="chip" style="color:${AREA[n.area]};border-color:${AREA[n.area]}66">${esc(AREA_NAME[n.area] || n.area)}</span>`);
+  if (n.fix) chips.push(chip("fix", "fixed 2026-11-15"));
+  if (n.unused) chips.push(chip("unused", "nothing calls this"));
+  if (n.t === "sym" && !n.test && ["function", "method", "shell function"].includes(n.kind)) chips.push(n.tested ? chip("tested", "reached by tests") : chip("untested", "no direct test path"));
+  if (n.test) chips.push(chip("", "test code"));
+  h += `<div class="chips">${chips.join("")}</div>`;
+  if (n.t === "sym") {
+    h += `<div class="loc">${esc(n.path)}:${n.line}${n.end && n.end !== n.line ? "–" + n.end : ""}</div>`;
+    if (n.sig) h += `<pre class="sig">${esc(n.sig)}</pre>`;
+    h += n.doc ? `<div class="doc">${esc(n.doc)}</div>` : `<div class="note">No docstring or leading comment.</div>`;
+    if (n.fix) h += `<div class="fixnote">${esc(n.fix)}</div>`;
+    h += listOf(callIn.get(n.id), "Called by") + listOf(callOut.get(n.id), "Calls");
+    if (!callIn.get(n.id) && !n.unused && !n.test) h += `<div class="note">No direct caller found by the static pass; it is reached from module-level code, a route table, a callback, HTTP or another language.</div>`;
+    h += `<button class="x" style="font-size:12px;align-self:flex-start" data-go="file:${esc(n.path)}">Open file ${esc(n.path.split("/").pop())} →</button>`;
+  } else if (n.t === "file") {
+    h += `<div class="loc">${esc(n.path)}</div>`;
+    if (n.head) h += `<div class="doc">${esc(n.head)}</div>`;
+    if (n.fix) h += `<div class="fixnote">${esc(n.fix)}</div>`;
+    h += `<dl class="kv"><dt>Lines</dt><dd>${n.lines.toLocaleString()}</dd><dt>Symbols</dt><dd>${symCount[n.path] || 0}</dd></dl>`;
+    const kids = (nbr.get(n.id) || []).filter((l) => l.t === "contain" && idOf(l.source) === n.id).map((l) => idOf(l.target));
+    const grand = kids.flatMap((k) => (nbr.get(k) || []).filter((l) => l.t === "contain" && idOf(l.source) === k).map((l) => idOf(l.target)));
+    h += listOf([...kids, ...grand], "Defined here");
+    h += listOf((nbr.get(n.id) || []).filter((l) => l.t === "impl").map((l) => idOf(l.source)), "Runs as");
+  } else if (n.t === "rt") {
+    h += `<div class="loc">${esc(n.where)}</div><div class="doc">${esc(n.what)}</div>`;
+    const fo = (flowOut.get(n.id) || []), fi = (flowIn.get(n.id) || []);
+    if (fo.length || fi.length) {
+      h += `<div class="eyebrow">Talks to</div><div class="linklist">` +
+        fo.map((l) => `<button data-go="${esc(idOf(l.target))}"><span class="rname">→ ${esc(byId.get(idOf(l.target)).name)}</span><span class="rpath">${esc(l.label)}${l.off ? " (off)" : ""}</span></button>`).join("") +
+        fi.map((l) => `<button data-go="${esc(idOf(l.source))}"><span class="rname">← ${esc(byId.get(idOf(l.source)).name)}</span><span class="rpath">${esc(l.label)}${l.off ? " (off)" : ""}</span></button>`).join("") + `</div>`;
+    }
+    h += listOf((nbr.get(n.id) || []).filter((l) => l.t === "impl").map((l) => idOf(l.target)), "Code");
+    h += listOf((nbr.get(n.id) || []).filter((l) => l.t === "host" && idOf(l.source) === n.id).map((l) => idOf(l.target)), "Runs here");
+  } else {
+    const kids = (nbr.get(n.id) || []).filter((l) => l.t === "contain" && idOf(l.source) === n.id).map((l) => idOf(l.target));
+    h += listOf(kids, n.t === "area" ? "Components and files" : "Files");
+  }
+  $("dr").innerHTML = h;
+}
+$("drawer").addEventListener("click", (e) => {
+  const g = e.target.closest("[data-go]"); if (g) return select(g.dataset.go, true);
+  if (e.target.closest("[data-close]")) select(null);
+});
+
+// ---------- search
+const index = nodes.map((n) => ({ n, k: (n.name + " " + (n.path || "") + " " + (n.parent || "") + " " + (n.where || "")).toLowerCase() }));
+$("q").addEventListener("input", () => {
+  const q = $("q").value.trim().toLowerCase(), box = $("results");
+  if (!q) { box.innerHTML = ""; return; }
+  const hits = index.filter((x) => x.k.includes(q)).map((x) => x.n)
+    .sort((a, b) => (b.name.toLowerCase() === q) - (a.name.toLowerCase() === q) || (b.name.toLowerCase().startsWith(q)) - (a.name.toLowerCase().startsWith(q)) || a.name.length - b.name.length)
+    .slice(0, 40);
+  box.innerHTML = hits.length ? hits.map((n) => `<button data-go="${esc(n.id)}" role="option"><span class="sw" style="background:${n.t === "rt" ? AREA.runtime : AREA[n.area]}"></span><span class="rname">${esc(n.parent ? n.parent + "." + n.name : n.name)}</span><span class="rpath">${esc(n.t === "sym" ? n.path + ":" + n.line : n.t === "file" ? n.path : n.where || n.t)}</span></button>`).join("")
+    : `<div class="note" style="padding:4px 6px">Nothing matches “${esc(q)}”.</div>`;
+});
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") { const b = $("results").querySelector("button"); if (b) b.click(); } });
+$("results").addEventListener("click", (e) => { const g = e.target.closest("[data-go]"); if (g) select(g.dataset.go, true); });
+
+// ---------- views, layers, legend
+const NOTES = { all: "Every file and function, with calls between them and the services they run as.",
+  runtime: "How a prompt moves at run time: you → pi-bridge → Pi → the desk → the broker → over the cable to sbx. Dim lines are switched off today.",
+  findings: "Green: changed by the 2026-11-15 security fixes. Red: nothing calls it. Everything else is hidden except classes." };
+function setView(v) {
+  state.view = v;
+  for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-pressed", String(b.dataset.view === v));
+  $("viewNote").textContent = NOTES[v];
+  refresh();
+  setTimeout(() => Graph.zoomToFit(reduced ? 0 : 800, 60, visibleNode), 60);
+}
+for (const b of document.querySelectorAll("[data-view]")) b.addEventListener("click", () => setView(b.dataset.view));
+$("viewNote").textContent = NOTES.all;
+const bind = (id, key) => $(id).addEventListener("change", (e) => { state[key] = e.target.checked; refresh(); });
+bind("l-calls", "calls"); bind("l-tests", "tests"); bind("l-runtime", "runtime"); bind("l-dbx", "dbx");
+$("legend").innerHTML = [...areas, "runtime"].map((a) => `<button data-area="${a}" aria-pressed="true"><span class="sw" style="background:${AREA[a]}"></span>${esc(AREA_NAME[a] || a)}</button>`).join("");
+$("legend").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-area]"); if (!b) return;
+  const a = b.dataset.area, on = state.hidden.has(a);
+  if (a === "runtime") { state.runtime = on; $("l-runtime").checked = on; }
+  else on ? state.hidden.delete(a) : state.hidden.add(a);
+  b.setAttribute("aria-pressed", String(on)); refresh();
+});
+$("railToggle").addEventListener("click", () => $("rail").classList.toggle("collapsed"));
+if (innerWidth <= 760) $("rail").classList.add("collapsed");
+
+// ---------- findings summary
+(() => {
+  const fixed = nodes.filter((n) => n.fix), unused = nodes.filter((n) => n.unused);
+  const enc = fnLike.filter((s) => !s.file.startsWith("deskbox/")), dbx = fnLike.filter((s) => s.file.startsWith("deskbox/"));
+  const pct = (a) => Math.round(100 * a.filter((s) => s.tested).length / a.length);
+  const gaps = Object.entries(enc.filter((s) => !s.tested).reduce((m, s) => ((m[s.file] = (m[s.file] || 0) + 1), m), {}))
+    .sort((a, b) => b[1] - a[1]).slice(0, 5);
+  $("findings").innerHTML = `<div class="eyebrow">Findings</div>
+    <div class="row"><span class="n" style="color:${OK}">${fixed.length}</span><span>places changed by today's security fixes. <button class="link" data-v="findings">Show them</button></span></div>
+    <div class="row"><span class="n" style="color:${BAD}">${unused.length}</span><span>function${unused.length === 1 ? "" : "s"} nothing calls: ${unused.map((u) => `<button class="link" data-go="${esc(u.id)}">${esc(u.name)}</button>`).join(", ")}</span></div>
+    <div class="row"><span class="n" style="color:${WARN}">${pct(enc)}%</span><span>of Enclave's functions sit on a direct call path from a test (deskbox: ${pct(dbx)}%). The rest are tested over HTTP or by the smoke test, or not at all. Biggest gaps: ${gaps.map(([f, c]) => `<button class="link" data-go="file:${esc(f)}">${esc(f.split("/").pop())}</button> (${c})`).join(", ")}.</span></div>`;
+  $("findings").addEventListener("click", (e) => {
+    const g = e.target.closest("[data-go]"); if (g) return select(g.dataset.go, true);
+    if (e.target.closest("[data-v]")) setView("findings");
+  });
+})();
+</script>

@@ -1,0 +1,375 @@
+{
+ "nodes": [
+  {
+   "id": "you",
+   "kind": "person",
+   "name": "You (browser, ssh)",
+   "where": "tailnet",
+   "what": "Reach the bridge UI and the console through ssh ai (Tailscale); nothing on ai listens beyond loopback except the tailnet peer port."
+  },
+  {
+   "id": "ai",
+   "kind": "machine",
+   "name": "ai (core)",
+   "where": "Wyse, Debian 13, on the tailnet and the LAN",
+   "what": "The trusted core: runs the agent harness, the desk, the broker, the firewall that gates the sandbox, and memory."
+  },
+  {
+   "id": "sbx",
+   "kind": "machine",
+   "name": "sbx (sandbox box)",
+   "where": "Wyse, Debian 13, 10.77.0.2 on the private cable",
+   "what": "Runs tool code in bwrap. Knows only the core's address; reached only by the broker's forced-command key."
+  },
+  {
+   "id": "win11",
+   "kind": "machine",
+   "name": "win11 (browserbox)",
+   "where": "Windows PC on the LAN",
+   "what": "Chrome driven by browserbox's gate.py, for the page and fetch tools. Off since the move to ai."
+  },
+  {
+   "id": "llm",
+   "kind": "external",
+   "name": "Model API (DeepSeek)",
+   "where": "internet",
+   "what": "The LLM. Pi calls it from the core; the core's own egress is open by design."
+  },
+  {
+   "id": "bw",
+   "kind": "external",
+   "name": "Bitwarden Secrets",
+   "where": "internet",
+   "what": "Holds the model keys (and SBX_GATE when page/fetch are on). Fetched by root before pi-bridge starts."
+  },
+  {
+   "id": "ui",
+   "kind": "service",
+   "on": "ai",
+   "name": "Bridge web UI",
+   "where": "served by pi-bridge",
+   "what": "Module engine: sessions, chat, dirs, tree, inspector. Text only reaches the DOM as text nodes.",
+   "files": [
+    "harness/ui/index.html",
+    "harness/ui/view.js",
+    "harness/ui/host.js",
+    "harness/ui/worker.js",
+    "harness/ui/modules/chat.js",
+    "harness/ui/modules/sessions.js",
+    "harness/ui/modules/dirs.js",
+    "harness/ui/modules/tree.js",
+    "harness/ui/modules/inspect.js"
+   ]
+  },
+  {
+   "id": "bridge",
+   "kind": "service",
+   "on": "ai",
+   "name": "pi-bridge",
+   "where": "127.0.0.1:9760 (user pibridge)",
+   "what": "HTTP/SSE API over Pi's RPC mode. Every session and every input first goes through the session gate.",
+   "files": [
+    "harness/bridge/server.py",
+    "harness/bridge/pibridge.py",
+    "harness/bridge/peers.py",
+    "harness/bridge/pairing.py",
+    "harness/systemd/pi-bridge.service"
+   ]
+  },
+  {
+   "id": "secrets",
+   "kind": "process",
+   "on": "ai",
+   "name": "sbx-fetch-secrets",
+   "where": "ExecStartPre as root",
+   "what": "Reads the Bitwarden token (root 0600) and writes /run/pi-bridge-secrets/secrets.env (root:pibridge 0640).",
+   "files": [
+    "image/sbx-fetch-secrets.sh"
+   ]
+  },
+  {
+   "id": "pi",
+   "kind": "process",
+   "on": "ai",
+   "name": "Pi 1.2.0 (Node)",
+   "where": "/usr/local/bin/pi, child of pi-bridge",
+   "what": "The coding agent, locked down: --offline, no builtin tools, no extensions but the desk extension.",
+   "files": [
+    "image/build-pi.sh",
+    "harness/bridge/desk-extension.js",
+    "harness/toolsadapter/desk_tools.py"
+   ]
+  },
+  {
+   "id": "gate",
+   "kind": "service",
+   "on": "ai",
+   "name": "sbx-session-gate",
+   "where": "/run/sbx-gate/gate.sock (sbxgatecall)",
+   "what": "Holds the tighten-only token and forces the session firewall profile. Callers: the bridge and the broker.",
+   "files": [
+    "harness/gate/session_gate.py",
+    "harness/systemd/sbx-session-gate.service"
+   ]
+  },
+  {
+   "id": "console",
+   "kind": "service",
+   "on": "ai",
+   "name": "sbx-console",
+   "where": "127.0.0.1:8787 (bearer token)",
+   "what": "Firewall profiles (session/build), tools on/off, settings. Renders and applies the nftables ruleset.",
+   "files": [
+    "console/sbx_console.py",
+    "console/ui.html",
+    "console/sbx-console.service"
+   ]
+  },
+  {
+   "id": "nft",
+   "kind": "kernel",
+   "on": "ai",
+   "name": "nftables: table inet sbxfw",
+   "where": "kernel, eth1 = sandbox side",
+   "what": "Default-deny input and forward. Sandbox traffic is masqueraded and allowlisted; forwarding turns on only after this table loads.",
+   "files": [
+    "console/nftables.conf",
+    "console/nftables-sbx-forward.conf"
+   ]
+  },
+  {
+   "id": "desk",
+   "kind": "service",
+   "on": "ai",
+   "name": "agent-desk (deskbox)",
+   "where": "127.0.0.1:8080 (user deskbox)",
+   "what": "Contract-enforced tool calls: validates input against tcs.yaml, runs each stub in bwrap with seccomp and no network, signs the job.",
+   "files": [
+    "deskbox/cmd/agent-desk/main.go",
+    "deskbox/cmd/agent-desk/executor.go",
+    "deskbox/cmd/agent-desk/queue.go",
+    "image/deskbox-run.sh",
+    "harness/systemd/deskbox.service",
+    "sync.py"
+   ]
+  },
+  {
+   "id": "stub",
+   "kind": "process",
+   "on": "ai",
+   "name": "tool stub (<tool>-sbx)",
+   "where": "/opt/deskbox/tools/<tool>-sbx/run.py",
+   "what": "Generated by sync.py from harness/stub/run.py. Its only door is the broker socket bound into the job.",
+   "files": [
+    "harness/stub/run.py",
+    "tools/greet/tcs.yaml",
+    "tools/netcheck/tcs.yaml",
+    "tools/bash/tcs.yaml",
+    "tools/read/tcs.yaml",
+    "tools/write/tcs.yaml",
+    "tools/edit/tcs.yaml",
+    "tools/glob/tcs.yaml",
+    "tools/grep/tcs.yaml",
+    "tools/page/tcs.yaml",
+    "tools/fetch/tcs.yaml"
+   ]
+  },
+  {
+   "id": "broker",
+   "kind": "service",
+   "on": "ai",
+   "name": "sbx-broker",
+   "where": "/run/sbx/broker.sock (0660 sbxdesk)",
+   "what": "Checks the desk's job signature, holds the serial lane, locks the firewall before net jobs, and runs the job on sbx over SSH.",
+   "files": [
+    "harness/broker/sbx_broker.py",
+    "harness/systemd/sbx-broker.service",
+    "common/toollist.py",
+    "image/sbx-push-tools.sh"
+   ]
+  },
+  {
+   "id": "loom",
+   "kind": "service",
+   "on": "ai",
+   "name": "Loom",
+   "where": "127.0.0.1:9741",
+   "what": "Local memory. pi-bridge posts settled turns only with --loom-url (off), after the output redactor.",
+   "files": [
+    "harness/redact/output_redactor.py"
+   ]
+  },
+  {
+   "id": "ollama",
+   "kind": "service",
+   "on": "ai",
+   "name": "Ollama",
+   "where": "127.0.0.1:11434",
+   "what": "Embeddings for Loom (nomic-embed-text, digest pinned)."
+  },
+  {
+   "id": "sshd",
+   "kind": "service",
+   "on": "sbx",
+   "name": "sshd \u2192 sbx-channel",
+   "where": "10.77.0.2:22, AllowUsers sbx@10.77.0.1",
+   "what": "The only way in: the broker's key, forced through sbx-channel (run, reset, install).",
+   "files": [
+    "sbx/sbx-channel",
+    "image/provision-sbx.sh",
+    "image/sbx-bootstrap.sh",
+    "image/sbx-bootstrap-serve.sh"
+   ]
+  },
+  {
+   "id": "run",
+   "kind": "process",
+   "on": "sbx",
+   "name": "sbx-run",
+   "where": "/opt/sbx/sbx-run",
+   "what": "Runs one tool in bwrap: no network unless tools.list says net, the workspace only for work tools, limits and a timeout.",
+   "files": [
+    "sbx/sbx-run",
+    "tools/tools.list",
+    "image/sbx-install.py"
+   ]
+  },
+  {
+   "id": "tools",
+   "kind": "process",
+   "on": "sbx",
+   "name": "tools (bwrap)",
+   "where": "/opt/sbx/tools/<tool>/run",
+   "what": "greet, netcheck, page, fetch, bash, read, write, edit, glob, grep.",
+   "files": [
+    "tools/greet/run",
+    "tools/netcheck/run",
+    "tools/page/run",
+    "tools/fetch/run",
+    "tools/bash/run",
+    "tools/read/run",
+    "tools/write/run",
+    "tools/edit/run",
+    "tools/glob/run",
+    "tools/grep/run"
+   ]
+  },
+  {
+   "id": "bbgate",
+   "kind": "service",
+   "on": "win11",
+   "name": "browserbox gate",
+   "where": "Windows PC on the LAN, port 9011 (bearer token)",
+   "what": "Fetches and renders pages for page/fetch. The one deliberate hole in sbx's firewall, currently closed."
+  }
+ ],
+ "flows": [
+  [
+   "you",
+   "ui",
+   "opens the UI over ssh/Tailscale"
+  ],
+  [
+   "ui",
+   "bridge",
+   "HTTP + SSE"
+  ],
+  [
+   "you",
+   "console",
+   "firewall changes (ssh -L 8787)"
+  ],
+  [
+   "secrets",
+   "bw",
+   "fetch keys at start"
+  ],
+  [
+   "secrets",
+   "bridge",
+   "secrets.env \u2192 environment"
+  ],
+  [
+   "bridge",
+   "gate",
+   "lockdown per session and input"
+  ],
+  [
+   "gate",
+   "console",
+   "POST /api/fw/lockdown (tighten token)"
+  ],
+  [
+   "console",
+   "nft",
+   "nft -f ruleset"
+  ],
+  [
+   "bridge",
+   "pi",
+   "RPC over FIFOs"
+  ],
+  [
+   "pi",
+   "llm",
+   "model API"
+  ],
+  [
+   "pi",
+   "desk",
+   "desk extension: tool call"
+  ],
+  [
+   "desk",
+   "stub",
+   "job in bwrap, no network, signed"
+  ],
+  [
+   "stub",
+   "broker",
+   "unix socket"
+  ],
+  [
+   "broker",
+   "gate",
+   "lockdown before every net job"
+  ],
+  [
+   "broker",
+   "sshd",
+   "ssh forced command over the cable"
+  ],
+  [
+   "sshd",
+   "run",
+   "sbx-channel run"
+  ],
+  [
+   "run",
+   "tools",
+   "bwrap per job"
+  ],
+  [
+   "tools",
+   "nft",
+   "net tools: forward chain allowlist"
+  ],
+  [
+   "nft",
+   "bbgate",
+   "page/fetch",
+   true
+  ],
+  [
+   "bridge",
+   "loom",
+   "settled turns (redacted)",
+   true
+  ],
+  [
+   "loom",
+   "ollama",
+   "embed"
+  ]
+ ]
+}
