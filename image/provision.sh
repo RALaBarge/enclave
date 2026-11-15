@@ -280,6 +280,7 @@ install -m 644 "$ROOT/console/nftables-sbx-forward.conf" /etc/systemd/system/nft
 systemctl daemon-reload
 
 install -m 755 "$HERE/sbx-push-tools.sh" /usr/local/sbin/sbx-push-tools   # full mode: send /opt/sbx/tools to the box
+install -m 755 "$HERE/sbx-bootstrap-serve.sh" /usr/local/sbin/sbx-bootstrap-serve   # one-time: give a new sandbox box the install verb
 install -m 755 "$HERE/sbx-fetch-gate.sh" /usr/local/sbin/sbx-fetch-gate   # page/fetch gate token from Bitwarden (SBX_GATE)
 install -m 755 "$HERE/sbx-reboot-and-wait.sh" /usr/local/bin/sbx-reboot-and-wait   # full-mode SBX_RESET_CMD
 bash "$HERE/setup-lite.sh"      # sbx user + forced-command key + loopback sshd + broker env + first-boot banner
