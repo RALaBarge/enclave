@@ -55,6 +55,11 @@ EOF
 systemctl daemon-reload; systemctl enable --now ollama
 for _ in $(seq 30); do curl -fs http://127.0.0.1:11434/api/version >/dev/null && break; sleep 1; done
 runuser -u ollama -- env OLLAMA_HOST=127.0.0.1:11434 ollama pull "$EMBED_MODEL"
+# A tag can move; the digest cannot. Refuse a model that is not the one pinned in manifest.env.
+got=$(curl -fs http://127.0.0.1:11434/api/tags | python3 -c 'import json,sys
+want=sys.argv[1] if ":" in sys.argv[1] else sys.argv[1] + ":latest"
+print(next((m["digest"] for m in json.load(sys.stdin)["models"] if m["name"] == want), ""))' "$EMBED_MODEL")
+[ "$got" = "$EMBED_MODEL_DIGEST" ] || { echo "ERROR: $EMBED_MODEL digest is '$got', manifest.env pins $EMBED_MODEL_DIGEST" >&2; exit 1; }
 
 # ---- Loom ----
 # Findings from reading ralabarge/loom (main tree; verify against LOOM_COMMIT once pinned):
@@ -75,7 +80,8 @@ runuser -u ollama -- env OLLAMA_HOST=127.0.0.1:11434 ollama pull "$EMBED_MODEL"
 id loom &>/dev/null || useradd --system --home /var/lib/loom --create-home --shell /usr/sbin/nologin loom
 pin_clone "$LOOM_REPO" "$LOOM_COMMIT" /opt/loom
 python3 -m venv /opt/loom/.venv
-/opt/loom/.venv/bin/pip install --no-cache-dir -r /opt/loom/requirements.txt
+# Hash-pinned, binary-only, no dependency resolution: what installs is exactly image/loom-requirements.lock.
+/opt/loom/.venv/bin/pip install --no-cache-dir --require-hashes --no-deps --only-binary=:all: -r "$HERE/loom-requirements.lock"
 cat >/etc/systemd/system/loom.service <<EOF
 [Unit]
 Description=Loom (local LLM memory)
@@ -266,7 +272,12 @@ allow-hotplug eth1
 iface eth1 inet static
     address 10.77.0.1/24
 EOF
-echo "net.ipv4.ip_forward=1" >/etc/sysctl.d/90-sbx-gateway.conf
+# Off at boot, on only once the console's table is live (nftables drop-in): a ruleset that fails to load must not leave
+# the core routing the sandbox's traffic unfiltered.
+echo "net.ipv4.ip_forward=0" >/etc/sysctl.d/90-sbx-gateway.conf
+install -d /etc/systemd/system/nftables.service.d
+install -m 644 "$ROOT/console/nftables-sbx-forward.conf" /etc/systemd/system/nftables.service.d/sbx-forward.conf
+systemctl daemon-reload
 
 install -m 755 "$HERE/sbx-push-tools.sh" /usr/local/sbin/sbx-push-tools   # full mode: send /opt/sbx/tools to the box
 install -m 755 "$HERE/sbx-fetch-gate.sh" /usr/local/sbin/sbx-fetch-gate   # page/fetch gate token from Bitwarden (SBX_GATE)

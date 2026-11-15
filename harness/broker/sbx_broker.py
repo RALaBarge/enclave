@@ -74,6 +74,12 @@ JOB_KEY_PATH = os.environ.get("SBX_JOB_KEY", "/run/sbx/job.key")
 JOB_KEY_GROUP = os.environ.get("SBX_JOB_KEY_GROUP", SOCKET_GROUP)
 TOKEN_MAX_AGE_S = int(os.environ.get("SBX_TOKEN_MAX_AGE_S", "300"))
 TOKEN_REMEMBER = 4096          # used (job, attempt) pairs kept to refuse a replay
+# Before every `net` job the broker has sbx-session-gate force the `session` firewall profile, with the lane held, so a
+# build window opened while an agent turn is running never covers that turn's network tools (the bridge's lockdown
+# runs per input, not per tool call). An unreachable or failing gate refuses the job. "" turns it off (tests, and a
+# core with no console).
+GATE_SOCKET = os.environ.get("SBX_GATE_SOCKET", "/run/sbx-gate/gate.sock")
+GATE_TIMEOUT_S = float(os.environ.get("SBX_GATE_TIMEOUT_S", "15"))
 
 TOOL_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -191,6 +197,34 @@ class SandboxNotReset(Exception):
     """The previous reset failed and this call's retry did not fix it."""
 
 
+class LockdownFailed(Exception):
+    """The session gate could not force the session profile before a net job."""
+
+
+def gate_lockdown(path=None, timeout=None):
+    """POST /lockdown to sbx-session-gate over its unix socket; raises LockdownFailed unless it answers 200."""
+    path = GATE_SOCKET if path is None else path
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(GATE_TIMEOUT_S if timeout is None else timeout)
+    try:
+        s.connect(path)
+        s.sendall(b"POST /lockdown HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+                  b"Content-Length: 2\r\n\r\n{}")
+        raw = b""
+        while len(raw) < 65536:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            raw += chunk
+    except OSError as e:
+        raise LockdownFailed(f"gate unreachable ({type(e).__name__})")
+    finally:
+        s.close()
+    status = raw.split(b"\r\n", 1)[0].split()
+    if len(status) < 2 or status[1] != b"200":
+        raise LockdownFailed("gate answered " + (status[1].decode("ascii", "replace")[:3] if len(status) > 1 else "nothing"))
+
+
 class SerialLane:
     """One job at a time, with a bounded FIFO wait queue.
 
@@ -241,7 +275,7 @@ class SerialLane:
             started = time.time()
         try:
             status = job()
-        except SandboxNotReset:
+        except (SandboxNotReset, LockdownFailed):   # nothing ran on the sandbox
             self._handoff()
             raise
         except BaseException:
@@ -363,11 +397,11 @@ def valid_envelope(raw):
         if set(doc) != {"output", "files"} or not isinstance(files, dict) or len(files) > 16:
             return False
         for name, b64 in files.items():
-            if not FILE_RE.match(name):
+            if not FILE_RE.fullmatch(name):
                 return False
             base64.b64decode(b64, validate=True)
         return True
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, RecursionError):   # RecursionError: deeply nested JSON from the sandbox
         return False
 
 
@@ -453,10 +487,10 @@ class H(BaseHTTPRequestHandler):
             if not isinstance(req, dict):
                 raise ValueError
             tool = req["tool"]
-            if not isinstance(tool, str) or not TOOL_RE.match(tool):
+            if not isinstance(tool, str) or not TOOL_RE.fullmatch(tool):
                 raise ValueError
             caller = req["caller"]
-            if not isinstance(caller, str) or not TOOL_RE.match(caller):
+            if not isinstance(caller, str) or not TOOL_RE.fullmatch(caller):
                 raise ValueError
             job_id, attempt, ts, mac = req["job_id"], req["attempt"], req["ts"], req["mac"]
             if (not isinstance(job_id, str) or not JOB_ID_RE.match(job_id)
@@ -466,9 +500,9 @@ class H(BaseHTTPRequestHandler):
             inp = req.get("input", {})
             files = req.get("files", {})
             if not isinstance(files, dict) or len(files) > 16 or not all(
-                    FILE_RE.match(k) and isinstance(v, str) for k, v in files.items()):
+                    FILE_RE.fullmatch(k) and isinstance(v, str) for k, v in files.items()):
                 raise ValueError
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, RecursionError):
             return self._err(400, "bad_request")
 
         # Every stub names the contract it runs under (the desk sets DESKBOX_TOOL
@@ -517,6 +551,8 @@ class H(BaseHTTPRequestHandler):
             job_started.append(time.time())
             if not ensure_reset():  # the previous reset failed: heal or refuse
                 raise SandboxNotReset()
+            if network and GATE_SOCKET:
+                gate_lockdown()     # raises LockdownFailed: the job never reaches the sandbox
             try:
                 out["status"], out["body"] = run_on_sbx(
                     {"tool": tool, "input": inp, "files": files, "timeout_s": timeout},
@@ -538,6 +574,9 @@ class H(BaseHTTPRequestHandler):
             log(f"SANDBOX NOT RESET tool={tool} rc={reset['rc']} at={reset['at']}")
             return self._send(503, json.dumps(
                 {"error": "sandbox_not_reset", "reset": reset}).encode())
+        except LockdownFailed as e:
+            log(f"ALERT lockdown_failed tool={tool} ({e}); net job refused")
+            return self._err(503, "lockdown_failed")
         except LaneFull as q:
             log(f"QUEUE FULL tool={tool} queued={q.queued} depth_max={q.depth_max}")
             return self._lane_busy("queue_full", q)

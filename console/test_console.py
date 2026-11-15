@@ -193,6 +193,44 @@ class Firewall(unittest.TestCase):
             self.assertIsNone(c._pending["timer"])
         self._with_fake_nft(run)
 
+    def test_lockdown_never_rolls_back_to_a_wider_table(self):
+        def run(calls):
+            wide = c.validate_policy({"sbx_ifaces": ["eth1"], "active": "build",
+                                      "profiles": {"build": {"allow": [{"host": "10.9.9.9", "port": 443}]}}})
+            c._save(c.render_ruleset(wide)[0], wide)
+            live = {"t": c.render_ruleset(wide)[0]}
+            def nft(args, stdin=None):
+                calls.append((args, stdin))
+                if args[0] == "list":
+                    return 0, live["t"]
+                if args[:1] == ["-f"]:
+                    live["t"] = stdin
+                return 0, ""
+            c._nft = nft
+            narrow = {**wide, "profiles": {"session": {"allow": [], "block": []}, "build": {"allow": [], "block": []}},
+                      "mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]}
+            c.fw_apply(narrow)                                   # pending: removes the build allow, adds a mgmt rule
+            r = c.fw_lockdown()
+            self.assertEqual((r["profile"], r.get("was")), ("session", "build"))
+            self.assertNotIn("10.9.9.9", live["t"])              # what is live is the pending change, on session
+            c._revert()                                          # the pending change times out
+            self.assertNotIn("10.9.9.9", live["t"])              # and lands on session rules, not the old build table
+            self.assertEqual(c.load_policy()["active"], "session")
+        self._with_fake_nft(run)
+
+    def test_sandbox_input_is_dropped_before_management_rules(self):
+        p = c.validate_policy({"sbx_ifaces": ["eth1"], "mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]})
+        text = c.render_ruleset(p, resolver=lambda h: ([], []))[0]
+        inp = text[text.index("chain input"):text.index("chain forward")]
+        self.assertLess(inp.index('drop comment "sandbox reaches no core service"'), inp.index("10.0.0.0/8"))
+        self.assertIn('iifname { "eth1" } drop comment', inp)
+
+    def test_a_trailing_newline_does_not_validate(self):
+        for bad in ({"sbx_ifaces": ["eth1\n"]}, {"allow": [{"host": "openrouter.ai", "port": 443, "comment": "x\n"}]}):     # (a host is stripped of whitespace before it is checked)
+            with self.subTest(bad):
+                with self.assertRaises(c.Bad):
+                    c.validate_policy(bad)
+
     def test_lockdown_needs_the_live_table(self):
         def run(calls):
             base = c.validate_policy({"sbx_ifaces": ["eth1"]})
@@ -563,11 +601,15 @@ class Http(unittest.TestCase):
             self.assertEqual(c.load_policy()["active"], "session")
             c.fw_apply({"mgmt": [{"cidr": "10.0.0.0/8", "port": 22}]})            # a confirm is pending
             self.assertTrue(c._pending["timer"])
-            code, body = self.req("POST", c.LOCKDOWN_PATH, body="{}", headers=T)  # rolls the unconfirmed change back
+            code, body = self.req("POST", c.LOCKDOWN_PATH, body="{}", headers=T)  # keeps it, on the session profile
             self.assertEqual(code, 200)
-            self.assertFalse(c._pending["timer"])
+            self.assertTrue(c._pending["timer"])                                   # still the operator's to confirm
+            self.assertEqual(c._pending["policy"]["active"], "session")
+            self.assertIsNone(c._pending["prev"])                                  # rollback lands on the saved session rules
             self.assertEqual(c.load_policy()["mgmt"], base["mgmt"])                # the unconfirmed mgmt rule never landed
             self.assertEqual(c.load_policy()["active"], "session")
+            self.assertEqual(c.fw_cancel()["restored"], "last confirmed ruleset")
+            self.assertFalse(c._pending["timer"])
         finally:
             c._nft, c.ETC = old
             if c._pending["timer"]:

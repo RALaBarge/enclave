@@ -6,7 +6,10 @@
 #   /etc/sbx/bws-token  machine-account access token (lines starting with # are comments). root:root 0600, so the account
 #                       Pi runs as can NOT read it.
 #   /etc/sbx/bws.env    BWS_PROJECT_ID=<uuid of the Bitwarden project holding the secrets>
-#   /run/sbx/secrets.env  output: KEY="value" lines, root:pibridge 0640, on tmpfs (gone at reboot or service stop)
+#   /run/pi-bridge-secrets/secrets.env  output: KEY="value" lines, root:pibridge 0640, on tmpfs (gone at reboot).
+#                       The directory is root:pibridge 0750 and belongs to no service: it used to be /run/sbx, which the
+#                       broker's account owns, so that account could have swapped the file Pi's environment is loaded from
+#                       or planted a symlink for root's chown/chmod to follow (review 2026-11-15).
 #
 # No token file (or empty): writes an empty env file and succeeds, so an offline image still boots.
 # Token present but Bitwarden unreachable or the token wrong: exits non-zero, so the service does not start without its keys.
@@ -15,10 +18,11 @@ set -euo pipefail
 umask 077
 token_file=/etc/sbx/bws-token
 env_file=/etc/sbx/bws.env
-out_dir=/run/sbx
+out_dir=/run/pi-bridge-secrets
 out=$out_dir/secrets.env
 
-install -d -m 755 "$out_dir"
+# Created, or reset to, root-owned: nobody but root can add or replace entries in it.
+install -d -m 750 -o root -g pibridge "$out_dir"
 tmp=$(mktemp "$out_dir/.secrets.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 
@@ -49,7 +53,7 @@ for it in items:
 ' > "$tmp"
 fi
 
-chown root:pibridge "$tmp"
+chown -h root:pibridge "$tmp"
 chmod 640 "$tmp"
 mv -f "$tmp" "$out"
 trap - EXIT

@@ -23,7 +23,7 @@ def load(path):
                 continue
             parts = line.split()
             name = parts[0]
-            if not TOOL_RE.match(name) or name in tools:
+            if not TOOL_RE.fullmatch(name) or name in tools:
                 raise ValueError(f"{path}:{n}: bad or duplicate entry")
             timeout, flags = None, set()
             for field in parts[1:]:

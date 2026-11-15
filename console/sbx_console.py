@@ -21,7 +21,8 @@ profile is active and can never loosen anything. The pi-bridge holds it, so an a
 Changing sandbox rules or the active profile is INSTANT: it cannot lock anyone out, because it only affects traffic
 the sandbox sends through this host. Changing management access or the sandbox interface is two-phase: it goes
 live, then reverts after REVERT_S seconds unless confirmed. Everything applied is saved to $SBXC_ETC/ruleset.nft,
-which Debian's nftables.service loads at boot. (Needs net.ipv4.ip_forward=1, set by the image.)
+which Debian's nftables.service loads at boot. (Forwarding is switched on by the image's nftables.service drop-in, only
+once that load succeeded: console/nftables-sbx-forward.conf.)
 """
 import errno
 import hashlib
@@ -104,7 +105,7 @@ def _addr(v, allow_name):
         return ipaddress.ip_network(s, strict=False), None
     except ValueError:
         pass
-    if allow_name and HOST_RE.match(s):
+    if allow_name and HOST_RE.fullmatch(s):
         return None, s
     raise Bad(f"bad host (IP, CIDR or hostname): {s!r}")
 
@@ -127,7 +128,7 @@ def _rules(items, block):
         else:
             port = _port(raw)
         c = str(r.get("comment", ""))
-        if not COMMENT_RE.match(c):
+        if not COMMENT_RE.fullmatch(c):
             raise Bad("comment: letters, digits, space and ._:/- only (max 80)")
         out.append({"host": name or str(net), "port": port, "proto": proto, "comment": c})
     if len(out) > MAX_RULES:
@@ -142,7 +143,7 @@ def validate_policy(p):
         raise Bad("policy must be an object")
     out = default_policy()
     for i in p.get("sbx_ifaces", []):
-        if not isinstance(i, str) or not IFACE_RE.match(i):
+        if not isinstance(i, str) or not IFACE_RE.fullmatch(i):
             raise Bad(f"bad interface name: {i!r}")
         out["sbx_ifaces"].append(i)
     if len(out["sbx_ifaces"]) > 4:
@@ -299,6 +300,10 @@ table inet sbxfw {{
     # --peers (off by default, see image/SETUP.md).
     iifname "tailscale0" tcp dport 9761 accept comment "tailnet peers (pi-bridge)"
     {(sb + 'icmp type echo-request accept') if ifs else '# no sandbox interface'}
+    # Nothing else from the sandbox reaches the core. Without this, a management rule (matched on source address
+    # only) would also accept a packet the sandbox sends with a spoofed source, or one from 10.77.0.2 itself when
+    # the management CIDR happens to cover it.
+    {(sb + 'limit rate 10/second log prefix "sbxfw-drop: "' + ind + sb + 'drop comment "sandbox reaches no core service"') if ifs else '# no sandbox interface'}
     {ind.join(in_rules) if in_rules else '# no management sources allowed'}
     limit rate 10/second log prefix "sbxfw-drop: " drop
   }}
@@ -478,17 +483,36 @@ def fw_check_expiry():
 def fw_lockdown():
     """Make the session profile live, and prove it. Called by the session gate before every new agent session.
 
-    A pending (unconfirmed) apply is rolled back first, exactly as if its timer had run out. Then the session profile
-    of the last confirmed policy is applied every time, not only when policy.json says build: the saved file can say
-    session while the kernel has no table (nftables failed at boot, someone flushed it). Success means the table is
-    listed back afterwards. Anything else raises, and the gate refuses the session.
+    The session profile is applied every time, not only when policy.json says build: the saved file can say session
+    while the kernel has no table (nftables failed at boot, someone flushed it). Success means the table is listed back
+    afterwards. Anything else raises, and the gate refuses the session.
+
+    A pending (unconfirmed) apply is kept, switched to its session profile, and its rollback point becomes the confirmed
+    policy's session profile. Rolling the pending change back instead (as this did until 2026-11-15) restored the table
+    from before it, which could be wider than both, and let any caller of the gate cancel the operator's change at will.
+    A pending change whose rollback already failed is retried as a rollback, as before.
 
     Lockdown never loosens: fw_apply refuses a policy whose session profile allows more than its build profile.
     """
-    if _pending["timer"] and _revert() is None:
+    with _fw_lock:
+        pend = _pending.get("policy") if _pending["timer"] and not _pending.get("failed") else None
+    if _pending["timer"] and pend is None and _revert() is None:
         raise Bad("rolling back the pending change failed; the unconfirmed rules may still be live")
-    was = load_policy()["active"]
-    fw_set_profile("session")
+    if pend is not None:
+        was = pend["active"]
+        conf = {**load_policy(), "active": "session", "active_until": 0}
+        text, _ = render_ruleset(conf)
+        rc, msg = _nft(["-c", "-f", "-"], text)
+        if rc:
+            raise Bad(f"nft rejected the confirmed session rules: {msg}")
+        with _fw_lock:
+            _save(text, conf)                       # the rollback point, and what a cancel or timeout lands on
+        fw_apply({**pend, "active": "session", "active_until": 0})
+        with _fw_lock:
+            _pending["prev"] = None                 # revert falls through to the saved (session) ruleset
+    else:
+        was = load_policy()["active"]
+        fw_set_profile("session")
     rc, live = _nft(["list", "table", "inet", "sbxfw"])
     if rc or "chain forward" not in live:
         raise Bad("session rules applied but table inet sbxfw is not live")
@@ -629,7 +653,7 @@ def _entry(ln):
         parts, enabled = m.group(1).split(), False
     else:
         parts, enabled = ln.split("#", 1)[0].split(), True
-        if not parts or not NAME_RE.match(parts[0]):
+        if not parts or not NAME_RE.fullmatch(parts[0]):
             return None
     t, flags = toollist.DEFAULT_TIMEOUT, []
     for p in parts[1:]:

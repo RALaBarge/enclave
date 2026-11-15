@@ -7,7 +7,9 @@ User=sbxbroker
 # Membership only: the broker is the one thing that may chgrp its socket to
 # sbxdesk, and the desk is the only account in that group. Everything else
 # under /etc/sbx is unchanged — the key stays 0600 sbxbroker.
-SupplementaryGroups=sbxdesk
+SupplementaryGroups=sbxdesk sbxgatecall
+# sbxgatecall: connect to /run/sbx-gate/gate.sock, so every `net` job first forces the session firewall profile
+# (SBX_GATE_SOCKET). Not sbxgate: the broker never reads the tighten-only token, the gate holds it.
 # /run/sbx holds broker.sock. 0755 on the directory is deliberate: the desk
 # has to traverse it to bind the socket into a job's sandbox, and 0660 on the
 # socket itself is what limits who may connect.

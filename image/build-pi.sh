@@ -57,9 +57,17 @@ fi
 BUNDLE="$PI_SRC/packages/coding-agent/dist/bundle/cli.js"
 STAMP="$PI_SRC/.build-stamp"
 if [ ! -f "$BUNDLE" ] || [ "$(cat "$STAMP" 2>/dev/null || true)" != "$PI_SOURCE_SHA256" ]; then
-  cd "$PI_SRC"
-  npm install --ignore-scripts
-  npm run build:offline
+  # Exactly the release's lockfile (npm ci fails without one or if package.json disagrees with it), no install
+  # scripts, and not as root: the build runs as the throwaway system account pibuild over a tree it owns only for the
+  # build. The bundle it makes is what holds the model keys at run time, so the tree goes back to root afterwards.
+  [ -f "$PI_SRC/package-lock.json" ] || { echo "ERROR: $PI_SRC has no package-lock.json; refusing an unlocked install" >&2; exit 1; }
+  id pibuild &>/dev/null || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin pibuild
+  bhome="$(mktemp -d)"; chown pibuild:pibuild "$bhome"
+  trap 'chown -R root:root "$PI_SRC"; rm -rf "$bhome"' EXIT   # a failed build still hands the tree back to root
+  chown -R pibuild:pibuild "$PI_SRC"
+  runuser -u pibuild -- env -i PATH="$PATH" HOME="$bhome" npm_config_cache="$bhome/npm" \
+    bash -c 'cd "$1" && npm ci --ignore-scripts --no-audit --no-fund && npm run build:offline' _ "$PI_SRC"
+  chown -R root:root "$PI_SRC"; rm -rf "$bhome"; trap - EXIT
   [ -f "$BUNDLE" ] || { echo "ERROR: expected bundle not produced: $BUNDLE" >&2; exit 1; }
   echo "$PI_SOURCE_SHA256" > "$STAMP"
   cd /

@@ -10,7 +10,7 @@ User=sbxgate
 # `sbxgatecall` is on the socket (0660): the bridge is a member so it can
 # connect, and this process is a member so it may chgrp the socket to it. The
 # gate is deliberately not in `pibridge`, so it cannot read
-# /run/sbx/secrets.env - the process that may force a firewall profile has no
+# /run/pi-bridge-secrets/secrets.env - the process that may force a firewall profile has no
 # business holding model keys.
 Group=sbxgate
 SupplementaryGroups=sbxgatecall

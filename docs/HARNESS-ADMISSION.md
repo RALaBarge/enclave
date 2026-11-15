@@ -14,8 +14,8 @@ and the broker's log. The service accounts sit around those things:
 
 | Account | Created by | What it can reach, from the code |
 |---|---|---|
-| `pibridge` | `image/provision.sh` (`useradd` for `pibridge`) | `127.0.0.1:9760`; its children inherit `/run/sbx/secrets.env` (`root:pibridge 0640`); is in group `sbxgatecall`, which is what lets it connect to `/run/sbx-gate/gate.sock` (`0660` group `sbxgatecall`), and is not in `sbxgate`, so it cannot read `/etc/sbxfw/tighten-token` (`0640` group `sbxgate`); writes `/var/lib/pi-bridge` |
-| `sbxgate` | `image/provision.sh` | `/run/sbx-gate/gate.sock` (it is in `sbxgatecall` to own it); the only account in `sbxgate`, so the only reader of `/etc/sbxfw/tighten-token` and may call `/api/fw/lockdown` and nothing else. Not in `pibridge`, so it cannot read `/run/sbx/secrets.env` |
+| `pibridge` | `image/provision.sh` (`useradd` for `pibridge`) | `127.0.0.1:9760`; its children inherit `/run/pi-bridge-secrets/secrets.env` (`root:pibridge 0640`); is in group `sbxgatecall`, which is what lets it connect to `/run/sbx-gate/gate.sock` (`0660` group `sbxgatecall`), and is not in `sbxgate`, so it cannot read `/etc/sbxfw/tighten-token` (`0640` group `sbxgate`); writes `/var/lib/pi-bridge` |
+| `sbxgate` | `image/provision.sh` | `/run/sbx-gate/gate.sock` (it is in `sbxgatecall` to own it); the only account in `sbxgate`, so the only reader of `/etc/sbxfw/tighten-token` and may call `/api/fw/lockdown` and nothing else. Not in `pibridge`, so it cannot read `/run/pi-bridge-secrets/secrets.env` |
 | `sbxbroker` | `image/provision.sh`, `image/setup-lite.sh` | the broker listener; `/etc/sbx/id_ed25519` (`0600`); SSH to the sandbox forced command; `RuntimeDirectory=sbx` in its unit |
 | `deskbox` | `image/provision.sh`, `harness/systemd/deskbox.service` | `127.0.0.1:8080` (`-strict`); `/opt/deskbox/tools` at `0700`; `/var/lib/deskbox`; group `sbxdesk`, which is the group on the broker socket |
 | `sbxconsole` | `image/provision.sh` | `127.0.0.1:8787`; `CAP_NET_ADMIN`; reads and writes `/etc/sbxfw` and `/etc/sbx` |
@@ -72,7 +72,7 @@ What a process in the core can reach, whatever its account:
   core may. The gate exposes `lockdown` and no verb that loosens.
 - `127.0.0.1:9741` (Loom): no authentication on any route; the loopback bind is the only access control (`image/provision.sh`,
   noting it of Loom's source, not verified against `LOOM_COMMIT`). `11434` (Ollama) has no token configured either.
-- Files: `/etc/sbx/id_ed25519` `0600 sbxbroker` (`image/setup-lite.sh`); `/run/sbx/secrets.env` `0640 root:pibridge`
+- Files: `/etc/sbx/id_ed25519` `0600 sbxbroker` (`image/setup-lite.sh`); `/run/pi-bridge-secrets/secrets.env` `0640 root:pibridge`
   (`image/sbx-fetch-secrets.sh`); `/etc/sbx/bws-token` `0600 root` (`image/provision.sh`).
 
 A harness's isolation from all of that is its Unix account and those file modes, nothing else. The session gate forces the
@@ -106,7 +106,7 @@ image hash and harness version. Run the checks as the candidate's own account on
 
 3. It runs as its own Unix account.
    Must: a system user with `nologin`, named by `User=` in its unit, not `pibridge`, `sbxbroker`, `sbxconsole`, `deskbox` or
-   `sbx`, and not in their supplementary groups (in particular not `sbxdesk`), with no read of `/run/sbx/secrets.env`,
+   `sbx`, and not in their supplementary groups (in particular not `sbxdesk`), with no read of `/run/pi-bridge-secrets/secrets.env`,
    `/etc/sbxfw/token`, `/etc/sbxfw/tighten-token`, `/etc/sbx/id_ed25519`, `/etc/sbx/bws-token`, `/var/lib/pi-bridge` or
    `/opt/deskbox/tools`.
    Settled by: `id <user>`, `systemctl show -p User,SupplementaryGroups <unit>`, and the read probe per path as the account
@@ -189,7 +189,7 @@ whether deployed tools match the repo (`sync.py` checks the repo, deployment is 
   not in `sbxdesk` cannot open the broker socket, so it needs the desk (item 2); an account added to `sbxdesk` gets every tool
   in `tools.list` with no contract, which is the access the desk exists to bound. Either way the new uid still reaches the
   desk's port, the bridge, Loom and Ollama.
-- Secrets stop being one file for one account. `/run/sbx/secrets.env` is `root:pibridge 0640`. A second account needs its own
+- Secrets stop being one file for one account. `/run/pi-bridge-secrets/secrets.env` is `root:pibridge 0640`. A second account needs its own
   root-written file (a change in `image/sbx-fetch-secrets.sh`) or membership of the group that reads all keys; the second option
   means a compromise in either harness reads the other's keys.
 - The gate is shared, so the second harness does not get its own. Both call `sbx-session-gate`; the failure mode moves to the

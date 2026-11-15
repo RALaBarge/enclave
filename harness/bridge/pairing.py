@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -183,6 +184,16 @@ def verify(store: PeerStore, nonces: NonceCache, header, method: str, path: str,
 
 
 # ---- the two halves of first contact -------------------------------------
+NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def safe_name(name, fallback: str) -> str:
+    """A peer's display name, as the other side sent it, only if it is plain: it ends up inside the model's context
+    (the from="..." of the untrusted-data envelope), so a quote or bracket in it could rewrite that envelope."""
+    name = str(name or "")
+    return name if NAME_RE.fullmatch(name) else fallback
+
+
 def accept_pair(me: dict, store: PeerStore, body: dict) -> tuple[int, dict]:
     """Server half. The caller has already decided this first contact is allowed."""
     try:
@@ -190,12 +201,16 @@ def accept_pair(me: dict, store: PeerStore, body: dict) -> tuple[int, dict]:
         if not (8 <= len(inst) <= 64) or any(c not in "0123456789abcdef" for c in inst) or inst == me["instance"]:
             raise ValueError
         cpub, cnonce = _hexn(body["pub"], 32), _hexn(body["nonce"], 16).hex()
-        name = str(body.get("name") or inst)[:64]
+        name = safe_name(body.get("name"), inst)
         spriv, spub = keypair()
         snonce = os.urandom(16).hex()
         key = derive(spriv, cpub, cnonce, snonce, inst, me["instance"])
     except (KeyError, ValueError, TypeError):
         return 400, {"error": "need {instance, name, pub(32B hex), nonce(16B hex)}"}
+    # A known instance keeps its key and name: anyone on the same login could otherwise replace both by asking. The
+    # operator forgets it here first (DELETE /pairings/<instance>), then the next send pairs again.
+    if store.key(inst):
+        return 409, {"error": "already paired with this instance; forget it on this side first"}
     store.put(inst, name, key)
     return 200, {"instance": me["instance"], "name": me["name"], "pub": spub.hex(), "nonce": snonce,
                  "confirm": confirm_tag(key, cpub, spub)}
@@ -212,5 +227,5 @@ def pair_with(me: dict, store: PeerStore, post) -> str:
     key = derive(priv, spub, nonce, r["nonce"], me["instance"], r["instance"])
     if not hmac.compare_digest(r["confirm"], confirm_tag(key, pub, spub)):
         raise RuntimeError("pairing confirmation failed (key mismatch)")
-    store.put(r["instance"], r["name"], key)
+    store.put(r["instance"], safe_name(r.get("name"), r["instance"]), key)
     return r["instance"]

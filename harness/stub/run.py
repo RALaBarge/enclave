@@ -58,7 +58,7 @@ try:
     if os.path.isdir(IN_DIR):
         for name in sorted(os.listdir(IN_DIR)):
             path = os.path.join(IN_DIR, name)
-            if NAME_RE.match(name) and stat.S_ISREG(os.lstat(path).st_mode):
+            if NAME_RE.fullmatch(name) and stat.S_ISREG(os.lstat(path).st_mode):
                 with open(path, "rb") as f:
                     files[name] = base64.b64encode(f.read()).decode()
     # The desk's token for this run (agent-desk -job-key): HMAC over caller, job,
@@ -81,7 +81,7 @@ try:
         conn.close()
     resp = json.loads(raw)
     for name, b64 in resp["files"].items():
-        if not NAME_RE.match(name):
+        if not NAME_RE.fullmatch(name):
             raise ValueError("bad name")
         with open(os.path.join(OUT_DIR, name), "wb") as f:
             f.write(base64.b64decode(b64, validate=True))

@@ -105,6 +105,10 @@ check_gateway() {
   rs=$(nft list ruleset 2>&1)
   fwd=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)
   if [ "$fwd" != 1 ]; then fail gateway "net.ipv4.ip_forward=$fwd (want 1)"; return; fi
+  if [ ! -f /etc/systemd/system/nftables.service.d/sbx-forward.conf ] || grep -qs 'ip_forward *= *1' /etc/sysctl.d/*.conf; then
+    fail gateway "forwarding is not tied to the ruleset loading (nftables drop-in missing, or a sysctl.d file turns it on at boot)"; return; fi
+  if ! nft list chain inet sbxfw input 2>/dev/null | grep -q 'sandbox reaches no core service'; then
+    fail gateway "input chain lacks the sandbox-interface drop ahead of the management rules"; return; fi
   if ! printf '%s\n' "$rs" | grep -Eq 'oifname != (\{ )?"eth1"( \})? masquerade'; then fail gateway "no masquerade rule for the sandbox link (eth1)"; return; fi
   # Forwarding must be allowlist-only: every accept in the forward chain is tied to the sandbox interface or to established flows.
   local loose chain

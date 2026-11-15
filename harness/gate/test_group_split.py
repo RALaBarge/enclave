@@ -34,6 +34,7 @@ class GroupSplit(unittest.TestCase):
     def setUp(self):
         self.bridge = unit_groups(read("harness", "systemd", "pi-bridge.service"))
         self.gate = unit_groups(read("harness", "systemd", "sbx-session-gate.service"))
+        self.broker = unit_groups(read("harness", "systemd", "sbx-broker.service"))
         self.gate_py = read("harness", "gate", "session_gate.py")
         self.provision = read("image", "provision.sh")
 
@@ -66,6 +67,17 @@ class GroupSplit(unittest.TestCase):
     def test_provision_creates_the_socket_group(self):
         self.assertIn("groupadd -r " + self.socket_group(), self.provision)
 
+
+
+class BrokerGroups(GroupSplit):
+    """The broker calls the gate before every net job: it may connect, never read the token."""
+
+    def test_the_broker_is_in_the_socket_group(self):
+        self.assertIn(self.socket_group(), self.broker["SupplementaryGroups"])
+
+    def test_the_broker_is_not_in_the_token_group(self):
+        m = re.search(r"chgrp (\S+) /etc/sbxfw/tighten-token", self.provision)
+        self.assertNotIn(m.group(1), self.broker["SupplementaryGroups"] + self.broker["Group"])
 
 if __name__ == "__main__":
     unittest.main()

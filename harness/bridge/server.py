@@ -105,7 +105,7 @@ class TooLarge(Exception):
 # Paths a session may not use as its cwd or reach through the file endpoints. The listener is loopback-only
 # and unauthenticated, so any local process may create a session; the file
 # endpoints serve whatever the session's cwd contains, as the bridge's own
-# account. Without this, `{"cwd": "/run/sbx"}` plus
+# account. Without this, `{"cwd": "/run/pi-bridge-secrets"}` plus
 # `/sessions/<id>/files?path=secrets.env` reads the model keys, and
 # `/etc/sbxfw` reads the console tokens - a confused-deputy read of exactly
 # the files docs/HARNESS-ADMISSION.md says the account boundary protects.
@@ -118,7 +118,7 @@ class TooLarge(Exception):
 # subdirectory; the shipped unit's session root is the sibling
 # /var/lib/pi-bridge-work instead.
 PROTECTED_ROOTS = (
-    "/run/sbx", "/run/sbx-gate", "/etc/sbxfw", "/etc/sbx", "/etc/ssh",
+    "/run/sbx", "/run/pi-bridge-secrets", "/run/sbx-gate", "/etc/sbxfw", "/etc/sbx", "/etc/ssh",
     "/etc/shadow", "/etc/sudoers", "/root", "/var/lib/pi-bridge",
     "/var/lib/deskbox", "/var/lib/loom", "/opt/sbx", "/proc", "/sys", "/dev", "/boot",
 )
@@ -184,7 +184,7 @@ def session_path(cwd: str, rel: str) -> tuple[str, str]:
     root = os.path.realpath(cwd)
     target = os.path.realpath(os.path.join(root, *parts))
     # Both ends: a refused cwd is not enough, because a cwd one level above a
-    # secret directory (`/run` with `sbx/secrets.env`, `/` with
+    # secret directory (`/run` with `pi-bridge-secrets/secrets.env`, `/` with
     # `etc/sbxfw/token`) resolves inside it. The target is what gets opened.
     if protected_root(root) or protected_root(target):
         raise Forbidden("that directory holds the core's secrets and cannot host a session")

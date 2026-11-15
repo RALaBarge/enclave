@@ -317,7 +317,7 @@ def as_openapi_functions(tools: list[dict]) -> list[dict]:
     functions = []
     for tool in tools:
         name = tool["name"]
-        if not FUNCTION_NAME_RE.match(name):
+        if not FUNCTION_NAME_RE.fullmatch(name):
             raise DeskDataError(
                 f"tool name {name!r} cannot be an OpenAI-compatible function name "
                 "(letters, digits, '_' and '-', at most 64 characters); rename the tool on the desk",

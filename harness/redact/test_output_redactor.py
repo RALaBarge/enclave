@@ -40,6 +40,14 @@ class Redact(unittest.TestCase):
         out = self.r.redact(f"BWS_ACCESS_TOKEN={BWS}")
         self.assertNotIn("Qm4ZcVb8NxLk2WpT7yRs9A", out.text)
 
+    def test_hex_and_single_case_secrets_next_to_a_credential_name(self):
+        hexkey, b32 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        self.gone(hexkey, f"job.key = {hexkey}")
+        self.gone(hexkey, f'"api_key": "{hexkey}"')
+        self.gone(b32, f"TOTP_SECRET={b32}")
+        sha = "c4f25f5e3a9d4c1b8e7f6a5d4c3b2a1908f7e6d5"
+        self.assertIn(sha, self.r.redact(f"merged commit {sha} into main").text)   # a bare SHA is still not a secret
+
     def test_plain_text_is_untouched(self):
         s = "the firewall console applies a profile and the bridge starts a session"
         out = self.r.redact(s)

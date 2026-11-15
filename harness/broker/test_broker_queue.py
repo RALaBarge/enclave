@@ -23,6 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ["SBX_HOST"] = "192.0.2.10"
 os.environ["SBX_KEY"] = os.path.join(HERE, "test-key")
 os.environ["SBX_RESET_CMD"] = ""
+os.environ["SBX_GATE_SOCKET"] = ""   # per-test: the gate tests below point it at a fake
 sys.path.insert(0, HERE)
 import sbx_broker  # noqa: E402
 
@@ -147,6 +148,55 @@ class BrokerTest(unittest.TestCase):
                 self.assertEqual(code, want, body)
                 self.assertEqual(len(ran) - before, 1 if want == 200 else 0)
         self.assertEqual(ran, ["greet"])
+
+    # -- a net job first has the gate force the session profile -------------
+
+    def _fake_gate(self, status_line):
+        import socket as _s
+        path = os.path.join(tempfile.mkdtemp(), "gate.sock")
+        srv = _s.socket(_s.AF_UNIX, _s.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(4)
+        hits = []
+        def serve():
+            while True:
+                try:
+                    c, _ = srv.accept()
+                except OSError:
+                    return
+                hits.append(c.recv(4096))
+                c.sendall(status_line + b"\r\nContent-Length: 2\r\n\r\n{}")
+                c.close()
+        threading.Thread(target=serve, daemon=True).start()
+        self.addCleanup(srv.close)
+        return path, hits
+
+    def test_a_net_job_waits_for_the_lockdown(self):
+        self.use_lane(1, 5)
+        ran = []
+        sbx_broker.run_on_sbx = lambda request, wall_timeout: (ran.append(request["tool"]), ("ok", OK_ENVELOPE))[1]
+        with open(self.tool_list, "w", encoding="utf-8") as f:
+            f.write("greet 5\nfetch 5 net\n")
+        net = {"tool": "fetch", "caller": "fetch-sbx", "input": {}}
+        saved = sbx_broker.GATE_SOCKET
+        self.addCleanup(setattr, sbx_broker, "GATE_SOCKET", saved)
+
+        sbx_broker.GATE_SOCKET = os.path.join(tempfile.mkdtemp(), "missing.sock")   # gate down: refused, nothing ran
+        code, body = self.post_body(signed(net))
+        self.assertEqual((code, body.get("error")), (503, "lockdown_failed"))
+        sbx_broker.GATE_SOCKET, hits = self._fake_gate(b"HTTP/1.0 400 Bad Request")    # gate refuses: same
+        code, body = self.post_body(signed(net))
+        self.assertEqual((code, body.get("error")), (503, "lockdown_failed"))
+        self.assertEqual(ran, [])
+
+        sbx_broker.GATE_SOCKET, hits = self._fake_gate(b"HTTP/1.0 200 OK")
+        self.assertEqual(self.post_body(signed(net))[0], 200)
+        self.assertEqual(len(hits), 1)
+        self.assertTrue(hits[0].startswith(b"POST /lockdown "))
+        self.assertEqual(self.post_body(signed({"tool": "greet", "caller": "greet-sbx", "input": {}}))[0], 200)
+        self.assertEqual(len(hits), 1)                                   # a non-net job does not call the gate
+        self.assertEqual(ran, ["fetch", "greet"])
+        self.assertEqual(self.get_status()[1].get("busy"), False)        # the lane was handed back each time
 
     def test_a_caller_mismatch_is_logged_as_an_alert(self):
         self.use_lane(1, 5)

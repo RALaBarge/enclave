@@ -77,6 +77,12 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     )),
     # Generic Authorization: Bearer …
     ("bearer_authorization", re.compile(r"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9_\-\.=]{20,}")),
+    # A value assigned to something named like a credential. The entropy sweep below skips mostly-hex and single-case
+    # strings (git SHAs, UUIDs), which also skips hex keys (the broker's 64-hex job key, hex API tokens) and base32
+    # tokens; next to a name like key/token/secret they are taken as secrets whatever their alphabet (review 2026-11-15).
+    ("named_secret", re.compile(
+        r"(?i)\b[\w.-]*(?:api[_.-]?key|access[_.-]?key|private[_.-]?key|job[_.-]?key|secret|token|passw(?:or)?d|passphrase"
+        r"|credential|auth)[\w.-]*[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9+/_=.\-]{16,}")),
 ]
 
 
