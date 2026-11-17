@@ -65,5 +65,7 @@ page = ("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n
         + libs + "<script>\n" + eng + "\n</script>\n</body>\n</html>\n")
 out = os.path.join(HERE, "..", "docs", "atlas", "index.html")
 os.makedirs(os.path.dirname(out), exist_ok=True)
+from treeview import add_tree
+page = add_tree(page)
 open(out, "w").write(page)
 print("wrote", os.path.relpath(out), len(page) // 1024, "KiB")
