@@ -20,6 +20,7 @@ import json
 import os
 import random
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -37,7 +38,8 @@ DEFAULT_STUBS = [
     {"name": "glm-flash-latest", "model": "~z-ai/glm-flash-latest"},
     {"name": "hy4-flash", "model": "tencent/hy4-flash"},
 ]
-DEFAULT_JUDGE_MODEL = "anthropic/claude-fable-5.2"
+DEFAULT_JUDGE_MODEL = "anthropic/claude-fable-5.2"   # OpenRouter slug, for backend "api"
+DEFAULT_CLI_MODEL = "claude-fable-5-2"               # Anthropic model id, for backend "cli"
 DEFAULT_KEY = "openrouter"
 MAX_STUBS = 16
 MAX_ANSWER_CHARS = 6000
@@ -98,6 +100,28 @@ def chat(entry, model, messages, params, timeout):
     return (content, None) if content else (None, "empty answer")
 
 
+def cli_chat(keys, model, system, user, timeout):
+    """The judge through Claude Code's headless mode, so it bills to the logged-in Claude Code account, not an API key.
+    keys.json may carry {"claude_cli": {"path": "/usr/bin/claude", "env": {"HOME": "..."}}}: where the binary is and
+    which home holds its login. Returns (text, error); never raises."""
+    conf = keys.get("claude_cli") or {}
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/tmp")}
+    env.update(conf.get("env") or {})
+    cmd = [conf.get("path") or "claude", "-p", "--model", model, "--system-prompt", system, "--tools", "",
+           "--no-session-persistence", "--disable-slash-commands", "--setting-sources", "",
+           "--strict-mcp-config", "--output-format", "text"]
+    try:
+        r = subprocess.run(cmd, input=user, capture_output=True, text=True, timeout=timeout, env=env)
+    except FileNotFoundError:
+        return None, "claude CLI not found; install it on the core or set claude_cli.path in keys.json"
+    except subprocess.TimeoutExpired:
+        return None, f"claude CLI timed out after {timeout}s"
+    if r.returncode != 0:
+        return None, ("claude CLI exit %d: %s" % (r.returncode, (r.stderr or r.stdout).strip()))[:300]
+    text = r.stdout.strip()
+    return (text, None) if text else (None, "empty answer")
+
+
 def ask_stub(stub, keys, messages, params, timeout):
     t0 = time.time()
     entry = keys.get(stub.get("key") or DEFAULT_KEY)
@@ -127,13 +151,17 @@ def judge(question, good, keys, spec, params, timeout):
     listing = "\n\n".join(f"--- Answer {i + 1} ---\n{a['text']}" for i, a in enumerate(order))
     messages = [{"role": "system", "content": JUDGE_SYSTEM},
                 {"role": "user", "content": f"Question:\n{question}\n\n{listing}"}]
-    entry = keys.get(spec.get("key") or DEFAULT_KEY)
-    model = spec.get("model") or DEFAULT_JUDGE_MODEL
+    cli = spec.get("backend") == "cli"
+    model = spec.get("model") or (DEFAULT_CLI_MODEL if cli else DEFAULT_JUDGE_MODEL)
     out = {"model": model, "winner": "", "scores": [], "rationale": "", "synthesis": "", "error": ""}
-    if not entry:
-        out["error"] = f"no keys.json entry named {spec.get('key') or DEFAULT_KEY!r}"
-        return out
-    text, err = chat(entry, model, messages, dict(params, temperature=0), timeout)
+    if cli:
+        text, err = cli_chat(keys, model, JUDGE_SYSTEM, messages[-1]["content"], timeout)
+    else:
+        entry = keys.get(spec.get("key") or DEFAULT_KEY)
+        if not entry:
+            out["error"] = f"no keys.json entry named {spec.get('key') or DEFAULT_KEY!r}"
+            return out
+        text, err = chat(entry, model, messages, dict(params, temperature=0), timeout)
     if err:
         out["error"] = err
         return out
@@ -191,7 +219,11 @@ def main():
     good = [a for a in answers if a["ok"]]
 
     spec = req.get("judge") or {}
-    if good:
+    if spec.get("backend", "api") not in ("api", "cli", "none"):
+        die("judge.backend must be api, cli or none")
+    if spec.get("backend") == "none":     # answers only: the caller (e.g. a Claude Code session) judges
+        verdict = {"model": "", "winner": "", "scores": [], "rationale": "", "synthesis": "", "error": ""}
+    elif good:
         verdict = judge(prompt, good, keys, spec, {"max_tokens": 4000}, timeout)
     else:
         verdict = {"model": spec.get("model") or DEFAULT_JUDGE_MODEL, "winner": "", "scores": [],

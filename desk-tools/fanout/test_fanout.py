@@ -55,11 +55,24 @@ class FanoutTest(unittest.TestCase):
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.tmp = tempfile.TemporaryDirectory()
         cls.keys = os.path.join(cls.tmp.name, "keys.json")
+        # A stand-in for `claude -p`: records its argv, reads the prompt on stdin, answers with the judge JSON.
+        cls.argv_log = os.path.join(cls.tmp.name, "claude-argv.json")
+        cls.fake_claude = os.path.join(cls.tmp.name, "claude")
+        with open(cls.fake_claude, "w") as fh:
+            fh.write("#!%s\nimport json, sys\n"
+                     "json.dump(sys.argv[1:], open(%r, 'w'))\n"
+                     "user = sys.stdin.read()\n"
+                     "parts = user.split('--- Answer ')[1:]\n"
+                     "good = next((int(p.split(' ')[0]) for p in parts if 'GOOD' in p), 1)\n"
+                     "print(json.dumps({'winner': good, 'scores': {str(good): 9}, 'rationale': 'cli', 'synthesis': 'from cli'}))\n"
+                     % (sys.executable, cls.argv_log))
+        os.chmod(cls.fake_claude, 0o755)
         with open(cls.keys, "w") as fh:
             json.dump({"openrouter": {"base_url": f"http://127.0.0.1:{cls.srv.server_port}/v1",
                                       "headers": {"Authorization": "Bearer SECRET-1"}},
                        "other": {"base_url": f"http://127.0.0.1:{cls.srv.server_port}/v1",
-                                 "headers": {"x-api-key": "SECRET-2"}}}, fh)
+                                 "headers": {"x-api-key": "SECRET-2"}},
+                       "claude_cli": {"path": cls.fake_claude}}, fh)
 
     @classmethod
     def tearDownClass(cls):
@@ -102,6 +115,41 @@ class FanoutTest(unittest.TestCase):
         self.assertEqual(by_model["m/a"][1].get("authorization"), "Bearer SECRET-1")
         self.assertEqual(by_model["m/b"][1].get("x-api-key"), "SECRET-2")
         self.assertIsNone(by_model["m/b"][1].get("authorization"))
+
+    def test_cli_judge_runs_claude_headless_and_never_calls_the_api_for_judging(self):
+        out = self.ok({"prompt": "q", "stubs": [{"name": "a", "model": "m/a"}, {"name": "g", "model": "m/good"}],
+                       "judge": {"backend": "cli"}})
+        self.assertEqual(out["judge"]["winner"], "g")
+        self.assertEqual(out["judge"]["synthesis"], "from cli")
+        self.assertEqual(out["judge"]["model"], "claude-fable-5-2")
+        self.assertFalse(any("Answer 1" in json.dumps(b) for p, h, b in Fake.seen), "judge prompt went to the API")
+        with open(self.argv_log) as fh:
+            argv = json.load(fh)
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-fable-5-2")
+        self.assertEqual(argv[argv.index("--tools") + 1], "")           # the judge gets no tools
+        self.assertIn("-p", argv)
+        self.assertNotIn("--bare", argv)                                  # --bare would skip the Claude Code login
+
+    def test_cli_judge_missing_binary_is_an_error_not_a_crash(self):
+        keys = os.path.join(self.tmp.name, "keys-nocli.json")
+        with open(keys, "w") as fh:
+            json.dump({"openrouter": {"base_url": f"http://127.0.0.1:{self.srv.server_port}/v1", "headers": {}},
+                       "claude_cli": {"path": os.path.join(self.tmp.name, "nope")}}, fh)
+        p = self.run_tool({"prompt": "q", "stubs": [{"name": "a", "model": "m/a"}], "judge": {"backend": "cli"}}, keys=keys)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        out = json.loads(p.stdout)
+        self.assertIn("claude CLI not found", out["judge"]["error"])
+        self.assertEqual(out["ok_count"], 1)
+
+    def test_judge_none_returns_answers_only(self):
+        out = self.ok({"prompt": "q", "stubs": [{"name": "a", "model": "m/a"}], "judge": {"backend": "none"}})
+        self.assertEqual(out["ok_count"], 1)
+        self.assertEqual(out["judge"]["winner"], "")
+        self.assertEqual(out["judge"]["error"], "")
+        self.assertEqual(len(Fake.seen), 1)       # only the one stub was called
+
+    def test_unknown_backend_exits_nonzero(self):
+        self.assertNotEqual(self.run_tool({"prompt": "q", "judge": {"backend": "magic"}}).returncode, 0)
 
     def test_judge_sees_no_names_or_models(self):
         self.ok({"prompt": "q", "stubs": [{"name": "SECRETNAME", "model": "m/good"}, {"name": "b", "model": "m/b"}], "judge": {"model": "judge/x"}})

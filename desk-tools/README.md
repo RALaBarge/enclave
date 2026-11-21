@@ -27,6 +27,17 @@ Write it on the core as the desk account, mode 0600, not from git:
  "other":      {"base_url": "https://example.com/v1",        "headers": {"x-api-key": "<key>"}}}
 ```
 
+### The judge: `judge.backend`
+
+- `api` (default): an OpenAI-compatible endpoint from `keys.json`, model `anthropic/claude-fable-5.2` on OpenRouter.
+- `cli`: runs Claude Code headless (`claude -p --model claude-fable-5-2 --tools ""`), so the judging bills to the Claude
+  Code login on the core, not an API key. Set it up once on the core as the desk account: install Claude Code, run
+  `claude` and log in, and make the binary and its home reachable in the job (the desk binds only `/usr`, `/bin`, `/lib`,
+  so install it under `/usr`, or add a `sandbox.bind` for it and the home directory). If it lives elsewhere, add
+  `"claude_cli": {"path": "/opt/claude/bin/claude", "env": {"HOME": "/opt/claude/home"}}` to `keys.json`. A missing or
+  logged-out CLI is reported in `judge.error`; the answers still come back. Not checked against the desk's bwrap job.
+- `none`: no judge, just the answers, for a caller (such as a Claude Code session) that judges them itself.
+
 A stub's `key` names an entry (default `openrouter`). Any OpenAI-compatible `/chat/completions` endpoint works.
 The job has `network: true`, so the core's firewall decides which hosts it reaches.
 

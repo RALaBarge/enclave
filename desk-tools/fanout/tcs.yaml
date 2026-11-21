@@ -38,8 +38,11 @@ input:
       type: object
       additionalProperties: false
       properties:
-        model: { type: string, minLength: 1, maxLength: 200 }
-        key:   { type: string, minLength: 1, maxLength: 64 }
+        # api (default): an OpenAI-compatible endpoint named by `key`. cli: Claude Code's `claude -p` on the core, billed to
+        # its login. none: no judge, return the answers only.
+        backend: { type: string, enum: [api, cli, none] }
+        model:   { type: string, minLength: 1, maxLength: 200 }
+        key:     { type: string, minLength: 1, maxLength: 64 }
 
 output:
   schema:
