@@ -30,6 +30,13 @@ class Fake(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"error":"boom"}')
             return
+        if model == "m/reasoning":      # spent the whole budget thinking: no content, finish_reason length
+            out = json.dumps({"choices": [{"message": {"content": "", "reasoning": "hmm"}, "finish_reason": "length"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
         if model == "judge/x":
             # The judge sees Answer 1..n shuffled; pick whichever one contains "GOOD".
             user = body["messages"][-1]["content"]
@@ -176,6 +183,12 @@ class FanoutTest(unittest.TestCase):
         self.assertFalse(dead["ok"])
         self.assertIn("500", dead["error"])
         self.assertEqual(out["judge"]["winner"], "g")
+
+    def test_a_reasoning_model_out_of_tokens_says_so(self):
+        out = self.ok({"prompt": "q", "stubs": [{"name": "r", "model": "m/reasoning"}, {"name": "g", "model": "m/good"}], "judge": {"backend": "none"}})
+        r = next(a for a in out["answers"] if a["name"] == "r")
+        self.assertFalse(r["ok"])
+        self.assertIn("raise max_tokens", r["error"])
 
     def test_all_models_failing_skips_the_judge(self):
         out = self.ok({"prompt": "q", "stubs": [{"name": "dead", "model": "bad/500"}]})

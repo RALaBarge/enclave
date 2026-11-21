@@ -97,7 +97,12 @@ def chat(entry, model, messages, params, timeout):
     if isinstance(content, list):  # content parts
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
     content = (content or "").strip()
-    return (content, None) if content else (None, "empty answer")
+    if content:
+        return content, None
+    # Reasoning models can spend the whole token budget thinking and never write an answer.
+    if doc["choices"][0].get("finish_reason") == "length":
+        return None, "no answer: hit max_tokens before finishing (a reasoning model? raise max_tokens)"
+    return None, "empty answer"
 
 
 def cli_chat(keys, model, system, user, timeout):
@@ -113,7 +118,8 @@ def cli_chat(keys, model, system, user, timeout):
            "--no-session-persistence", "--disable-slash-commands", "--setting-sources", "",
            "--strict-mcp-config", "--output-format", "text"]
     try:
-        r = subprocess.run(cmd, input=user, capture_output=True, text=True, timeout=timeout, env=env)
+        r = subprocess.run(cmd, input=user, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout, env=env)
     except FileNotFoundError:
         return None, "claude CLI not found; install it on the core or set claude_cli.path in keys.json"
     except subprocess.TimeoutExpired:
