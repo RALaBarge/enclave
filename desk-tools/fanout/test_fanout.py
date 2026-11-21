@@ -31,6 +31,11 @@ class Fake(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"error":"boom"}')
             return
+        if model == "m/mandatory" and body.get("reasoning") == {"enabled": False}:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b'{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled.","code":400}}')
+            return
         if model == "m/long":
             out = json.dumps({"choices": [{"message": {"content": "x" * 20000}, "finish_reason": "stop"}]}).encode()
             self.send_response(200)
@@ -137,6 +142,14 @@ class FanoutTest(unittest.TestCase):
         self.assertTrue(all(b["reasoning"] == {"enabled": False} for p, h, b in Fake.seen))
         self.ok({"prompt": "q", "thinking": True, "stubs": [{"name": "a", "model": "m/a"}], "synthesizer": {"backend": "none"}})
         self.assertNotIn("reasoning", Fake.seen[0][2])
+
+    def test_a_model_with_mandatory_reasoning_is_retried_at_minimal_effort(self):
+        out = self.ok({"prompt": "q", "stubs": [{"name": "m", "model": "m/mandatory"}, {"name": "a", "model": "m/a"}], "synthesizer": {"backend": "none"}})
+        self.assertTrue(all(a["ok"] for a in out["answers"]))
+        mine = [b for p, h, b in Fake.seen if b["model"] == "m/mandatory"]
+        self.assertEqual([b["reasoning"] for b in mine], [{"enabled": False}, {"effort": "minimal"}])
+        other = [b for p, h, b in Fake.seen if b["model"] == "m/a"]
+        self.assertEqual([b["reasoning"] for b in other], [{"enabled": False}])      # nobody else is touched
 
     def test_an_answer_over_the_cap_is_cut_at_the_cap(self):
         out = self.ok({"prompt": "q", "stubs": [{"name": "a", "model": "m/long"}], "synthesizer": {"backend": "none"}})

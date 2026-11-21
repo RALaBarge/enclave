@@ -11,7 +11,8 @@ Use this for a tool that needs a secret the sandbox must never hold.
 JSON in, JSON out: ask N models the same question in parallel, then one model (the synthesizer, `anthropic/claude-fable-5.2`)
 reads all the answers by name and returns one combined answer, what the models agree on, where they differ and who it thinks
 is right, and its own two cents. It does not rank or score. `answers` always carries every model's full reply, in the order
-asked, so you can compare them yourself. Reasoning is switched off for every model unless the input sets `thinking` to true,
+asked, so you can compare them yourself. Reasoning is switched off for every model unless the input sets `thinking` to true (a model that refuses to be switched off is
+retried at `effort: minimal`),
 and each model is told the 16,000-character answer cap (longer replies are cut there). With no `stubs` it asks the default
 eight OpenRouter models listed in `run.py`.
 

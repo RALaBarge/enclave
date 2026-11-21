@@ -2,8 +2,8 @@ name: fanout
 summary: |
   Ask several models the same question in parallel, then have one model
   (claude-fable-5.2 by default) synthesize them. Every model gets the same
-  request body; only `model` differs, and reasoning is off unless `thinking`
-  is true. With no `stubs` it uses the default spread of eight OpenRouter
+  request body; only `model` differs, and reasoning is switched off unless
+  `thinking` is true (a model that insists on reasoning is retried at `minimal`). With no `stubs` it uses the default spread of eight OpenRouter
   models. `answers` always holds every model's full reply (up to 16000
   characters, a limit the models are told) so they can be compared directly.
   The synthesizer sees them by name and returns one combined answer, where
@@ -23,7 +23,7 @@ input:
     prompt:      { type: string, minLength: 1, maxLength: 20000 }
     system:      { type: string, maxLength: 4000 }
     max_tokens:  { type: integer, minimum: 1, maximum: 32000 }
-    thinking:    { type: boolean }   # default false: reasoning is switched off for every model
+    thinking:    { type: boolean }   # default false: reasoning is switched off (`minimal` for models that cannot be fully off)
     temperature: { type: number, minimum: 0, maximum: 2 }
     timeout_s:   { type: integer, minimum: 5, maximum: 90 }
     stubs:

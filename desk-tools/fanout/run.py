@@ -41,6 +41,8 @@ DEFAULT_STUBS = [
 DEFAULT_SYNTH_MODEL = "anthropic/claude-fable-5.2"   # OpenRouter slug, for backend "api"
 DEFAULT_CLI_MODEL = "claude-fable-5-2"               # Anthropic model id, for backend "cli"
 DEFAULT_KEY = "openrouter"
+REASONING_OFF = {"enabled": False}
+REASONING_FLOOR = {"effort": "minimal"}   # for models that refuse REASONING_OFF
 MAX_STUBS = 16
 MAX_NOTE_CHARS = 4000
 MAX_ANSWER_CHARS = 16000     # an answer longer than this is cut; the models are told (see cap_note)
@@ -145,6 +147,8 @@ def ask_stub(stub, keys, messages, params, timeout):
         text, err = None, f"no keys.json entry named {stub.get('key') or DEFAULT_KEY!r}"
     else:
         text, err = chat(entry, stub["model"], messages, params, timeout)
+        if err and "Reasoning is mandatory" in err and params.get("reasoning") == REASONING_OFF:
+            text, err = chat(entry, stub["model"], messages, dict(params, reasoning=REASONING_FLOOR), timeout)
     return {"name": stub["name"], "model": stub["model"], "ok": text is not None,
             "text": (text or "")[:MAX_ANSWER_CHARS], "error": err or "", "ms": int((time.time() - t0) * 1000)}
 
@@ -213,8 +217,9 @@ def main():
     params = {}
     if not req.get("thinking"):
         # OpenRouter's unified switch. Reasoning models otherwise spend the token budget thinking and can return nothing.
-        # It is part of the shared body, so every stub gets it; models without reasoning ignore it.
-        params["reasoning"] = {"enabled": False}
+        # Models without reasoning ignore it. A model whose reasoning is mandatory answers HTTP 400; ask_stub retries that
+        # one model with the lowest effort it accepts (see REASONING_FLOOR).
+        params["reasoning"] = REASONING_OFF
     if req.get("max_tokens"):
         params["max_tokens"] = int(req["max_tokens"])
     if req.get("temperature") is not None:
