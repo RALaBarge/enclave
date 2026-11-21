@@ -9,7 +9,7 @@ Use this for a tool that needs a secret the sandbox must never hold.
 ## fanout
 
 JSON in, JSON out: ask N models the same question in parallel, then one judge (`anthropic/claude-fable-5.2`) picks the best
-answer, scores each, and writes a synthesis. The judge sees the answers shuffled and anonymous. With no `stubs` it asks the
+answer, scores each, and writes a synthesis. Reasoning is switched off for every model unless the input sets `thinking` to true, and each model is told the 16,000-character answer cap. The judge sees the answers shuffled and anonymous. With no `stubs` it asks the
 default eight OpenRouter models listed in `run.py`.
 
 ```json

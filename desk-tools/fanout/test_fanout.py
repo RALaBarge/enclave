@@ -30,6 +30,13 @@ class Fake(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"error":"boom"}')
             return
+        if model == "m/long":
+            out = json.dumps({"choices": [{"message": {"content": "x" * 20000}, "finish_reason": "stop"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
         if model == "m/reasoning":      # spent the whole budget thinking: no content, finish_reason length
             out = json.dumps({"choices": [{"message": {"content": "", "reasoning": "hmm"}, "finish_reason": "length"}]}).encode()
             self.send_response(200)
@@ -115,8 +122,25 @@ class FanoutTest(unittest.TestCase):
         self.assertEqual(len(bodies), 2)
         strip = lambda b: {k: v for k, v in b.items() if k != "model"}
         self.assertEqual(strip(bodies[0][1]), strip(bodies[1][1]))
-        self.assertEqual(bodies[0][1]["messages"][0], {"role": "system", "content": "be brief"})
+        sys_msg = bodies[0][1]["messages"][0]
+        self.assertEqual(sys_msg["role"], "system")
+        self.assertTrue(sys_msg["content"].startswith("be brief\n\n"))   # the caller's system prompt comes first
         self.assertEqual(bodies[0][1]["max_tokens"], 50)
+
+    def test_models_are_told_the_length_cap(self):
+        self.ok({"prompt": "q", "stubs": [{"name": "a", "model": "m/a"}], "judge": {"backend": "none"}})
+        content = Fake.seen[0][2]["messages"][0]["content"]       # no caller system prompt: the note stands alone
+        self.assertIn("cut off after 16000 characters", content)
+
+    def test_thinking_is_off_by_default_and_on_when_asked(self):
+        self.ok({"prompt": "q", "stubs": [{"name": "a", "model": "m/a"}, {"name": "b", "model": "m/b"}], "judge": {"backend": "none"}})
+        self.assertTrue(all(b["reasoning"] == {"enabled": False} for p, h, b in Fake.seen))
+        self.ok({"prompt": "q", "thinking": True, "stubs": [{"name": "a", "model": "m/a"}], "judge": {"backend": "none"}})
+        self.assertNotIn("reasoning", Fake.seen[0][2])
+
+    def test_an_answer_over_the_cap_is_cut_at_the_cap(self):
+        out = self.ok({"prompt": "q", "stubs": [{"name": "a", "model": "m/long"}], "judge": {"backend": "none"}})
+        self.assertEqual(len(out["answers"][0]["text"]), 16000)
 
     def test_only_headers_differ_per_key_and_path_is_chat_completions(self):
         self.ok({"prompt": "q", "stubs": [{"name": "a", "model": "m/a"}, {"name": "b", "model": "m/b", "key": "other"}], "judge": {"model": "judge/x"}})

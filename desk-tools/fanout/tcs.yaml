@@ -20,6 +20,7 @@ input:
     prompt:      { type: string, minLength: 1, maxLength: 20000 }
     system:      { type: string, maxLength: 4000 }
     max_tokens:  { type: integer, minimum: 1, maximum: 32000 }
+    thinking:    { type: boolean }   # default false: reasoning is switched off for every model
     temperature: { type: number, minimum: 0, maximum: 2 }
     timeout_s:   { type: integer, minimum: 5, maximum: 90 }
     stubs:
@@ -59,7 +60,7 @@ output:
           model:     { type: string, maxLength: 200 }
           winner:    { type: string, maxLength: 64 }
           rationale: { type: string, maxLength: 2000 }
-          synthesis: { type: string, maxLength: 6000 }
+          synthesis: { type: string, maxLength: 16000 }
           error:     { type: string, maxLength: 300 }
           scores:
             type: array
@@ -82,7 +83,7 @@ output:
             name:  { type: string, maxLength: 64 }
             model: { type: string, maxLength: 200 }
             ok:    { type: boolean }
-            text:  { type: string, maxLength: 6000 }
+            text:  { type: string, maxLength: 16000 }
             error: { type: string, maxLength: 300 }
             ms:    { type: integer }
 

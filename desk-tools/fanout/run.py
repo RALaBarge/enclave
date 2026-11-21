@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fanout: ask N models the same question, then have one judge field the answers.
 
-stdin  {"prompt": "...", "system"?, "stubs"?: [{"name", "model", "key"?}], "judge"?: {"model"?, "key"?},
+stdin  {"prompt": "...", "system"?, "thinking"?: bool, "stubs"?: [{"name", "model", "key"?}], "judge"?: {"model"?, "key"?},
         "max_tokens"?, "temperature"?, "timeout_s"?}
 stdout {"judge": {...}, "answers": [...], "ok_count": n}
 
@@ -42,7 +42,7 @@ DEFAULT_JUDGE_MODEL = "anthropic/claude-fable-5.2"   # OpenRouter slug, for back
 DEFAULT_CLI_MODEL = "claude-fable-5-2"               # Anthropic model id, for backend "cli"
 DEFAULT_KEY = "openrouter"
 MAX_STUBS = 16
-MAX_ANSWER_CHARS = 6000
+MAX_ANSWER_CHARS = 16000     # an answer longer than this is cut; the models are told (see cap_note)
 DEFAULT_TIMEOUT_S = 90
 
 JUDGE_SYSTEM = (
@@ -53,6 +53,12 @@ JUDGE_SYSTEM = (
     '"rationale": "<two or three sentences>", '
     '"synthesis": "<the best final answer, using the strongest parts of all answers>"}'
 )
+
+
+def cap_note():
+    return (f"Length limit: your reply is cut off after {MAX_ANSWER_CHARS} characters (about {MAX_ANSWER_CHARS // 4} tokens), "
+            "and a cut-off answer is judged as incomplete. Put the most important content first, be complete but concise, "
+            "and finish within the limit.")
 
 
 def die(msg, code=1):
@@ -213,13 +219,17 @@ def main():
     timeout = int(req.get("timeout_s") or DEFAULT_TIMEOUT_S)
 
     params = {}
+    if not req.get("thinking"):
+        # OpenRouter's unified switch. Reasoning models otherwise spend the token budget thinking and can return nothing.
+        # It is part of the shared body, so every stub gets it; models without reasoning ignore it.
+        params["reasoning"] = {"enabled": False}
     if req.get("max_tokens"):
         params["max_tokens"] = int(req["max_tokens"])
     if req.get("temperature") is not None:
         params["temperature"] = float(req["temperature"])
 
-    messages = ([{"role": "system", "content": req["system"]}] if req.get("system") else []) + \
-               [{"role": "user", "content": prompt}]
+    system = (req["system"].rstrip() + "\n\n" if req.get("system") else "") + cap_note()
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
 
     keys = load_keys()
     with ThreadPoolExecutor(max_workers=len(stubs)) as pool:
