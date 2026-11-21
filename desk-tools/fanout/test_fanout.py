@@ -61,18 +61,21 @@ class FanoutTest(unittest.TestCase):
         with open(cls.fake_claude, "w") as fh:
             fh.write("#!%s\nimport json, sys\n"
                      "json.dump(sys.argv[1:], open(%r, 'w'))\n"
+                     "import os\n"
+                     "json.dump({k: os.environ.get(k) for k in ('CLAUDE_CODE_OAUTH_TOKEN', 'DISABLE_AUTOUPDATER', 'ANTHROPIC_API_KEY')},"
+                     " open(%r, 'w'))\n"
                      "user = sys.stdin.read()\n"
                      "parts = user.split('--- Answer ')[1:]\n"
                      "good = next((int(p.split(' ')[0]) for p in parts if 'GOOD' in p), 1)\n"
                      "print(json.dumps({'winner': good, 'scores': {str(good): 9}, 'rationale': 'cli', 'synthesis': 'from cli'}))\n"
-                     % (sys.executable, cls.argv_log))
+                     % (sys.executable, cls.argv_log, cls.argv_log + ".env"))
         os.chmod(cls.fake_claude, 0o755)
         with open(cls.keys, "w") as fh:
             json.dump({"openrouter": {"base_url": f"http://127.0.0.1:{cls.srv.server_port}/v1",
                                       "headers": {"Authorization": "Bearer SECRET-1"}},
                        "other": {"base_url": f"http://127.0.0.1:{cls.srv.server_port}/v1",
                                  "headers": {"x-api-key": "SECRET-2"}},
-                       "claude_cli": {"path": cls.fake_claude}}, fh)
+                       "claude_cli": {"path": cls.fake_claude, "env": {"CLAUDE_CODE_OAUTH_TOKEN": "TOKEN-3"}}}, fh)
 
     @classmethod
     def tearDownClass(cls):
@@ -129,6 +132,14 @@ class FanoutTest(unittest.TestCase):
         self.assertEqual(argv[argv.index("--tools") + 1], "")           # the judge gets no tools
         self.assertIn("-p", argv)
         self.assertNotIn("--bare", argv)                                  # --bare would skip the Claude Code login
+
+    def test_cli_gets_the_subscription_token_and_no_api_key(self):
+        self.ok({"prompt": "q", "stubs": [{"name": "a", "model": "m/a"}], "judge": {"backend": "cli"}})
+        with open(self.argv_log + ".env") as fh:
+            env = json.load(fh)
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "TOKEN-3")
+        self.assertEqual(env["DISABLE_AUTOUPDATER"], "1")
+        self.assertIsNone(env["ANTHROPIC_API_KEY"])        # the job env is built from scratch; nothing leaks in
 
     def test_cli_judge_missing_binary_is_an_error_not_a_crash(self):
         keys = os.path.join(self.tmp.name, "keys-nocli.json")

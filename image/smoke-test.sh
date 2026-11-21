@@ -350,6 +350,15 @@ check_bridge() {
   else fail pi-bridge "get_state failed: $(printf '%s' "$out" | head -c 200)"; fi
 }
 
+# Claude Code CLI (the fanout tool's optional judge): installed where the desk's jobs can see it (/usr/bin) and runs. The pinned version is
+# checked at build time (provision.sh verifies the sha256). It is invoked by the fanout job with a token from keys.json; nothing is called here.
+check_claude_cli() {
+  if [ ! -x /usr/bin/claude ]; then fail claude-cli "/usr/bin/claude is missing"; return; fi
+  v=$(HOME=/tmp /usr/bin/claude --version 2>/dev/null | awk '{print $1}')
+  if [ -z "$v" ]; then fail claude-cli "/usr/bin/claude --version printed nothing"; return; fi
+  pass claude-cli "claude $v at /usr/bin/claude"
+}
+
 # Bitwarden: the CLI is installed, the token is unreadable to the service user, and the fetch step works. Without a token
 # file the fetch step must succeed with an empty env file; a configured token is reported (live fetch needs the network).
 check_secrets() {
@@ -412,6 +421,7 @@ check_loom_http
 check_pi
 check_bridge
 check_secrets
+check_claude_cli
 check_console_files
 check_gate_files
 check_lockdown

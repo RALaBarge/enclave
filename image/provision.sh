@@ -18,7 +18,7 @@ need() {
     fi
   done
 }
-need OLLAMA_VERSION OLLAMA_TGZ_SHA256 LOOM_REPO LOOM_COMMIT DESKBOX_COMMIT PI_REPO PI_VERSION PI_SOURCE_SHA256 NODE_VERSION NODE_SHA256 TS_VERSION TS_TGZ_SHA256
+need OLLAMA_VERSION OLLAMA_TGZ_SHA256 LOOM_REPO LOOM_COMMIT DESKBOX_COMMIT PI_REPO PI_VERSION PI_SOURCE_SHA256 NODE_VERSION NODE_SHA256 TS_VERSION TS_TGZ_SHA256 CLAUDE_CODE_VERSION CLAUDE_CODE_SHA256
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -179,6 +179,13 @@ tmpz=$(mktemp); curl -fsSL -o "$tmpz" "https://github.com/bitwarden/sdk-sm/relea
 unzip -o -q "$tmpz" bws -d /usr/local/bin; chmod 755 /usr/local/bin/bws; rm -f "$tmpz"
 install -m 755 "$HERE/sbx-fetch-secrets.sh" /usr/local/bin/sbx-fetch-secrets
 install -d -m 755 /etc/sbx
+
+# ---- Claude Code CLI: the fanout tool's optional `claude -p` judge. Pinned native binary, no login baked in: the operator
+# runs `claude setup-token` elsewhere and puts the token in the deployed fanout/keys.json (desk-tools/README.md). It goes in
+# /usr/bin because the desk's job sandbox binds /usr, not /usr/local.
+tmpc=$(mktemp); curl -fsSL -o "$tmpc" "https://downloads.claude.ai/claude-code-releases/${CLAUDE_CODE_VERSION}/linux-x64/claude"
+[ "${ALLOW_UNPINNED:-0}" = 1 ] || echo "${CLAUDE_CODE_SHA256}  $tmpc" | sha256sum -c -
+install -m 755 "$tmpc" /usr/bin/claude; rm -f "$tmpc"
 
 # ---- Tailscale: node agent only. pi-bridge still starts without --peers, so peers stay OFF until the operator logs in
 # and opts in (see SETUP.md). No auth key is baked in; `tailscale up` is the operator's step, like the Bitwarden token.

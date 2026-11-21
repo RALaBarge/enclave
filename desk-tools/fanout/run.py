@@ -101,11 +101,13 @@ def chat(entry, model, messages, params, timeout):
 
 
 def cli_chat(keys, model, system, user, timeout):
-    """The judge through Claude Code's headless mode, so it bills to the logged-in Claude Code account, not an API key.
-    keys.json may carry {"claude_cli": {"path": "/usr/bin/claude", "env": {"HOME": "..."}}}: where the binary is and
-    which home holds its login. Returns (text, error); never raises."""
+    """The judge through Claude Code's headless mode, so it bills to the Claude Code subscription, not an API key.
+    keys.json carries {"claude_cli": {"env": {"CLAUDE_CODE_OAUTH_TOKEN": "<from `claude setup-token`>"}}}, and optionally
+    "path" if the binary is not /usr/bin/claude. A token, not a login, because the job's filesystem is read-only apart
+    from a tmpfs /tmp: nothing about the login has to persist or be refreshed on disk. Returns (text, error); never raises."""
     conf = keys.get("claude_cli") or {}
-    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/tmp")}
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/tmp"),
+           "DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
     env.update(conf.get("env") or {})
     cmd = [conf.get("path") or "claude", "-p", "--model", model, "--system-prompt", system, "--tools", "",
            "--no-session-persistence", "--disable-slash-commands", "--setting-sources", "",
