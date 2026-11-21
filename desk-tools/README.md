@@ -8,14 +8,17 @@ Use this for a tool that needs a secret the sandbox must never hold.
 
 ## fanout
 
-JSON in, JSON out: ask N models the same question in parallel, then one judge (`anthropic/claude-fable-5.2`) picks the best
-answer, scores each, and writes a synthesis. Reasoning is switched off for every model unless the input sets `thinking` to true, and each model is told the 16,000-character answer cap. The judge sees the answers shuffled and anonymous. With no `stubs` it asks the
-default eight OpenRouter models listed in `run.py`.
+JSON in, JSON out: ask N models the same question in parallel, then one model (the synthesizer, `anthropic/claude-fable-5.2`)
+reads all the answers by name and returns one combined answer, what the models agree on, where they differ and who it thinks
+is right, and its own two cents. It does not rank or score. `answers` always carries every model's full reply, in the order
+asked, so you can compare them yourself. Reasoning is switched off for every model unless the input sets `thinking` to true,
+and each model is told the 16,000-character answer cap (longer replies are cut there). With no `stubs` it asks the default
+eight OpenRouter models listed in `run.py`.
 
 ```json
 {"prompt": "Explain RAID1 rebuilds in two sentences."}
 {"prompt": "...", "stubs": [{"name": "a", "model": "google/gemini-3.8-flash"}, {"name": "b", "model": "x/y", "key": "other"}],
- "judge": {"model": "anthropic/claude-fable-5.2"}, "max_tokens": 600, "timeout_s": 60}
+ "synthesizer": {"model": "anthropic/claude-fable-5.2"}, "max_tokens": 600, "timeout_s": 60}
 ```
 
 Every stub gets the same request body except `model`. Providers differ only in base URL and headers, and those come from
@@ -27,18 +30,18 @@ Write it on the core as the desk account, mode 0600, not from git:
  "other":      {"base_url": "https://example.com/v1",        "headers": {"x-api-key": "<key>"}}}
 ```
 
-### The judge: `judge.backend`
+### The synthesizer: `synthesizer.backend`
 
 - `api` (default): an OpenAI-compatible endpoint from `keys.json`, model `anthropic/claude-fable-5.2` on OpenRouter.
-- `cli`: runs Claude Code headless (`claude -p --model claude-fable-5-2 --tools ""`), so the judging bills to the Claude
+- `cli`: runs Claude Code headless (`claude -p --model claude-fable-5-2 --tools ""`), so the synthesis bills to the Claude
   Code subscription, not an API key. The image installs the pinned binary at `/usr/bin/claude` (`CLAUDE_CODE_VERSION` in
   `image/manifest.env`; `/usr` is bound into every desk job, `/usr/local` is not) and bakes in no login. To authenticate,
   run `claude setup-token` on any machine where you are logged in, and put the token in the deployed `keys.json`:
   `"claude_cli": {"env": {"CLAUDE_CODE_OAUTH_TOKEN": "<token>"}}`. A token rather than a login because the job's
   filesystem is read-only apart from a tmpfs `/tmp`, so nothing has to persist or refresh on disk. Use `"path"` in the same
-  entry if the binary lives elsewhere. A missing binary or a bad token is reported in `judge.error`; the answers still come
-  back. Not checked inside the desk's bwrap job or a rebuilt image.
-- `none`: no judge, just the answers, for a caller (such as a Claude Code session) that judges them itself.
+  entry if the binary lives elsewhere. A missing binary or a bad token is reported in `synthesizer.error`; the answers still
+  come back. Not checked inside the desk's bwrap job or a rebuilt image.
+- `none`: no synthesis, just the answers, for a caller (such as a Claude Code session) that combines them itself.
 
 A stub's `key` names an entry (default `openrouter`). Any OpenAI-compatible `/chat/completions` endpoint works.
 The job has `network: true`, so the core's firewall decides which hosts it reaches.

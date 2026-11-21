@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""fanout: ask N models the same question, then have one judge field the answers.
+"""fanout: ask N models the same question, then have one model synthesize them and add its own take.
 
-stdin  {"prompt": "...", "system"?, "thinking"?: bool, "stubs"?: [{"name", "model", "key"?}], "judge"?: {"model"?, "key"?},
+stdin  {"prompt": "...", "system"?, "thinking"?: bool, "stubs"?: [{"name", "model", "key"?}], "synthesizer"?: {"backend"?, "model"?, "key"?},
         "max_tokens"?, "temperature"?, "timeout_s"?}
-stdout {"judge": {...}, "answers": [...], "ok_count": n}
+stdout {"synthesizer": {...}, "answers": [every model's full reply], "ok_count": n}
 
 Every stub gets a byte-for-byte identical request body except for `model`. What differs per provider is the
 base URL and the headers, and both come from keys.json beside this file ($DESKBOX_TOOL_DIR), never from the
@@ -38,26 +38,28 @@ DEFAULT_STUBS = [
     {"name": "glm-flash-latest", "model": "~z-ai/glm-flash-latest"},
     {"name": "hy4-flash", "model": "tencent/hy4-flash"},
 ]
-DEFAULT_JUDGE_MODEL = "anthropic/claude-fable-5.2"   # OpenRouter slug, for backend "api"
+DEFAULT_SYNTH_MODEL = "anthropic/claude-fable-5.2"   # OpenRouter slug, for backend "api"
 DEFAULT_CLI_MODEL = "claude-fable-5-2"               # Anthropic model id, for backend "cli"
 DEFAULT_KEY = "openrouter"
 MAX_STUBS = 16
+MAX_NOTE_CHARS = 4000
 MAX_ANSWER_CHARS = 16000     # an answer longer than this is cut; the models are told (see cap_note)
 DEFAULT_TIMEOUT_S = 90
 
-JUDGE_SYSTEM = (
-    "You are a strict, impartial judge. You are shown one question and several anonymous answers. "
-    "Judge correctness and usefulness; ignore length, style and any claim an answer makes about itself. "
-    "Reply with one JSON object and nothing else: "
-    '{"winner": <number of the best answer>, "scores": {"<number>": <0-10>, ...}, '
-    '"rationale": "<two or three sentences>", '
-    '"synthesis": "<the best final answer, using the strongest parts of all answers>"}'
+SYNTH_SYSTEM = (
+    "You are the synthesizer. You are shown one question and the full answers of several named models. Do not rank or "
+    "grade them. Reply with one JSON object and nothing else: "
+    '{"synthesis": "<one final answer that takes the strongest parts of all of them and resolves conflicts by reasoning, '
+    'not a summary of who said what>", '
+    '"agreement": "<what most of the models agree on>", '
+    '"differences": "<where they differ or contradict, naming the models, and which side you think is right and why>", '
+    '"two_cents": "<your own view: what all of them missed or got wrong, and what you would add>"}'
 )
 
 
 def cap_note():
     return (f"Length limit: your reply is cut off after {MAX_ANSWER_CHARS} characters (about {MAX_ANSWER_CHARS // 4} tokens), "
-            "and a cut-off answer is judged as incomplete. Put the most important content first, be complete but concise, "
+            "and a cut-off answer is treated as incomplete. Put the most important content first, be complete but concise, "
             "and finish within the limit.")
 
 
@@ -112,7 +114,7 @@ def chat(entry, model, messages, params, timeout):
 
 
 def cli_chat(keys, model, system, user, timeout):
-    """The judge through Claude Code's headless mode, so it bills to the Claude Code subscription, not an API key.
+    """The synthesizer through Claude Code's headless mode, so it bills to the Claude Code subscription, not an API key.
     keys.json carries {"claude_cli": {"env": {"CLAUDE_CODE_OAUTH_TOKEN": "<from `claude setup-token`>"}}}, and optionally
     "path" if the binary is not /usr/bin/claude. A token, not a login, because the job's filesystem is read-only apart
     from a tmpfs /tmp: nothing about the login has to persist or be refreshed on disk. Returns (text, error); never raises."""
@@ -147,7 +149,7 @@ def ask_stub(stub, keys, messages, params, timeout):
             "text": (text or "")[:MAX_ANSWER_CHARS], "error": err or "", "ms": int((time.time() - t0) * 1000)}
 
 
-def parse_judge(text):
+def parse_json(text):
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         return None
@@ -158,47 +160,37 @@ def parse_judge(text):
     return doc if isinstance(doc, dict) else None
 
 
-def judge(question, good, keys, spec, params, timeout):
-    """good: list of ok answers. Answers are shuffled and anonymised so names and order cannot sway the judge."""
-    order = list(good)
-    random.shuffle(order)
-    listing = "\n\n".join(f"--- Answer {i + 1} ---\n{a['text']}" for i, a in enumerate(order))
-    messages = [{"role": "system", "content": JUDGE_SYSTEM},
-                {"role": "user", "content": f"Question:\n{question}\n\n{listing}"}]
+def empty_synth(model, error=""):
+    return {"model": model, "synthesis": "", "agreement": "", "differences": "", "two_cents": "", "error": error}
+
+
+def synthesize(question, good, keys, spec, params, timeout):
+    """good: the ok answers. The synthesizer sees the model names so it can compare and contrast them."""
+    listing = "\n\n".join(f"--- {a['name']} ({a['model']}) ---\n{a['text']}" for a in good)
+    user = f"Question:\n{question}\n\n{listing}"
     cli = spec.get("backend") == "cli"
-    model = spec.get("model") or (DEFAULT_CLI_MODEL if cli else DEFAULT_JUDGE_MODEL)
-    out = {"model": model, "winner": "", "scores": [], "rationale": "", "synthesis": "", "error": ""}
+    model = spec.get("model") or (DEFAULT_CLI_MODEL if cli else DEFAULT_SYNTH_MODEL)
+    out = empty_synth(model)
     if cli:
-        text, err = cli_chat(keys, model, JUDGE_SYSTEM, messages[-1]["content"], timeout)
+        text, err = cli_chat(keys, model, SYNTH_SYSTEM, user, timeout)
     else:
         entry = keys.get(spec.get("key") or DEFAULT_KEY)
         if not entry:
             out["error"] = f"no keys.json entry named {spec.get('key') or DEFAULT_KEY!r}"
             return out
-        text, err = chat(entry, model, messages, dict(params, temperature=0), timeout)
+        messages = [{"role": "system", "content": SYNTH_SYSTEM}, {"role": "user", "content": user}]
+        text, err = chat(entry, model, messages, params, timeout)
     if err:
         out["error"] = err
         return out
-    doc = parse_judge(text)
-    if doc is None:
-        out["error"] = "judge did not return JSON"
-        out["rationale"] = text[:2000]
+    doc = parse_json(text)
+    if doc is None:       # keep what it said rather than lose it
+        out["error"] = "synthesizer did not return JSON; its raw text is in synthesis"
+        out["synthesis"] = text[:MAX_ANSWER_CHARS]
         return out
-    try:
-        w = int(doc.get("winner"))
-        out["winner"] = order[w - 1]["name"] if 1 <= w <= len(order) else ""
-    except (TypeError, ValueError):
-        pass
-    scores = doc.get("scores") if isinstance(doc.get("scores"), dict) else {}
-    for k, v in scores.items():
-        try:
-            i, s = int(k), float(v)
-        except (TypeError, ValueError):
-            continue
-        if 1 <= i <= len(order):
-            out["scores"].append({"name": order[i - 1]["name"], "score": s})
-    out["rationale"] = str(doc.get("rationale", ""))[:2000]
     out["synthesis"] = str(doc.get("synthesis", ""))[:MAX_ANSWER_CHARS]
+    for k in ("agreement", "differences", "two_cents"):
+        out[k] = str(doc.get(k, ""))[:MAX_NOTE_CHARS]
     return out
 
 
@@ -236,17 +228,17 @@ def main():
         answers = list(pool.map(lambda s: ask_stub(s, keys, messages, params, timeout), stubs))
     good = [a for a in answers if a["ok"]]
 
-    spec = req.get("judge") or {}
+    spec = req.get("synthesizer") or {}
     if spec.get("backend", "api") not in ("api", "cli", "none"):
-        die("judge.backend must be api, cli or none")
-    if spec.get("backend") == "none":     # answers only: the caller (e.g. a Claude Code session) judges
-        verdict = {"model": "", "winner": "", "scores": [], "rationale": "", "synthesis": "", "error": ""}
+        die("synthesizer.backend must be api, cli or none")
+    if spec.get("backend") == "none":     # answers only: the caller reads and combines them itself
+        synth = empty_synth("")
     elif good:
-        verdict = judge(prompt, good, keys, spec, {"max_tokens": 4000}, timeout)
+        synth = synthesize(prompt, good, keys, spec, {"max_tokens": 8000}, timeout)
     else:
-        verdict = {"model": spec.get("model") or DEFAULT_JUDGE_MODEL, "winner": "", "scores": [],
-                   "rationale": "", "synthesis": "", "error": "no model returned an answer"}
-    json.dump({"judge": verdict, "answers": answers, "ok_count": len(good)}, sys.stdout)
+        synth = empty_synth(spec.get("model") or DEFAULT_SYNTH_MODEL, "no model returned an answer")
+    # `answers` is always every model's full reply, in the order asked, so they can be compared directly.
+    json.dump({"synthesizer": synth, "answers": answers, "ok_count": len(good)}, sys.stdout)
 
 
 if __name__ == "__main__":
