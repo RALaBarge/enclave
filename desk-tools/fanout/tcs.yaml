@@ -1,0 +1,95 @@
+name: fanout
+summary: |
+  Ask several models the same question in parallel, then have one judge
+  (claude-fable-5.2 by default) field the answers. Every model gets the same
+  request body; only `model` differs. With no `stubs` it uses the default
+  spread of eight OpenRouter models. The judge sees the answers shuffled and
+  anonymous, and returns a winner, a score per answer, a rationale and a
+  synthesised best answer. A model that fails or times out is reported in
+  `answers` and the rest are still judged.
+
+  Runs on the trusted core. API keys and base URLs come from keys.json beside
+  the tool (deployed 0600, never in the input), so the caller names a key but
+  cannot choose where it is sent.
+
+input:
+  type: object
+  additionalProperties: false
+  required: [prompt]
+  properties:
+    prompt:      { type: string, minLength: 1, maxLength: 20000 }
+    system:      { type: string, maxLength: 4000 }
+    max_tokens:  { type: integer, minimum: 1, maximum: 8000 }
+    temperature: { type: number, minimum: 0, maximum: 2 }
+    timeout_s:   { type: integer, minimum: 5, maximum: 90 }
+    stubs:
+      type: array
+      minItems: 1
+      maxItems: 16
+      items:
+        type: object
+        additionalProperties: false
+        required: [name, model]
+        properties:
+          name:  { type: string, minLength: 1, maxLength: 64 }
+          model: { type: string, minLength: 1, maxLength: 200 }
+          key:   { type: string, minLength: 1, maxLength: 64 }
+    judge:
+      type: object
+      additionalProperties: false
+      properties:
+        model: { type: string, minLength: 1, maxLength: 200 }
+        key:   { type: string, minLength: 1, maxLength: 64 }
+
+output:
+  schema:
+    type: object
+    additionalProperties: false
+    required: [judge, answers, ok_count]
+    properties:
+      ok_count: { type: integer }
+      judge:
+        type: object
+        additionalProperties: false
+        required: [model, winner, scores, rationale, synthesis, error]
+        properties:
+          model:     { type: string, maxLength: 200 }
+          winner:    { type: string, maxLength: 64 }
+          rationale: { type: string, maxLength: 2000 }
+          synthesis: { type: string, maxLength: 6000 }
+          error:     { type: string, maxLength: 300 }
+          scores:
+            type: array
+            maxItems: 16
+            items:
+              type: object
+              additionalProperties: false
+              required: [name, score]
+              properties:
+                name:  { type: string, maxLength: 64 }
+                score: { type: number }
+      answers:
+        type: array
+        maxItems: 16
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, model, ok, text, error, ms]
+          properties:
+            name:  { type: string, maxLength: 64 }
+            model: { type: string, maxLength: 200 }
+            ok:    { type: boolean }
+            text:  { type: string, maxLength: 6000 }
+            error: { type: string, maxLength: 300 }
+            ms:    { type: integer }
+
+allowed_side_effects:
+  files: []
+  # The job needs the core's network to reach the providers. The desk has no
+  # per-host filter; where it may go is the core's firewall's call.
+  network: true
+
+execution:
+  mode: direct
+  max_retries: 0
+  timeout_ms: 200000   # up to 90 s for the answers, then up to 90 s for the judge, plus margin

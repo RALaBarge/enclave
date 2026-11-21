@@ -39,6 +39,18 @@ class DeployDoesNotFollowLinks(unittest.TestCase):
         self.assertEqual(oct(os.stat(os.path.join(self.dest, "greet-sbx", "run.py")).st_mode & 0o777), "0o700")
         self.assertEqual(oct(os.stat(os.path.join(self.dest, "greet-sbx", "tcs.yaml")).st_mode & 0o777), "0o600")
 
+    def test_core_side_tool_is_deployed_as_written_and_keys_are_left_alone(self):
+        self.assertEqual(deploy(self.dest).returncode, 0)
+        d = os.path.join(self.dest, "fanout")
+        self.assertEqual(oct(os.stat(os.path.join(d, "run.py")).st_mode & 0o777), "0o700")
+        self.assertEqual(oct(os.stat(os.path.join(d, "tcs.yaml")).st_mode & 0o777), "0o600")
+        with open(os.path.join(d, "keys.json"), "w") as f:     # provisioned on the core, not from the checkout
+            f.write("KEYS")
+        self.assertEqual(deploy(self.dest).returncode, 0)
+        with open(os.path.join(d, "keys.json")) as f:
+            self.assertEqual(f.read(), "KEYS")
+        self.assertFalse(os.path.exists(os.path.join(self.dest, "fanout-sbx")))
+
     def test_planted_file_link_is_replaced_not_followed(self):
         self.assertEqual(deploy(self.dest).returncode, 0)
         run = os.path.join(self.dest, "greet-sbx", "run.py")
