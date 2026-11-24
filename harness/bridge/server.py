@@ -894,7 +894,8 @@ def make_handler(app: App):
             self._json(404, {"error": "not found"})
 
         def _sse(self, s, q):
-            since = int((q.get("since") or [self.headers.get("Last-Event-ID") or "0"])[0])
+            # A reconnecting EventSource repeats the URL's ?since= but sends Last-Event-ID; resume from the latter.
+            since = int(self.headers.get("Last-Event-ID") or (q.get("since") or ["0"])[0])
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")

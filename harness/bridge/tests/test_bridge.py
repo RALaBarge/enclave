@@ -152,6 +152,14 @@ class Local(unittest.TestCase):
         self.assertIn(" tail", seen[1]["text"])       # LF-only framing keeps U+2028 inside the string
         m = req(self.base, "/sessions/%s/command" % sid, "POST", {"type": "get_messages"})[1]
         self.assertEqual(m["data"]["messages"][0]["text"], "hi")
+        # A reconnect repeats ?since=0 with Last-Event-ID: the header wins, nothing is replayed twice.
+        r = urllib.request.Request(self.base + "/sessions/%s/events?since=0" % sid, headers={"Last-Event-ID": "2"})
+        resp = urllib.request.urlopen(r, timeout=10)
+        line = ""
+        while not line.startswith("data: "):
+            line = resp.readline().decode()
+        resp.close()
+        self.assertEqual(json.loads(line[6:])["type"], "agent_settled")
 
     def test_bad_input_and_process_exit(self):
         self.assertEqual(req(self.base, "/sessions", "POST", {"cwd": "/definitely/not/here"})[0], 400)

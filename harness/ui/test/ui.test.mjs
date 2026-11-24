@@ -67,26 +67,48 @@ test("dirs: derives directories from sessions, starts one, hands the session to 
   assert.deepEqual([out.emit[0].msg.session, out.focus], ["b2", "chat"]);
 });
 
-test("chat: opens a stream, loads history, streams deltas into one bubble, sends, aborts", async () => {
+test("chat: history, then the stream after the session's last event; text, thinking and tool cards per turn", async () => {
   const c = await load("chat.js");
   const out = c.update({ type: "open", session: "ab12" });
-  assert.deepEqual(out.streams, [{ id: "events", path: "/sessions/ab12/events" }]);
-  assert.deepEqual(out.calls[0].body, { type: "get_messages" });
-  c.update({ type: "result", id: "history", status: 200, body: { success: true, data: { messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }] } } });
+  assert.deepEqual(out.calls[0], { id: "seq", method: "GET", path: "/sessions" });
+  const seq = c.update({ type: "result", id: "seq", status: 200, body: [{ id: "ab12", last_seq: 41 }] });
+  assert.deepEqual(seq.calls[0].body, { type: "get_messages" });
+  const hist = c.update({ type: "result", id: "history", status: 200, body: { success: true, data: { messages: [
+    { role: "user", content: [{ type: "text", text: "hi" }] },
+    { role: "assistant", content: [{ type: "thinking", thinking: "ponder" }, { type: "text", text: "calling" },
+      { type: "toolCall", id: "c1", name: "greet-sbx", arguments: { name: "Ryan" } }] },
+    { role: "toolResult", toolCallId: "c1", toolName: "greet-sbx", isError: false, content: [{ type: "text", text: "Hello, Ryan." }] }] } } });
+  assert.deepEqual(hist.streams, [{ id: "events", path: "/sessions/ab12/events?since=41" }]);
+  const h = JSON.stringify(hist.view);
+  assert.deepEqual(validate(hist.view), []);
+  for (const x of ["ponder", "\"think\"", "[1] greet-sbx", "tool ok", "Hello, Ryan."]) assert.ok(h.includes(x), x);
+  assert.match(h, /"pre",\{\},"\{\\n  \\"name\\": \\"Ryan\\"/, "the request shows the call's arguments");
+
   const ev = (data) => c.update({ type: "event", stream: "events", data });
-  ev({ type: "agent_start" });
-  ev({ type: "message_update", assistantMessageEvent: { delta: "Hel" } });
-  const v = JSON.stringify(ev({ type: "message_update", assistantMessageEvent: { delta: "lo" } }).view);
-  assert.match(v, /Hello/);
-  assert.equal(v.split("assistant").length - 1, 1, "deltas must extend one bubble");
-  ev({ type: "tool_execution_start", toolName: "bash" });
-  assert.match(JSON.stringify(ev({ type: "agent_settled" }).view), /tool: bash/);
   const send = c.update({ type: "ui", name: "send", values: { prompt: " go " } });
   assert.deepEqual(send.calls[0].body, { type: "prompt", message: "go" });
+  ev({ type: "agent_start" });
+  ev({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "go" }] } });   // echo of our prompt
+  ev({ type: "message_start", message: { role: "assistant", content: [] } });
+  ev({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "hm" } });
+  ev({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Hel" } });
+  let v = JSON.stringify(ev({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "lo" } }).view);
+  assert.ok(v.includes("Hello") && v.includes("hm"));
+  assert.equal(v.split('"you"').length - 1, 2, "the prompt echo must not start another turn");
+  ev({ type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: 2, toolCall: { type: "toolCall", id: "c2", name: "glob-sbx", arguments: { pattern: "*" } } } });
+  ev({ type: "tool_execution_start", toolCallId: "c2", toolName: "glob-sbx", args: { pattern: "*" } });
+  assert.match(JSON.stringify(c.update({ type: "init" }).view), /tool running/);
+  ev({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "hm" }, { type: "text", text: "Hello" },
+    { type: "toolCall", id: "c2", name: "glob-sbx", arguments: { pattern: "*" } }] } });
+  ev({ type: "tool_execution_end", toolCallId: "c2", toolName: "glob-sbx", isError: true, durationMs: 2858, result: { content: [{ type: "text", text: "nope" }] } });
+  v = JSON.stringify(ev({ type: "agent_settled" }).view);
+  assert.equal(v.split("Hello").length - 1, 2, "message_end replaces the deltas, it does not add to them");   // history + this turn
+  for (const x of ["tool error", "2.9s", "nope", "[1] glob-sbx"]) assert.ok(v.includes(x), x);
   assert.equal(c.update({ type: "ui", name: "send", values: { prompt: "" } }).calls, undefined);
   assert.equal(c.update({ type: "ui", name: "abort", values: {} }).calls[0].body.type, "abort");
   const reopen = c.update({ type: "open", session: "cd34" });
   assert.deepEqual(reopen.streams[0], { id: "events", close: true });
+  assert.match(JSON.stringify(c.update({ type: "result", id: "seq", status: 200, body: [] }).view), /not found/);
 });
 
 test("tree: lists get_tree as branches, shows a picked node in full, forks there and hands the chat over", async () => {
@@ -139,11 +161,11 @@ test("inspect: timeline of raw events, type filter, expand, replay through a for
   assert.match(JSON.stringify(ev(999, { type: "agent_start" }).view), /"500 events"/);
 });
 
-test("chat keeps only the latest 500 items", async () => {
+test("chat keeps only the latest 200 turns", async () => {
   const c = await load("chat.js");
   c.update({ type: "open", session: "ab12" });
-  for (let i = 0; i < 700; i++) c.update({ type: "event", stream: "events", data: { type: "tool_execution_start", toolName: "t" + i } });
+  for (let i = 0; i < 300; i++) c.update({ type: "event", stream: "events", data: { type: "message_end", message: { role: "user", content: "p" + i } } });
   const v = JSON.stringify(c.update({ type: "event", stream: "events", data: { type: "agent_start" } }).view);
-  assert.equal(v.split("tool: ").length - 1, 500);
-  assert.match(v, /t699/);
+  assert.equal(v.split('"you"').length - 1, 200);
+  assert.ok(v.includes("p299") && !v.includes('"p99"'));
 });
