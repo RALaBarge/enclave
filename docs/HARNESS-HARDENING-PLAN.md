@@ -57,7 +57,10 @@ Ordered by severity. "Model-reachable" means a backdoored model can trigger it t
 
 ### 1. Inline the Pi lockdown in pi-bridge (F1, F3, F4)
 
-> **Stopgap.** The target is to replace Pi in the core with an in-tree runner (one static Go binary, one process per
+> **Decision 2026-11-24: Pi stays** (`TODO.md`, Decisions). The runner below is now an optional second engine, not Pi's
+> replacement, so this lockdown is the lasting setup, not a stopgap.
+>
+> **Originally a stopgap.** The target was to replace Pi in the core with an in-tree runner (one static Go binary, one process per
 > turn, started by the bridge): about 2,000–2,500 lines including tests, against Pi's ~170k lines. It keeps the same API,
 > events, session states and session format, and cuts over through a `--engine pi|loop` parity run. See `PI-FEATURES.md`
 > for every Pi feature classified, the testing plan and the build order. Do this step and step 2 first, because they close

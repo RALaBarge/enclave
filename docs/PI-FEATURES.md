@@ -4,6 +4,9 @@
 This is option 3 from `HARNESS-HARDENING-PLAN.md`: replace Pi in the core with a small in-tree runner (a static Go binary, one process per
 turn, started by the bridge), writing in the features we want. Revised 2026-10-20 after an outside review.
 
+> **Decision 2026-11-24: Pi stays.** Pi is kept as Enclave's harness. The analysis below still holds, but the Go runner is
+> now optional: a second engine to test beside Pi (`--engine pi|loop`), not a replacement, and Pi does not leave the image.
+
 ## Why replace Pi
 
 The UI calls exactly six commands: `prompt`, `abort`, `get_messages`, `get_tree`, `fork`, `get_fork_messages`. Enclave turns

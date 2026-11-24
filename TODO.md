@@ -32,7 +32,7 @@ October.
    the sensitive flag versus auto-write, and the calibration harness first).
 9. **Request inspector raw view:** a recording proxy in the bridge that Pi's provider base URL points at, with `Authorization`
    redacted; also the raw feed for Loom and the fixtures for the Go runner.
-10. **Go runner** (`docs/PI-FEATURES.md` build order), then retire Pi.
+10. **Go runner** (`docs/PI-FEATURES.md` build order), optional: a second engine to test next to Pi, not a replacement.
 11. **Requesty:** needs a `models.json` provider entry with model IDs.
 12. **VM images:** rebuild before using the VM path again (they predate the November changes); builds need a Windows
     checkout with the Packer cache restored.
@@ -71,6 +71,7 @@ real groups), K, L, M, N, P.
 | Loom format | Append-only `events` + content-addressed `blobs`, `POST /events`; store raw, embed only the useful subset, redact secrets first |
 | Secrets | Bitwarden Secrets Manager; read-only access token on the core; model keys in `/run`; the gate token only in the page/fetch tool directories |
 | Peers | Keep, off by default |
+| Pi | Kept (2026-11-24). Pi stays the harness; other harnesses (the Go runner included) may be tested beside it, each through `docs/HARNESS-ADMISSION.md` |
 | MCP | Declined (2026-10-18): it does not move the enforcement floor (contract + bwrap + the machine split) and makes the tool surface runtime prompt text instead of pinned files. Harness adapters generate from the desk's `GET /tools` |
 | Where tools live | DeskboxTools, checked out as `tools/`; the desk is the only executor; core-only tools that need a secret go in `desk-tools/` |
 | Console access to the desk | Reads contracts (0640, group `sbxconsole`) and the desk's `/jobs`; never the stubs (0700: reading one is enough to run it past its contract) |
