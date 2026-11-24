@@ -77,14 +77,121 @@ sandbox. The core keeps only the read-only Bitwarden access token on disk (root,
 
 ## Install
 
-- **Two machines (what runs now):** on a fresh Debian 13 core, `sudo bash image/provision.sh`; on the sandbox box,
-  `provision-sbx.sh` then `finalize-sbx.sh`, or the bootstrap the core serves to it over the cable (`sbx-bootstrap-serve`).
-  Then on the core `sudo sbx-mode box`. Details: `image/SETUP.md`, "Full mode".
-- **Two VMs on Windows:** `enclave.cmd` (menu: build images, start, stop, reset). Packer + QEMU with WHPX; see
-  `image/packer/README.md`. Builds need a Windows checkout, not WSL (no `/dev/kvm` there).
-- **Lite mode:** one machine, the sandbox is `bwrap` on the core itself (`sbx-mode lite`). Convenient, not locked down.
+### What you need
 
-Check it: `sudo sbx-smoke-test` on the core, `sudo sbx-node-test` on the sandbox (every outbound attempt blocked is the pass).
+- **Two x86-64 machines** with a fresh Debian 13 install. Small is fine: the running core is a 2-core thin client with 3.4 GB
+  RAM and a 15 GB disk (about 0.5 GB RAM and 5 GB disk used). The sandbox needs less.
+- **A second network port on the core** (a USB Ethernet adapter works) and a cable from it to the sandbox.
+- **A Tailscale account**, for reaching the core.
+- **Bitwarden Secrets Manager** (the free tier is enough) holding your model API keys (`DEEPSEEK_API_KEY`,
+  `OPENROUTER_API_KEY`, or any `*_API_KEY`).
+- **A workstation** with `git`, `ssh-keygen`, `rsync` and Go 1.26+ (Go only to build DeskBox).
+
+### 1. On your workstation: get the code, the keys and DeskBox
+
+```sh
+git clone --recurse-submodules https://github.com/RALaBarge/enclave.git && cd enclave
+bash image/gen-keys.sh        # build/keys/core and build/keys/sbx; build/ is gitignored, keep it private
+```
+
+`image/artifacts/` holds the three DeskBox binaries and is not committed. Build them from the commit pinned in
+`image/manifest.env` (`DESKBOX_COMMIT`), as `image/BUILD-DESKBOX.md` shows:
+
+```sh
+git clone https://github.com/ralabarge/deskbox /tmp/deskbox && git -C /tmp/deskbox checkout <DESKBOX_COMMIT>
+for b in agent-desk tcs-shim tcs-verify; do
+  (cd /tmp/deskbox && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$OLDPWD/image/artifacts/$b" ./cmd/$b)
+done
+```
+
+### 2. The sandbox: provision it while it is still on your LAN
+
+Each machine gets only its own half of the keys: the sandbox must never see the broker's private key. Its network port
+must be named `eth0` (the scripts' network config and firewall use that name); if Debian named it `enp...`, pin it with a
+`.link` file like the one in step 3 (`Name=eth0`) and reboot first.
+
+```sh
+rsync -a --exclude build/keys/core --exclude build/keys/.src ./ <you>@<sandbox>:enclave/
+ssh -t <you>@<sandbox> 'cd enclave && sudo bash image/provision-sbx.sh && sudo bash image/finalize-sbx.sh && sudo poweroff'
+```
+
+`finalize-sbx.sh` switches the box to its final network (static `10.77.0.2`, the core as gateway and DNS, SSH only from the
+core's broker) from the next boot on. After it powers off, move its cable from the LAN to the core's second port and power it on.
+From then on the only way in is its keyboard, or the broker's forced command from the core.
+
+### 3. The core
+
+```sh
+rsync -a --exclude build/keys/sbx --exclude build/keys/.src ./ <you>@<core>:enclave/
+ssh -t <you>@<core>
+sudo mv ~/enclave /srv/enclave && cd /srv/enclave
+sudo bash image/provision.sh 2>&1 | sudo tee /root/provision.log     # Loom, Ollama, Pi built from source, DeskBox, console
+```
+
+The port that faces the sandbox must be named `eth1` (or set `SBXC_SBX_IFACES` for the console). A USB adapter gets a
+name like `enx<mac>`; pin it with a `.link` file, then reboot:
+
+```ini
+# /etc/systemd/network/10-sbx-link.link
+[Match]
+MACAddress=<the adapter's MAC>
+[Link]
+Name=eth1
+```
+
+### 4. Your way in: an operator account and Tailscale
+
+sshd on the core listens on loopback only and admits `sbxadmin` (you, by key) and `sbx` (the broker). Make the account,
+join the tailnet, and forward the tailnet's port 22 to that loopback sshd:
+
+```sh
+sudo useradd -m -s /bin/bash -G sudo sbxadmin && sudo passwd sbxadmin     # the password is for sudo; SSH is key-only
+sudo install -d -m 700 -o sbxadmin -g sbxadmin /home/sbxadmin/.ssh
+echo '<your public key>' | sudo tee /home/sbxadmin/.ssh/authorized_keys && sudo chown sbxadmin: /home/sbxadmin/.ssh/authorized_keys
+sudo tailscale up --accept-dns=false                       # prints a login URL; approve the node
+sudo tailscale serve --bg --tcp 22 tcp://127.0.0.1:22
+```
+
+From now on: `ssh sbxadmin@<core's tailnet name>`.
+
+### 5. Secrets
+
+In the Bitwarden web vault: enable Secrets Manager, make a project `enclave`, add your API keys there, make a machine account
+with **read-only** access to that project and create an access token for it. Then on the core:
+
+```sh
+echo 'BWS_PROJECT_ID=<project uuid>' | sudo tee /etc/sbx/bws.env
+read -rs T && printf '%s' "$T" | sudo tee /etc/sbx/bws-token >/dev/null; unset T    # paste the token, it is not echoed
+sudo chmod 600 /etc/sbx/bws.env /etc/sbx/bws-token
+sudo systemctl restart pi-bridge
+```
+
+### 6. Point the broker at the sandbox, push the tools, check it
+
+```sh
+sudo sbx-mode box          # broker -> 10.77.0.2, using the sandbox host key pinned at install
+sudo sbx-push-tools        # tools.list, sbx-run and every tool, over the broker's channel
+sudo sbx-smoke-test        # on the core: every check should pass
+```
+
+On the sandbox, at its keyboard: `sudo sbx-node-test` (every outbound attempt blocked is the pass).
+
+Then open the UI and the console through the tunnel (see **Using it**), and in the console's Firewall tab add a DNS resolver
+and whatever the sandbox's `net` tools need. Everything starts closed.
+
+### Optional
+
+- **`page` and `fetch`:** run browserbox's gate on another machine, add `SBX_GATE` = `http://<host>:9011 <token>` to the
+  Bitwarden project, allow `<host>` TCP 9011 in both firewall profiles, then `sudo sbx-push-tools`.
+- **`fanout`:** write its `keys.json` on the core as described in `desk-tools/README.md`.
+
+### Other ways to run it
+
+- **Two VMs on Windows:** `enclave.cmd` (menu: build images, start, stop, reset). Packer + QEMU with WHPX; see
+  `image/packer/README.md`. Builds need a Windows checkout (WSL has no `/dev/kvm`).
+- **Lite mode:** one machine, the sandbox is `bwrap` on the core itself (`sudo sbx-mode lite`). Convenient, not locked down.
+
+The full operator guide, including how the firewall, the reset between jobs and adding tools work, is `image/SETUP.md`.
 
 ## Tests
 
