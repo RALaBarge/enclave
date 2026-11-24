@@ -28,8 +28,10 @@ October.
 6. **UI against real Pi:** chat is checked against real events (2026-11-24); Tree and Inspector are not. Directories: add
    `GET /dirs` so folders without sessions appear.
 7. **Smoke test gaps (review J):** nothing proves a `-sbx` job itself has no network, and `check_listeners` looks at TCP only.
-8. **Loom:** `events`/`blobs` tables and `POST /events` (decided Oct 15), then memgate (spec lost; settle window scoring,
-   the sensitive flag versus auto-write, and the calibration harness first).
+8. **Loom:** replace `/log` with the event store (format settled 2026-11-24, Decisions "Loom format"); ship Pi's session
+   files through a confirmed outbox (a shipper with a cursor per file, moved only on Loom's commit ack; dedup by source,
+   session and entry id); start pi-bridge's Loom feed only after that. Then memgate (spec lost; settle window scoring, the
+   sensitive flag versus auto-write, and the calibration harness first).
 9. **Request inspector raw view:** a recording proxy in the bridge that Pi's provider base URL points at, with `Authorization`
    redacted; also the raw feed for Loom and the fixtures for the Go runner.
 10. **Go runner** (`docs/PI-FEATURES.md` build order), optional: a second engine to test next to Pi, not a replacement.
@@ -68,7 +70,7 @@ real groups), K, L, M, N, P.
 | Where it runs | Two machines on a private cable (strongest); QEMU VMs on Windows as the alternative; lite mode for convenience only |
 | Web UI | Our own, small, no build step |
 | Firewall console as a UI module | Dropped (branch deleted 2026-11-24): the bridge would have had to proxy the console with its token, letting Pi edit its own firewall |
-| Loom format | Append-only `events` + content-addressed `blobs`, `POST /events`; store raw, embed only the useful subset, redact secrets first |
+| Loom format | Append-only `events` (one per Pi session-file entry; fixed columns plus the harness's own JSON) and content-addressed `blobs` in SQLite, `POST /events` acked after commit, ingest only through a socket or token (2026-11-24). Redact before storing, recording the redactor version; the only edit is a scrub when better rules find a secret. Tool output is stored marked untrusted: never embedded, never recalled. Embed your prompts and the final assistant text, in a rebuildable index tagged with the embedding model. Delete by tombstone, plus a purge. Replaces `/log` (nothing else uses it) |
 | Secrets | Bitwarden Secrets Manager; read-only access token on the core; model keys in `/run`; the gate token only in the page/fetch tool directories |
 | Peers | Keep, off by default |
 | Pi | Kept (2026-11-24). Pi stays the harness; other harnesses (the Go runner included) may be tested beside it, each through `docs/HARNESS-ADMISSION.md` |
