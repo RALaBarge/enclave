@@ -80,7 +80,8 @@ if getent group sbxconsole >/dev/null; then chgrp sbxconsole "$ENV_FILE"; fi
 
 # ---- sshd: loopback only, key auth only; sbx (forced command, no tty) and the operator sbxadmin (tty) ----
 # The operator reaches it from the tailnet through `tailscale serve --tcp 22 tcp://127.0.0.1:22` (SETUP.md); nothing
-# else can, because sshd never listens off loopback.
+# else can, because sshd never listens off loopback. sbxadmin may forward to exactly two loopback ports, the bridge
+# (UI/API, 9760) and the firewall console (8787); nobody else may forward anything.
 cat >"$SSHD_SNIP" <<'EOF'
 # sbx lite mode (managed by image/setup-lite.sh)
 ListenAddress 127.0.0.1
@@ -100,6 +101,8 @@ PermitTTY no
 PermitUserEnvironment no
 Match User sbxadmin
     PermitTTY yes
+    AllowTcpForwarding local
+    PermitOpen 127.0.0.1:9760 127.0.0.1:8787
 EOF
 chmod 644 "$SSHD_SNIP"
 sshd -t || die "sshd config invalid (see $SSHD_SNIP)"

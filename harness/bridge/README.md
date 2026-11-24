@@ -13,7 +13,7 @@ python -B -m unittest discover -s tests         # uses a fake Pi
 ## Local API
 
 Loopback only, **no login**. A web page elsewhere can't drive it: `Host` must be loopback and any `Origin` must be the
-API's own. For another machine, use an SSH tunnel.
+API's own. For another machine, use an SSH tunnel as `sbxadmin` (`image/SETUP.md`, "Operator SSH").
 
 | | |
 |---|---|

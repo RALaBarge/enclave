@@ -266,6 +266,13 @@ the bridge talks to peers by tailnet IP, so MagicDNS is not needed.
 sudo tailscale serve --bg --tcp 22 tcp://127.0.0.1:22    # then from your machine: ssh sbxadmin@<this node's tailnet name>
 ```
 
+The web UI and the firewall console stay on loopback; `sbxadmin` reaches them through a tunnel (sshd permits forwarding
+to these two ports only, and only for that account), then opens `http://localhost:9760/ui/` and `http://localhost:8787/`:
+
+```sh
+ssh -N -L 9760:127.0.0.1:9760 -L 8787:127.0.0.1:8787 sbxadmin@<this node's tailnet name>
+```
+
 Not `tailscale up --ssh`: Tailscale SSH needs tailscaled to switch users, and this image's unit withholds that on purpose
 (only `CAP_NET_ADMIN` and `CAP_NET_RAW`, `NoNewPrivileges`, `ProtectHome`), so it answers "operation not permitted". The
 forward needs no privilege, sshd never listens off loopback, and your tailnet's access rules decide who reaches it. Add
