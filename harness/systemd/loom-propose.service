@@ -1,0 +1,22 @@
+[Unit]
+Description=Loom proposer (reads finished sessions, queues candidate memories for review in the console)
+After=loom.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Its own account: the memq token (push only matters; it cannot accept) and the model key, read by systemd from
+# the root-written secrets file. It reads only trusted text from Loom; tool output never reaches it.
+User=loomprop
+SupplementaryGroups=loomq
+EnvironmentFile=-/run/pi-bridge-secrets/secrets.env
+ExecStart=/usr/bin/python3 -B /opt/proposer/propose.py --once --idle 30 --state /var/lib/loom-propose/state.json --token-file /etc/loom/memq.token
+StateDirectory=loom-propose
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=

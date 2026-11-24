@@ -74,7 +74,8 @@ print(next((m["digest"] for m in json.load(sys.stdin)["models"] if m["name"] == 
 #    Needs Python sqlite3 built with extension loading (Debian python3 is; unverified on this image).
 #  - requirements.txt: fastapi==0.139.0 uvicorn==0.49.0 httpx==0.28.1 pydantic==2.13.4 sqlite-vec==0.1.9
 #  - Python 3.13 comes from Debian 13 python3 (README says 3.13+).
-#  - Auth: none on any route (POST /log, /search, GET /conversations, /stats, /health). Loopback bind is the only access control.
+#  - Auth: with LOOM_TOKENS_DIR set (below), every write needs its role's bearer token from /etc/loom/<role>.token:
+#    ingest (loomship), memq (the memq tool, the proposer), review (the console's Memory tab). Reads stay open on loopback.
 #  - Outbound: only POST ${LOOM_OLLAMA_URL}/api/embed (httpx, 30s timeout). Nothing else.
 #  - UNVERIFIED: whether the GitHub-fetched summaries were complete (install.sh and cli.py fetches were summarised, not raw).
 id loom &>/dev/null || useradd --system --home /var/lib/loom --create-home --shell /usr/sbin/nologin loom
@@ -90,7 +91,7 @@ Wants=ollama.service
 [Service]
 User=loom
 WorkingDirectory=/opt/loom
-Environment=LOOM_OLLAMA_URL=http://127.0.0.1:11434 LOOM_EMBED_MODEL=${EMBED_MODEL} LOOM_BIND_HOST=127.0.0.1 LOOM_PORT=9741 LOOM_DB_PATH=/var/lib/loom/loom.db
+Environment=LOOM_OLLAMA_URL=http://127.0.0.1:11434 LOOM_EMBED_MODEL=${EMBED_MODEL} LOOM_BIND_HOST=127.0.0.1 LOOM_PORT=9741 LOOM_DB_PATH=/var/lib/loom/loom.db LOOM_TOKENS_DIR=/etc/loom
 ExecStart=/opt/loom/.venv/bin/python /opt/loom/run.py serve
 Restart=on-failure
 NoNewPrivileges=yes
@@ -249,13 +250,42 @@ install -d -m 0700 -o pibridge -g pibridge /var/lib/pi-bridge-work
 install -d /opt/pi-bridge
 for f in pairing peers pibridge server; do install -m 644 "$ROOT/harness/bridge/$f.py" /opt/pi-bridge/; done
 install -m 644 "$ROOT/harness/bridge/desk-extension.js" /opt/pi-bridge/   # Pi's only tools (PI_LOCKDOWN + -e)
-# The bridge imports the redactor from ./redact next to itself (or ../redact in the
-# repo). Without the file, --loom-url refuses to post rather than storing raw text.
-install -d /opt/pi-bridge/redact
-install -m 644 "$ROOT/harness/redact/output_redactor.py" /opt/pi-bridge/redact/
+rm -rf /opt/pi-bridge/redact   # the bridge no longer talks to Loom; loomship (below) carries the redactor
 install -d /opt/pi-bridge/ui/modules
 for f in index.html view.js host.js worker.js modules/modules.json modules/sessions.js modules/chat.js modules/dirs.js modules/tree.js modules/inspect.js; do install -m 644 "$ROOT/harness/ui/$f" "/opt/pi-bridge/ui/$f"; done
 install -m 644 "$ROOT/harness/systemd/pi-bridge.service" /etc/systemd/system/
+# 0711: other accounts may pass through Pi's home to the session files (world-readable, written by Pi) but cannot list it
+# or read anything Pi keeps 0600 there (auth.json, settings, the bridge's state).
+chmod 0711 /var/lib/pi-bridge
+
+# ---- Memory: loomship, the proposer, memq, and Loom's role tokens ----
+# Each writer has its own account and token; only the console's account can read the review token, so only the
+# console's Memory tab can accept a proposal. memq (agent or operator) and the proposer can only propose and pop.
+id loomship &>/dev/null || useradd --system --home /nonexistent --shell /usr/sbin/nologin loomship
+id loomprop &>/dev/null || useradd --system --home /nonexistent --shell /usr/sbin/nologin loomprop
+getent group loomq >/dev/null || groupadd -r loomq
+usermod -aG loomq loomprop
+if id sbxadmin &>/dev/null; then usermod -aG loomq sbxadmin; fi   # the operator's `memq` on the core
+install -d -m 0755 -o root -g root /etc/loom
+mktoken() {   # role group: a new token unless one exists; owner loom (Loom checks it), group = the one client
+  local f=/etc/loom/$1.token
+  [ -s "$f" ] || python3 -c 'import secrets; print(secrets.token_urlsafe(32))' >"$f"
+  chown "loom:$2" "$f"; chmod 0440 "$f"
+}
+mktoken ingest loomship
+mktoken memq loomq
+mktoken review sbxconsole
+install -d /opt/loomship /opt/proposer
+install -m 644 "$ROOT/harness/loomship/loomship.py" "$ROOT/harness/redact/output_redactor.py" /opt/loomship/
+install -m 644 "$ROOT/harness/proposer/propose.py" "$ROOT/harness/proposer/calibrate.py" /opt/proposer/
+install -d /opt/proposer/calib
+install -m 644 "$ROOT/harness/proposer/calib/cases.jsonl" /opt/proposer/calib/
+install -m 755 "$ROOT/desk-tools/memq/run.py" /usr/local/bin/memq
+for u in loomship.service loom-propose.service loom-propose.timer; do install -m 644 "$ROOT/harness/systemd/$u" /etc/systemd/system/; done
+# The memq desk tool's own copy of the token, beside the deployed tool (like fanout's keys.json): the desk runs it.
+if [ -d /opt/deskbox/tools/memq ]; then
+  install -m 0600 -o deskbox -g deskbox /etc/loom/memq.token /opt/deskbox/tools/memq/memq.token
+fi
 install -m 755 "$HERE/smoke-test.sh" /usr/local/sbin/sbx-smoke-test
 install -m 755 "$HERE/sbx-mode.sh" /usr/local/sbin/sbx-mode
 install -m 755 "$HERE/sbx-regen-hostkeys.sh" /usr/local/sbin/sbx-regen-hostkeys
@@ -271,7 +301,7 @@ chmod 640 /etc/sbxfw/tighten-token
 # Bitwarden token and project id (created by the operator; sbx-fetch-secrets reads them as root before pi-bridge starts).
 touch /etc/sbx/bws-token /etc/sbx/bws.env; chown root:root /etc/sbx/bws-token /etc/sbx/bws.env; chmod 600 /etc/sbx/bws-token /etc/sbx/bws.env   # root only: Pi's user never reads the token
 systemctl daemon-reload
-systemctl enable nftables sbx-console loom ollama pi-bridge sbx-session-gate deskbox
+systemctl enable nftables sbx-console loom ollama pi-bridge sbx-session-gate deskbox loomship loom-propose.timer
 
 # ---- gateway for the separate sandbox box: private link on eth1 (10.77.0.1), forwarding on. The firewall forwards
 # nothing until the console allowlist says so. A one-NIC VM simply never brings eth1 up.

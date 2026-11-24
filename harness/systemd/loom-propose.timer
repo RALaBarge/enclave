@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Loom proposer every 10 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+
+[Install]
+WantedBy=timers.target

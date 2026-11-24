@@ -4,7 +4,17 @@ Plain DeskBox tools that run on the trusted core, one job at a time, under the d
 go through the broker, so they are not in `tools/tools.list`. `python3 sync.py --check` validates them and
 `sync.py --deploy DIR` installs each as `DIR/<name>/` (run.py 0700, tcs.yaml 0600). Re-pin after a change, as for the stubs.
 
-Use this for a tool that needs a secret the sandbox must never hold.
+Use this for a tool that needs a secret the sandbox must never hold, or a core service it must never reach.
+
+## memq
+
+The agent's way to memory, through Ryan's review queue in Loom (127.0.0.1:9741, fixed in `run.py`). `{"op": "push", "text",
+"events"?, "note"?}` queues a candidate (`by: agent`); `list` shows the queue; `pop` moves every entry Ryan accepted into memory;
+`search` looks up accepted memories. It cannot accept anything: only the console's Memory tab holds Loom's review token. Its
+own token is `memq.token` beside the deployed tool (deskbox, 0600), a copy of `/etc/loom/memq.token` that `provision.sh`
+writes. The same file is Ryan's command on the core (`/usr/local/bin/memq push|list|pop|search`, `by: ryan`, group `loomq`).
+
+Tests: `python3 -B -m unittest discover -s desk-tools/memq`.
 
 ## fanout
 

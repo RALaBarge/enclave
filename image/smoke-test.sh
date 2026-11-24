@@ -42,7 +42,7 @@ check_mode() {
 
 check_units() {
   local u state
-  for u in ollama loom sbx-console sbx-broker sbx-session-gate deskbox pi-bridge nftables; do
+  for u in ollama loom loomship sbx-console sbx-broker sbx-session-gate deskbox pi-bridge nftables; do
     state=$(systemctl is-active "$u" 2>/dev/null)
     if [ "$state" = active ]; then pass "unit:$u" "active"
     else fail "unit:$u" "state=${state:-unknown}"; fi

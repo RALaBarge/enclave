@@ -34,14 +34,14 @@ A tool call goes: Pi -> the desk extension -> **DeskBox** checks the input again
 |---|---|
 | `harness/bridge/` | **pi-bridge**: HTTP/SSE API over Pi's RPC mode, one Pi process per session, loopback only (`127.0.0.1:9760`). Serves the web UI, calls the session gate before any session starts, optional tailnet peer messaging (off by default). Also `desk-extension.js`, Pi's only tools: the desk's. |
 | `harness/ui/` | the **web UI** served by pi-bridge at `/ui/`: sessions, chat (text, thinking, and each tool call with its request and result), directories, tree, inspector. No build step; each module runs in its own Worker. |
-| `console/` | the **console** (`127.0.0.1:8787`, bearer token): firewall (session and build profiles, allow and block lists, DNS, management access, blocked attempts), tools (enable, timeout, the code and contract behind each), activity (the desk's recent jobs with request and result), settings (read-only). `test_netns.sh` proves the rules on a real kernel. |
+| `console/` | the **console** (`127.0.0.1:8787`, bearer token): firewall (session and build profiles, allow and block lists, DNS, management access, blocked attempts), tools (enable, timeout, the code and contract behind each), activity (the desk's recent jobs with request and result), memory (review queue: accept, edit or reject proposed memories; retract), settings (read-only). `test_netns.sh` proves the rules on a real kernel. |
 | `harness/gate/` | **session gate**: the one place a new session's firewall profile is forced. Holds the tighten-only token and exposes nothing that loosens. |
 | `harness/broker/` | **broker**: one job lane to the sandbox over SSH (forced command), on a unix socket only the desk's group may use. Locks the firewall to session before any `net` job and can reboot the sandbox between jobs. |
 | `harness/stub/`, `harness/toolsadapter/` | the stub every `-sbx` tool runs under DeskBox (talks to the broker, nothing else), and the adapter that turns desk contracts into a harness's tool definitions, including how much of a result goes inline. |
-| `harness/redact/` | redaction of each settled turn before pi-bridge logs it to Loom. |
+| `harness/loomship/`, `harness/proposer/`, `harness/redact/` | **memory**: `loomship` ships Pi's session files to Loom, redacted, and moves its cursor only on Loom's receipt; the proposer reads finished sessions and queues candidate memories for review; the redactor both use. |
 | `deskbox` (pinned in `image/manifest.env`) | the **desk** every tool call goes through: contract check in, contract check out, each run in its own bwrap, as its own account. Binaries in `image/artifacts`. |
 | `tools/` | the sandbox tools: the [DeskboxTools](https://github.com/RALaBarge/DeskboxTools) submodule (`tools.list`, and per tool its `run` and contract). Clone with `--recurse-submodules`. |
-| `desk-tools/` | tools that run on the core under the desk instead of on the sandbox, because they need a secret the sandbox must never hold: `fanout` (ask several models, one synthesises). |
+| `desk-tools/` | tools that run on the core under the desk instead of on the sandbox, because they need a secret or a core service the sandbox must never reach: `fanout` (ask several models, one synthesises) and `memq` (propose to, pop from and search memory). |
 | `sbx/` | the sandbox side: `sbx-run` (one `bwrap` per tool, no network unless `tools.list` says `net`) and `sbx-channel` (the forced command: run, reset, install). |
 | `image/` | install and build: `provision.sh` (core), `provision-sbx.sh` + `finalize-sbx.sh` (sandbox), `build-pi.sh` (Pi from pinned source, run under Node), `sbx-mode`, `sbx-push-tools`, the bootstrap for a sandbox with no screen, the smoke tests, and `packer/` for the VM images. `SETUP.md` is the operator guide. |
 | `sync.py` | checks every tool's contract and stub, and deploys them into the desk (`--check`, `--deploy`). |
@@ -70,6 +70,21 @@ ssh -N -L 9760:127.0.0.1:9760 -L 8787:127.0.0.1:8787 sbxadmin@<core>
 # http://localhost:9760/ui/   the agent: sessions and chat
 # http://localhost:8787/      the console (token: sudo cat /etc/sbxfw/token on the core)
 ```
+
+## Memory
+
+Loom keeps every entry Pi writes, as an append-only event: `loomship` reads Pi's session files, redacts every string, and
+posts them; its cursor moves only past entries Loom confirms it committed, so nothing is lost while Loom is down. Tool output is
+stored marked untrusted: kept for audit, never embedded, never recalled. Your prompts and the assistant's final replies are
+embedded for search.
+
+Nothing becomes memory without you. Candidates come from the proposer (every 10 minutes it reads sessions idle for 30 and asks
+the model what is worth keeping, from trusted text only), from the agent (`memq push`), or from you (`memq push` on the core).
+They wait in the console's **Memory** tab, the only place that can accept one (it alone holds Loom's review token). `memq pop`,
+run by the agent or by you, moves accepted entries into memory; `memq search` looks them up. Memory reaches a session only when
+asked for that way. Each writer has its own account and Loom token: `loomship` (ingest), the proposer and `memq` (propose, pop),
+the console (review). `harness/proposer/calibrate.py` scores the proposer against labelled windows, injections included; run it
+after any model or prompt change.
 
 Secrets come from Bitwarden Secrets Manager at service start: the model keys go to pi-bridge's environment through a file in
 `/run` (tmpfs), and the gate token only into the `page` and `fetch` tool directories (root:sbx, 0640) that are pushed to the
@@ -206,6 +221,9 @@ python3 -B -m unittest discover -s harness/toolsadapter
 python3 -B -m unittest discover -s harness/redact
 python3 -B sbx/test_tools.py                                  # the workspace tools in sbx-run's bwrap
 python3 -B -m unittest discover -s desk-tools/fanout
+python3 -B -m unittest discover -s desk-tools/memq
+python3 -B -m unittest discover -s harness/loomship
+python3 -B -m unittest discover -s harness/proposer
 python3 -B -m unittest test_sync_deploy && python3 sync.py --check
 python3 -B image/test_fetch_gate.py
 sudo bash console/test_netns.sh                               # real nftables in throwaway namespaces (Linux, root)

@@ -30,6 +30,9 @@ section{display:none}section.on{display:block}
 .explain>div{border:1px solid var(--bd);border-radius:6px;padding:8px 10px;background:var(--bg)}
 .explain b{display:block;margin-bottom:2px}
 pre.src{margin:4px 0 10px;max-height:420px;overflow:auto;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:8px;font-size:12px;white-space:pre-wrap;word-break:break-word}
+.prop{border:1px solid var(--bd);border-radius:6px;padding:10px;margin-bottom:10px;background:var(--bg)}
+.prop textarea{width:100%;min-height:60px;font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--bd);border-radius:5px;padding:6px}
+.prop .row{margin-top:6px}tr.cited td{background:color-mix(in srgb,var(--ac) 14%,transparent)}
 .jobs{max-height:480px;overflow:auto}tr.job td{cursor:pointer}tr.job td:first-child{white-space:nowrap}tr.job:hover td{background:var(--bg)}
 </style></head><body>
 <div id="warn" hidden>
@@ -42,7 +45,7 @@ pre.src{margin:4px 0 10px;max-height:420px;overflow:auto;background:var(--bg);bo
 <div id="banner"><b>Firewall change is live but NOT saved.</b> It reverts in <span id="count">0</span>s unless you confirm.
   <button class="b p" id="confirm">Confirm and save</button> <button class="b" id="revert">Revert now</button></div>
 <header><h1>Enclave Console</h1>
-  <nav role="tablist"><button data-t="fw" aria-selected="true">Firewall</button><button data-t="tools" aria-selected="false">Tools</button><button data-t="act" aria-selected="false">Activity</button><button data-t="set" aria-selected="false">Settings</button></nav>
+  <nav role="tablist"><button data-t="fw" aria-selected="true">Firewall</button><button data-t="tools" aria-selected="false">Tools</button><button data-t="act" aria-selected="false">Activity</button><button data-t="mem" aria-selected="false">Memory</button><button data-t="set" aria-selected="false">Settings</button></nav>
   <span class="mut" id="tok-state"></span><button class="b" id="tok-btn">Token</button></header>
 <main>
 <section id="fw" class="on">
@@ -100,6 +103,15 @@ pre.src{margin:4px 0 10px;max-height:420px;overflow:auto;background:var(--bg);bo
   <div class="jobs"><table><thead><tr><th>Time</th><th>Tool</th><th>Status</th><th>Took</th><th>Request</th></tr></thead><tbody id="jobs"></tbody></table></div>
   <div class="mut" id="jobs-err"></div></div>
   <div class="card" id="job-card" hidden><h2>Job <span class="mono" id="job-id"></span></h2><div id="job"></div></div></section>
+<section id="mem">
+  <div class="card"><h2>Waiting for review <span class="mut">(proposed by the agent, the end-of-session proposer, or you with memq push)</span></h2>
+    <p class="mut" style="margin-top:0">Nothing here is memory yet. Accept (edit the text first if you like) or reject. Accepted entries go into memory the next time
+    <span class="mono">memq pop</span> runs, from the agent or from you on the core. Check where an entry came from before accepting it: text from a web page or a tool's output
+    shows as <span class="pill warn">untrusted</span>.</p>
+    <div id="mem-pending"></div><div class="mut" id="mem-err"></div></div>
+  <div class="card" id="mem-ev-card" hidden><h2>Where it came from</h2><div id="mem-ev"></div></div>
+  <div class="card"><h2>Accepted, waiting for <span class="mono">memq pop</span></h2><div id="mem-accepted"></div></div>
+  <div class="card"><h2>Memory <span class="mut" id="mem-stats"></span></h2><div id="mem-active"></div></div></section>
 <section id="set"><div class="card"><h2>Settings</h2><div id="settings"></div></div></section>
 </main><div id="toast"></div>
 <script>
@@ -232,6 +244,45 @@ function showJob(j){
 document.addEventListener("click",e=>{if(e.target.closest("tr.job"))$("job-card").scrollIntoView({behavior:"smooth",block:"nearest"})});
 setInterval(()=>{if(document.getElementById("act").classList.contains("on"))loadActivity()},3000);
 
+// ---- memory
+async function loadMemory(){
+  let r;try{r=await api("/api/memory");$("mem-err").textContent=""}catch(e){$("mem-err").textContent=e.message;return}
+  const pend=$("mem-pending");pend.replaceChildren();
+  r.pending.forEach(p=>{
+    const ta=el("textarea",{value:p.text}),by=el("span",{className:"pill"+(p.by==="ryan"?"":" warn")},"by "+p.by);
+    const decide=(action)=>act(async()=>{const body={id:p.id,action};if(action==="accept"&&ta.value.trim()!==p.text)body.text=ta.value;
+      await api("/api/memory/decide",body);toast(action==="accept"?"Accepted; it moves into memory at the next memq pop":"Rejected");loadMemory()});
+    const kids=[el("div",{className:"row mut"},by,el("span",{className:"mono"},p.id),hhmmss(p.created_at)),ta];
+    if(p.note)kids.push(el("div",{className:"mut"},"Note: "+p.note));
+    const row=el("div",{className:"row"},el("button",{className:"b p",onclick:()=>decide("accept")},"Accept"),
+      el("button",{className:"b d",onclick:()=>decide("reject")},"Reject"));
+    if(p.events.length)row.append(el("button",{className:"b",onclick:()=>showEvents(p.events)},"Show source ("+p.events.length+")"));
+    else row.append(el("span",{className:"mut"},"no source events cited"));
+    kids.push(row);pend.append(el("div",{className:"prop"},...kids));
+  });
+  if(!r.pending.length)pend.append(el("div",{className:"mut"},"Nothing waiting."));
+  const acc=$("mem-accepted");acc.replaceChildren();
+  r.accepted.forEach(p=>acc.append(el("div",{className:"prop"},el("div",{className:"row mut"},el("span",{className:"pill"},"by "+p.by),"accepted "+hhmmss(p.decided_at)),el("div",{},p.text))));
+  if(!r.accepted.length)acc.append(el("div",{className:"mut"},"None."));
+  const l=r.ledger||{};$("mem-stats").textContent="("+r.memories.length+" active; ledger: "+(l.events||0)+" events, "+(l.untrusted||0)+" untrusted, "+(l.unembedded||0)+" waiting to be embedded)";
+  const mem=$("mem-active");mem.replaceChildren();
+  const tb=el("tbody");r.memories.forEach(m=>{const src=m.source&&m.source.proposal?"proposal "+m.source.proposal+", by "+m.source.by:"";
+    tb.append(el("tr",{},el("td",{},m.text),el("td",{className:"mut mono"},src),el("td",{className:"mut"},hhmmss(m.updated_at)),
+      el("td",{},el("button",{className:"b d",onclick:()=>{if(confirm("Retract this memory? It stops being recalled; its history is kept."))
+        act(async()=>{await api("/api/memory/retract",{id:m.id});toast("Retracted");loadMemory()})}},"Retract"))))});
+  mem.replaceChildren(r.memories.length?el("table",{},el("thead",{},el("tr",{},el("th",{},"Memory"),el("th",{},"From"),el("th",{},"Updated"),el("th",{}))),tb):el("div",{className:"mut"},"No memories yet."));
+}
+async function showEvents(seqs){
+  const r=await act(()=>api("/api/memory/events",{seqs}));if(!r)return;const d=$("mem-ev");d.replaceChildren();
+  const tb=el("tbody");r.events.forEach(e=>tb.append(el("tr",{className:r.cited.includes(e.seq)?"cited":""},el("td",{className:"mono"},String(e.seq)),
+    el("td",{className:"mono"},(e.role||e.type)),el("td",{},e.trust==="untrusted"?el("span",{className:"pill warn"},"untrusted"):""),
+    el("td",{},e.forgotten_at?el("span",{className:"mut"},"(forgotten)"):e.trust==="untrusted"?el("span",{className:"mut"},"(tool output: stored for audit, not shown or recalled)"):(e.text||el("span",{className:"mut"},"(no text)"))))));
+  d.append(el("table",{},el("thead",{},el("tr",{},el("th",{},"Seq"),el("th",{},"Who"),el("th",{}),el("th",{},"Text"))),tb),
+    el("div",{className:"mut",style:"margin-top:6px"},"Highlighted rows are the ones the proposal cites; the others are context."));
+  $("mem-ev-card").hidden=false;$("mem-ev-card").scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+setInterval(()=>{if(document.getElementById("mem").classList.contains("on")&&!document.activeElement.closest(".prop"))loadMemory()},15000);
+
 // ---- settings
 const LABELS={SBX_HOST:"Sandbox host",SBX_USER:"Sandbox user",SBX_PORT:"SSH port",SBX_MAX_TIMEOUT:"Max job timeout (s)",SBX_MAX_REQ:"Max request bytes",SBX_MAX_OUT:"Max output bytes"};
 let cur=null;
@@ -259,7 +310,7 @@ async function loadSettings(){
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("nav button").forEach(x=>x.setAttribute("aria-selected",x===b));
   document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===b.dataset.t));
-  if(b.dataset.t==="tools")loadTools();if(b.dataset.t==="set")loadSettings();if(b.dataset.t==="act")loadActivity();});
+  if(b.dataset.t==="tools")loadTools();if(b.dataset.t==="set")loadSettings();if(b.dataset.t==="act")loadActivity();if(b.dataset.t==="mem")loadMemory();});
 // The lite-mode warning applies only when the sandbox really is this machine.
 async function load(){loadFw();loadDrops();const st=await act(()=>api("/api/settings"));
   let acked=false;try{acked=!!localStorage.getItem("sbxc-ack")}catch(e){}

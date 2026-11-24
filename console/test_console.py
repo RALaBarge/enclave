@@ -559,6 +559,93 @@ class Settings(unittest.TestCase):
         with self.assertRaises(c.Bad):
             c.reset_set("no")
 
+class Memory(unittest.TestCase):
+    """The Memory tab's backend against a fake Loom: reads carry no token, decisions carry the review token."""
+
+    def setUp(self):
+        seen = self.seen = []
+        replies = self.replies = {
+            "/proposals": {"proposals": [{"id": "0123456789abcdef", "text": "t", "by": "agent", "events": [5]}]},
+            "/memories": {"memories": []},
+            "/stats": {"ledger": {"events": 9}},
+            "/events": {"events": [{"seq": s, "session": "S", "type": "message", "role": "user", "trust": "trusted",
+                                    "text": "x", "raw": "SECRET-RAW"} for s in range(1, 10)]},
+            "/proposals/0123456789abcdef/decide": {"id": "0123456789abcdef", "status": "accepted"},
+            "/memories/p-1/retract": {"id": "p-1", "status": "retracted"},
+        }
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _go(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                seen.append((self.command, self.path, self.headers.get("Authorization"),
+                             json.loads(self.rfile.read(n)) if n else None))
+                out = json.dumps(replies.get(self.path.split("?")[0], {"error": "nope"})).encode()
+                self.send_response(200 if self.path.split("?")[0] in replies else 404)
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+            do_GET = do_POST = _go
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+        d = tempfile.mkdtemp()
+        self.tok = os.path.join(d, "review.token")
+        with open(self.tok, "w") as f:
+            f.write("tok-review\n")
+        for k, v in (("LOOM_URL", "http://127.0.0.1:%d" % self.srv.server_address[1]), ("LOOM_REVIEW_TOKEN", self.tok)):
+            pt = unittest.mock.patch.object(c, k, v)
+            pt.start()
+            self.addCleanup(pt.stop)
+
+    def test_overview_reads_without_a_token(self):
+        r = c.memory_overview()
+        self.assertEqual(r["pending"][0]["id"], "0123456789abcdef")
+        self.assertEqual(r["ledger"], {"events": 9})
+        self.assertTrue(all(auth is None for _, _, auth, _ in self.seen))
+
+    def test_decide_sends_the_review_token_and_the_edit(self):
+        c.memory_decide("0123456789abcdef", "accept", "edited")
+        self.assertEqual(self.seen[-1], ("POST", "/proposals/0123456789abcdef/decide", "Bearer tok-review",
+                                         {"action": "accept", "text": "edited"}))
+
+    def test_decide_validates_before_calling_loom(self):
+        for pid, action in (("../x", "accept"), ("0123456789abcdef", "delete"), (None, "accept")):
+            with self.assertRaises(c.Bad):
+                c.memory_decide(pid, action)
+        self.assertEqual(self.seen, [])
+
+    def test_missing_review_token_is_a_conflict_not_an_unsigned_call(self):
+        os.unlink(self.tok)
+        with self.assertRaises(c.Conflict):
+            c.memory_decide("0123456789abcdef", "reject")
+        self.assertEqual(self.seen, [])
+
+    def test_events_show_context_without_raw_content(self):
+        r = c.memory_events([5])
+        self.assertEqual(r["cited"], [5])
+        self.assertNotIn("raw", r["events"][0])
+        self.assertIn("after=1", self.seen[-1][1])
+        with self.assertRaises(c.Bad):
+            c.memory_events([1, 900])
+
+    def test_retract_carries_the_review_token(self):
+        c.memory_retract("p-1")
+        self.assertEqual(self.seen[-1][2], "Bearer tok-review")
+        with self.assertRaises(c.Bad):
+            c.memory_retract("a/b")
+
+    def test_loom_down_is_reported(self):
+        with unittest.mock.patch.object(c, "LOOM_URL", "http://127.0.0.1:9"):
+            with self.assertRaises(c.Conflict) as cm:
+                c.memory_overview()
+        self.assertIn("not reachable", str(cm.exception))
+
+
 class Http(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

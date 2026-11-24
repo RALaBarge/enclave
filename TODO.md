@@ -28,11 +28,12 @@ October.
 6. **UI against real Pi:** chat is checked against real events (2026-11-24); Tree and Inspector are not. Directories: add
    `GET /dirs` so folders without sessions appear.
 7. **Smoke test gaps (review J):** nothing proves a `-sbx` job itself has no network, and `check_listeners` looks at TCP only.
-8. **Loom:** replace `/log` with the event store (format settled 2026-11-24, Decisions "Loom format"); ship Pi's session
-   files through a confirmed outbox (a shipper with a cursor per file, moved only on Loom's commit ack; dedup by source,
-   session and entry id); start pi-bridge's Loom feed only after that. Then memgate (Decisions "Memory"): the `proposals`
-   table, the console's Memory tab, the `memq` tool, the session-end proposer and its calibration set. Still open: whether
-   accepted records are added to new sessions automatically or only on request.
+8. **Memory, follow-ups** (built and running on the core 2026-11-24, see Decisions "Memory"):
+   push Loom's `events` branch (`LOOM_COMMIT` pins `29d40d1`, which is only local, so a fresh `provision.sh` fails until it
+   is on GitHub); restart pi-bridge when convenient so it runs the new `server.py` (no Loom code) and open sessions get `memq`;
+   label about 50 real windows for `harness/proposer/calibrate.py` (`calibrate.py export SESSION`); drop Loom's old `/log`,
+   message tables, hooks and MCP server (nothing uses them); give the proposer only its own key rather than all of
+   `secrets.env`.
 9. **Request inspector raw view:** a recording proxy in the bridge that Pi's provider base URL points at, with `Authorization`
    redacted; also the raw feed for Loom and the fixtures for the Go runner.
 10. **Go runner** (`docs/PI-FEATURES.md` build order), optional: a second engine to test next to Pi, not a replacement.
@@ -56,7 +57,7 @@ October.
 - **Nov 14-15:** core moved to bare metal; Pi under Node (the sandbox-class CPUs lack SSE4.2, so Pi's Bun binary cannot run);
   sandbox `install` verb and the core-served bootstrap; security review fixes (secrets in `/run`, broker locks the firewall
   before `net` jobs, forwarding only after nftables loads, and more); Atlas.
-- **Nov 21:** `fanout` desk tool. **Nov 24:** operator UI (SSH tunnel for `sbxadmin`; chat with thinking and a tool-call column;
+- **Nov 21:** `fanout` desk tool. **Nov 24:** memory (Loom event ledger and review queue, `loomship`, proposer with a calibration set, `memq`, the console's Memory tab); operator UI (SSH tunnel for `sbxadmin`; chat with thinking and a tool-call column;
   console mode from `SBX_HOST`, Tools code view, Activity tab); page/fetch back on; branches merged and cleaned.
 
 Review findings from 2026-10-18 closed since: A (stub timeout sized from the contract), B/C (rsync tool removed), D, E, G
@@ -72,7 +73,7 @@ real groups), K, L, M, N, P.
 | Web UI | Our own, small, no build step |
 | Firewall console as a UI module | Dropped (branch deleted 2026-11-24): the bridge would have had to proxy the console with its token, letting Pi edit its own firewall |
 | Loom format | Append-only `events` (one per Pi session-file entry; fixed columns plus the harness's own JSON) and content-addressed `blobs` in SQLite, `POST /events` acked after commit, ingest only through a socket or token (2026-11-24). Redact before storing, recording the redactor version; the only edit is a scrub when better rules find a secret. Tool output is stored marked untrusted: never embedded, never recalled. Embed your prompts and the final assistant text, in a rebuildable index tagged with the embedding model. Delete by tombstone, plus a purge. Replaces `/log` (nothing else uses it) |
-| Memory (memgate) | 2026-11-24. Nothing enters memory without Ryan's review. Proposals (from a session-end proposer that reads only Ryan's prompts and the final assistant text, or pushed by hand or by the agent) go to a `proposals` queue in Loom with links to their source events. The console's Memory tab (operator token; the bridge cannot reach it) accepts, edits or rejects them and only changes their state. A `memq` tool (`push`, `pop`, `list`), run by Ryan on the core or by the agent as a desk tool, is the only writer to memory: `pop` moves accepted entries in. The raw event log is never recalled |
+| Memory (memgate) | 2026-11-24, built the same day. Nothing enters memory without Ryan's review. Recall only on request (`memq search`), never added to a session automatically. Proposals (from a session-end proposer that reads only Ryan's prompts and the final assistant text, or pushed by hand or by the agent) go to a `proposals` queue in Loom with links to their source events. The console's Memory tab (operator token; the bridge cannot reach it) accepts, edits or rejects them and only changes their state. A `memq` tool (`push`, `pop`, `list`), run by Ryan on the core or by the agent as a desk tool, is the only writer to memory: `pop` moves accepted entries in. The raw event log is never recalled |
 | Secrets | Bitwarden Secrets Manager; read-only access token on the core; model keys in `/run`; the gate token only in the page/fetch tool directories |
 | Peers | Keep, off by default |
 | Pi | Kept (2026-11-24). Pi stays the harness; other harnesses (the Go runner included) may be tested beside it, each through `docs/HARNESS-ADMISSION.md` |

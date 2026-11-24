@@ -153,11 +153,13 @@ image hash and harness version. Run the checks as the candidate's own account on
    `--no-approve`), the unit not passing `--peers`, and `peers.py` wrapping peer text in its data envelope.
 
 9. It writes nothing to long-term memory automatically except redacted turns.
-   Must: send settled turns to Loom only through the output redactor and fail closed without it; store tool results only as untrusted events (never embedded, never recalled; `TODO.md`, "Loom format");
-   no automatic recall into new sessions until memgate decides what may be written (`TODO.md`, "Loom"). A turn that carried a
-   trigger must not be replayed into every later session.
-   Settled by: `REDACTOR` and the `--loom-url` path in `harness/bridge/server.py`; the unit not passing `--loom-url` until
-   memgate exists.
+   Must: send its entries to Loom only through the output redactor and fail closed without it; store tool results only as
+   untrusted events (never embedded, never recalled; `TODO.md`, "Loom format"); write memory only through the review queue
+   (`TODO.md`, "Memory"), so nothing is recalled that Ryan did not accept. A turn that carried a trigger must not be
+   replayed into every later session.
+   Settled by: `harness/loomship` (redacts every string, marks tool results untrusted, fails closed without the redactor);
+   Loom's role tokens (`LOOM_TOKENS_DIR`: only the console holds `review`); `memq` as the harness's only memory tool. A second
+   harness needs its own shipper and its own `source` name.
 
 Not verified from this repo, and so not settled by reading it: Pi's built-in tool set and whether its exec or file tools are
 reachable (no config here; the file that would have to change is `harness/systemd/pi-bridge.service` or a config installed by

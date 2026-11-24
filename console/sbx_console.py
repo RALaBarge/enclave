@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.error
 import urllib.request
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -863,6 +864,84 @@ def activity():
     return {"jobs": out}
 
 
+# --------------------------------------------------------------------- memory
+
+# The review side of Loom's memory queue. Agents and memq push proposals; only this tab decides them, with the review
+# token, which only the console's account can read. Accepting changes the proposal's state; `memq pop` moves it into
+# memory. Reads need no token (Loom is loopback only).
+LOOM_URL = E("SBXC_LOOM_URL", "http://127.0.0.1:9741")
+LOOM_REVIEW_TOKEN = E("SBXC_LOOM_REVIEW_TOKEN", "/etc/loom/review.token")
+PROPOSAL_RE = re.compile(r"^[0-9a-f]{16}$")
+MEMORY_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _loom(method, path, body=None, review=False):
+    headers = {"Content-Type": "application/json"}
+    if review:
+        try:
+            with open(LOOM_REVIEW_TOKEN, encoding="utf-8") as f:
+                headers["Authorization"] = "Bearer " + f.read().strip()
+        except OSError as e:
+            raise Conflict(f"cannot read Loom's review token {LOOM_REVIEW_TOKEN}: {e.strerror}")
+    data = json.dumps(body).encode() if body is not None else (b"" if method == "POST" else None)
+    req = urllib.request.Request(LOOM_URL + path, data=data, method=method, headers=headers)
+    try:
+        with _no_proxy.open(req, timeout=30) as r:
+            return json.loads(r.read(8 * 1024 * 1024))
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read(4096)).get("error", "")
+        except ValueError:
+            msg = ""
+        raise Conflict(f"Loom said {e.code}: {msg}"[:300])
+    except (OSError, ValueError) as e:
+        raise Conflict(f"Loom not reachable at {LOOM_URL}: {e}")
+
+
+def memory_overview():
+    return {
+        "pending": _loom("GET", "/proposals?status=pending")["proposals"],
+        "accepted": _loom("GET", "/proposals?status=accepted")["proposals"],
+        "memories": _loom("GET", "/memories?status=active&limit=200")["memories"],
+        "ledger": _loom("GET", "/stats").get("ledger", {}),
+    }
+
+
+def memory_events(seqs):
+    """The events a proposal cites, with a little context either side, so the reviewer sees where it came from."""
+    if not isinstance(seqs, list) or not seqs or len(seqs) > 50 or not all(
+            isinstance(s, int) and not isinstance(s, bool) and s > 0 for s in seqs):
+        raise Bad("seqs must be a list of 1 to 50 event numbers")
+    lo, hi = min(seqs), max(seqs)
+    if hi - lo > 200:
+        raise Bad("those events are too far apart to show together")
+    rows = _loom("GET", f"/events?after={max(0, lo - 4)}&limit={hi - lo + 8}")["events"]
+    return {"cited": sorted(set(seqs)), "events": [
+        {k: r.get(k) for k in ("seq", "session", "type", "role", "ts", "trust", "text", "forgotten_at")}
+        for r in rows]}
+
+
+def memory_decide(pid, action, text=None):
+    if not isinstance(pid, str) or not PROPOSAL_RE.match(pid):
+        raise Bad("bad proposal id")
+    if action not in ("accept", "reject"):
+        raise Bad("action must be accept or reject")
+    body = {"action": action}
+    if text is not None:
+        if not isinstance(text, str) or not text.strip() or len(text) > 8000:
+            raise Bad("text must be 1 to 8000 characters")
+        body["text"] = text
+    return _loom("POST", f"/proposals/{pid}/decide", body, review=True)
+
+
+def memory_retract(mid, reason=""):
+    if not isinstance(mid, str) or not MEMORY_ID_RE.match(mid):
+        raise Bad("bad memory id")
+    reason = reason if isinstance(reason, str) else ""
+    return _loom("POST", f"/memories/{mid}/retract", {"reason": reason[:500] or "retracted in the console"},
+                 review=True)
+
+
 # ----------------------------------------------------------------------- http
 
 ROUTES = {
@@ -880,6 +959,10 @@ ROUTES = {
     ("POST", "/api/tools/source"): lambda b: tool_source(b.get("name")),
     ("GET", "/api/activity"): lambda b: activity(),
     ("POST", "/api/settings/reset"): lambda b: reset_set(b.get("enabled")),
+    ("GET", "/api/memory"): lambda b: memory_overview(),
+    ("POST", "/api/memory/events"): lambda b: memory_events(b.get("seqs")),
+    ("POST", "/api/memory/decide"): lambda b: memory_decide(b.get("id"), b.get("action"), b.get("text")),
+    ("POST", "/api/memory/retract"): lambda b: memory_retract(b.get("id"), b.get("reason", "")),
 }
 
 

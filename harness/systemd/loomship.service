@@ -1,0 +1,26 @@
+[Unit]
+Description=loomship (ships Pi's session files to Loom, redacted; the cursor moves only on Loom's receipt)
+After=loom.service
+Wants=loom.service
+
+[Service]
+# Its own account: it reads Pi's session files (world-readable inside /var/lib/pi-bridge, which is 0711 so the
+# account can reach them without listing Pi's home or reading auth.json) and holds only the ingest token.
+User=loomship
+ExecStart=/usr/bin/python3 -B /opt/loomship/loomship.py --sessions /var/lib/pi-bridge/.pi/agent/sessions --state /var/lib/loomship/state.json --token-file /etc/loom/ingest.token
+StateDirectory=loomship
+StateDirectoryMode=0700
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+IPAddressAllow=localhost
+IPAddressDeny=any
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
