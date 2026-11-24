@@ -86,4 +86,4 @@ allowed_side_effects:
 execution:
   mode: direct
   max_retries: 0
-  timeout_ms: 90000   # pop embeds each accepted entry on the core's slow CPU
+  timeout_ms: 900000   # pop embeds each accepted entry: about a minute each on the core's CPU

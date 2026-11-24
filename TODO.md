@@ -29,7 +29,7 @@ October.
    `GET /dirs` so folders without sessions appear.
 7. **Smoke test gaps (review J):** nothing proves a `-sbx` job itself has no network, and `check_listeners` looks at TCP only.
 8. **Memory, follow-ups** (built and running on the core 2026-11-24, see Decisions "Memory"):
-   push Loom's `events` branch (`LOOM_COMMIT` pins `29d40d1`, which is only local, so a fresh `provision.sh` fails until it
+   push Loom's `events` branch (`LOOM_COMMIT` pins `ad127ba`, which is only local, so a fresh `provision.sh` fails until it
    is on GitHub); restart pi-bridge when convenient so it runs the new `server.py` (no Loom code) and open sessions get `memq`;
    label about 50 real windows for `harness/proposer/calibrate.py` (`calibrate.py export SESSION`); drop Loom's old `/log`,
    message tables, hooks and MCP server (nothing uses them); give the proposer only its own key rather than all of

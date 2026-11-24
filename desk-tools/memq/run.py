@@ -38,7 +38,7 @@ def call(method, path, token=None, body=None):
     req = urllib.request.Request(LOOM + path, data=data, method=method, headers=headers)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # loopback: never through a proxy
     try:
-        with opener.open(req, timeout=60) as r:
+        with opener.open(req, timeout=600) as r:   # pop embeds on a slow CPU: minutes per entry
             return json.loads(r.read(4 * 1024 * 1024))
     except urllib.error.HTTPError as e:
         try:
