@@ -154,7 +154,7 @@ image hash and harness version. Run the checks as the candidate's own account on
 
 9. It writes nothing to long-term memory automatically except redacted turns.
    Must: send settled turns to Loom only through the output redactor and fail closed without it; never store raw tool results;
-   no automatic recall into new sessions until memgate decides what may be written (`TODO.md` task 5). A turn that carried a
+   no automatic recall into new sessions until memgate decides what may be written (`TODO.md`, "Loom"). A turn that carried a
    trigger must not be replayed into every later session.
    Settled by: `REDACTOR` and the `--loom-url` path in `harness/bridge/server.py`; the unit not passing `--loom-url` until
    memgate exists.
@@ -210,6 +210,6 @@ whether deployed tools match the repo (`sync.py` checks the repo, deployment is 
 It is not a certification. A harness that passes section 2 is admitted to run next to Pi, not trusted: the enforcement stays the
 VM split, `sbx-run`/bwrap, the broker allowlist and Unix file modes, none of which this document strengthens.
 
-It does not replace the independent review (TODO task 11). The checklist is a reviewer's script, not a second opinion: the gateway
+It does not replace the independent review (`TODO.md`, "Independent review"). The checklist is a reviewer's script, not a second opinion: the gateway
 and UI design still need review by someone who is not the author of this repo. It is also not a review of DeskBox, Pi or Loom;
 their guarantees belong to their pinned commits (`image/manifest.env`).

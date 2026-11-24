@@ -223,7 +223,7 @@ Line counts are rough estimates in the runner's style, tests not included.
 | JSON mode (events as JSONL on stdout) | **DROP** | SSE covers it. |
 | Print mode (`-p`, one prompt, print the answer) | **LATER** | A 20-line `enclave-ask` CLI over the HTTP API, if wanted. |
 | TypeScript SDK | **DROP** | |
-| Extension UI requests (`select`, `confirm`, `input`, `editor`, `notify`, `setStatus`, `setWidget`, `setTitle`) | **NIXED** as extension UI | `confirm` comes back as the desk approval gate (TODO task 3), owned by the desk, not the model loop. |
+| Extension UI requests (`select`, `confirm`, `input`, `editor`, `notify`, `setStatus`, `setWidget`, `setTitle`) | **NIXED** as extension UI | `confirm` comes back as the desk approval gate (`TODO.md`, "More UI modules"), owned by the desk, not the model loop. |
 | `get_commands` (slash-command discovery) | **DROP** | No commands. Answer an empty list if the UI asks. |
 | `export_html` | **NIXED** | Plan step 2. The JSONL file is the export. |
 | Interactive TUI: fullscreen and regular modes, differential renderer, scrollbar, mouse, copy on select, editor, autocomplete, external editor, hotkeys, keybindings, double-Escape tree, `/tree` filters, mermaid, inline images, OSC 8/9 | **DROP** | The UI is the web UI. |
@@ -272,7 +272,7 @@ Line counts are rough estimates in the runner's style, tests not included.
 Every line of the loop lands in the trusted core, so it needs tests like the rest of the core, not a handful of happy paths.
 
 - **Faux provider:** a test double that plays scripted streams, about 30 lines. It's test scaffolding, not a loop feature.
-- **Golden provider streams:** during the stopgap (`HARNESS-HARDENING-PLAN.md` step 1), the recording proxy (TODO task 5) captures real SSE
+- **Golden provider streams:** during the stopgap (`HARNESS-HARDENING-PLAN.md` step 1), the recording proxy (`TODO.md`, "Request inspector raw view") captures real SSE
   responses from each pinned model: plain text, thinking, one tool call, several tool calls in one stream, a stream cut off
   mid-call, an error. They're replayed as fixtures for the SSE parser and the tool-call assembler.
 - **Session corpus:** real Pi JSONL files with forks, compactions and aborts. The new code must read every one, rebuild the

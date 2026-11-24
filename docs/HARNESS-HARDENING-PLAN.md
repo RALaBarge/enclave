@@ -105,7 +105,7 @@ the flags plus the verification below reach the same floor. Keep it as the fallb
 
 **Verification (admission item 1):**
 - Smoke test: a session that asks for `id` and a write to `/tmp/x` gives no shell child in the unit's cgroup and no `/tmp/x`.
-- Stronger and ongoing: the recording proxy already planned for the request inspector (TODO task 5) checks the `tools` array
+- Stronger and ongoing: the recording proxy already planned for the request inspector (`TODO.md`, "Request inspector raw view") checks the `tools` array
   of every outgoing model request. Any name outside the desk set aborts the session. This checks exactly what the model sees,
   which `get_state` cannot (it does not report tools).
 
@@ -157,7 +157,7 @@ model host. The session profile's default allow list stays empty.
 
 ### 7. Loom (F9)
 
-Hold auto-write to memory until memgate exists (TODO task 5). Never auto-store raw tool results. Keep redaction first and
+Hold auto-write to memory until memgate exists (`TODO.md`, "Loom"). Never auto-store raw tool results. Keep redaction first and
 fail-closed, as planned.
 
 ### 8. Pin models (F12)
@@ -175,7 +175,7 @@ fail-closed, as planned.
 ### 9. Log allowed egress (F10)
 
 Add one rule: a rate-limited nftables `log prefix "sbxfw-accept "` on **accepted** sandbox forwards, next to the existing
-drop log. It lands in journald (`journalctl -k --grep sbxfw-accept`). The planned egress ledger UI module (TODO task 3) can
+drop log. It lands in journald (`journalctl -k --grep sbxfw-accept`). The planned egress ledger UI module (`TODO.md`, "More UI modules") can
 read the same stream later; the log doesn't wait for it. This is the boundary log the article says would have caught its demo.
 
 ### 10. Lite mode (F11)
