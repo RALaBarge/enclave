@@ -1,0 +1,93 @@
+name: fanout
+summary: |
+  Ask several models the same question in parallel, then have one model
+  (claude-fable-5.2 by default) synthesize them. Every model gets the same
+  request body; only `model` differs, and reasoning is switched off unless
+  `thinking` is true (a model that insists on reasoning is retried at `minimal`). With no `stubs` it uses the default spread of eight OpenRouter
+  models. `answers` always holds every model's full reply (up to 16000
+  characters, a limit the models are told) so they can be compared directly.
+  The synthesizer sees them by name and returns one combined answer, where
+  they agree, where they differ and who it thinks is right, and its own two
+  cents. It does not rank or score. A model that fails or times out is
+  reported in `answers` and the rest are still synthesized.
+
+  Runs on the trusted core. API keys and base URLs come from keys.json beside
+  the tool (deployed 0600, never in the input), so the caller names a key but
+  cannot choose where it is sent.
+
+input:
+  type: object
+  additionalProperties: false
+  required: [prompt]
+  properties:
+    prompt:      { type: string, minLength: 1, maxLength: 20000 }
+    system:      { type: string, maxLength: 4000 }
+    max_tokens:  { type: integer, minimum: 1, maximum: 32000 }
+    thinking:    { type: boolean }   # default false: reasoning is switched off (`minimal` for models that cannot be fully off)
+    temperature: { type: number, minimum: 0, maximum: 2 }
+    timeout_s:   { type: integer, minimum: 5, maximum: 90 }
+    stubs:
+      type: array
+      minItems: 1
+      maxItems: 16
+      items:
+        type: object
+        additionalProperties: false
+        required: [name, model]
+        properties:
+          name:  { type: string, minLength: 1, maxLength: 64 }
+          model: { type: string, minLength: 1, maxLength: 200 }
+          key:   { type: string, minLength: 1, maxLength: 64 }
+    synthesizer:
+      type: object
+      additionalProperties: false
+      properties:
+        # api (default): an OpenAI-compatible endpoint named by `key`. cli: Claude Code's `claude -p` on the core, billed to
+        # its login. none: no synthesis, return the answers only.
+        backend: { type: string, enum: [api, cli, none] }
+        model:   { type: string, minLength: 1, maxLength: 200 }
+        key:     { type: string, minLength: 1, maxLength: 64 }
+
+output:
+  schema:
+    type: object
+    additionalProperties: false
+    required: [synthesizer, answers, ok_count]
+    properties:
+      ok_count: { type: integer }
+      synthesizer:
+        type: object
+        additionalProperties: false
+        required: [model, synthesis, agreement, differences, two_cents, error]
+        properties:
+          model:       { type: string, maxLength: 200 }
+          synthesis:   { type: string, maxLength: 16000 }
+          agreement:   { type: string, maxLength: 4000 }
+          differences: { type: string, maxLength: 4000 }
+          two_cents:   { type: string, maxLength: 4000 }
+          error:       { type: string, maxLength: 300 }
+      answers:
+        type: array
+        maxItems: 16
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, model, ok, text, error, ms]
+          properties:
+            name:  { type: string, maxLength: 64 }
+            model: { type: string, maxLength: 200 }
+            ok:    { type: boolean }
+            text:  { type: string, maxLength: 16000 }
+            error: { type: string, maxLength: 300 }
+            ms:    { type: integer }
+
+allowed_side_effects:
+  files: []
+  # The job needs the core's network to reach the providers. The desk has no
+  # per-host filter; where it may go is the core's firewall's call.
+  network: true
+
+execution:
+  mode: direct
+  max_retries: 0
+  timeout_ms: 200000   # up to 90 s for the answers, then up to 90 s for the synthesizer, plus margin

@@ -131,6 +131,25 @@ for d in sorted(os.listdir(TOOLS)):
     if os.path.isdir(os.path.join(TOOLS, d)) and not d.startswith(".") and d not in tools:
         problems.append(f"unlisted tool dir:   tools/{d} (not in tools/tools.list)")
 
+# Core-side tools (desk-tools/<name>/): plain DeskBox tools that run on the trusted core, not through the broker. They
+# are deployed beside the -sbx stubs under their own name, as written, and keys.json (if any) is never touched.
+DESK_TOOLS = os.path.join(ROOT, "desk-tools")
+desk_tools = sorted(d for d in os.listdir(DESK_TOOLS)
+                    if os.path.isdir(os.path.join(DESK_TOOLS, d)) and not d.startswith(".")) if os.path.isdir(DESK_TOOLS) else []
+for name in desk_tools:
+    if name.endswith("-sbx"):
+        problems.append(f"desk-tools/{name}: the -sbx suffix belongs to the sandbox stubs")
+    for f in ("run.py", "tcs.yaml"):
+        fp = os.path.join(DESK_TOOLS, name, f)
+        if not os.path.isfile(fp) or os.path.islink(fp):
+            problems.append(f"missing file:       desk-tools/{name}/{f}")
+    tcs_path = os.path.join(DESK_TOOLS, name, "tcs.yaml")
+    if os.path.isfile(tcs_path):
+        with open(tcs_path, encoding="utf-8") as fh:
+            m = re.search(r"^name:[ \t]*(\S+)", fh.read(), re.M)
+        if not m or m.group(1) != name:
+            problems.append(f"contract name:      desk-tools/{name}/tcs.yaml must say 'name: {name}'")
+
 # If the desk's own linter is on PATH, use it on each tool as the desk will load it (the contract plus the generated
 # stub, in a scratch dir). The checks above are textual and deliberately cheap; tcs-verify parses the contract the way
 # the gate does, so it is what catches a schema keyword the validator would silently ignore (a `default:` is the one
@@ -151,6 +170,21 @@ if verifier and not problems:
                 detail = "; ".join(ln.strip() for ln in (r.stdout or "").splitlines() if "FAIL" in ln)
                 problems.append(f"tcs-verify:         tools/{name}: {detail or 'rejected'}")
 
+if verifier and not problems:
+    with tempfile.TemporaryDirectory() as scratch:
+        for name in desk_tools:
+            tdir = os.path.join(scratch, name)
+            os.mkdir(tdir)
+            for f in ("run.py", "tcs.yaml"):
+                shutil.copyfile(os.path.join(DESK_TOOLS, name, f), os.path.join(tdir, f))
+            os.chmod(os.path.join(tdir, "run.py"), 0o700)
+            r = subprocess.run([verifier, tdir], capture_output=True, text=True)
+            if r.returncode != 0:
+                detail = "; ".join(ln.strip() for ln in (r.stdout or "").splitlines() if "FAIL" in ln)
+                problems.append(f"tcs-verify:         desk-tools/{name}: {detail or 'rejected'}")
+
+if desk_tools:
+    print(f"{len(desk_tools)} core-side tool(s): {', '.join(desk_tools)}")
 print(f"{len(tools)} tool(s): {', '.join(tools)}")
 for p in problems:
     print("PROBLEM:", p)
@@ -209,6 +243,31 @@ if deploy_dir:
         finally:
             os.close(dfd)
         print(f"deployed {dst}")
+    for name in desk_tools:
+        src = os.path.join(DESK_TOOLS, name)
+        try:
+            try:
+                os.mkdir(name, 0o700, dir_fd=pfd)
+            except FileExistsError:
+                pass
+            dfd = os.open(name, DIR_FLAGS, dir_fd=pfd)
+        except OSError as e:
+            sys.exit(f"refusing --deploy: {os.path.join(deploy_dir, name)}: {e.strerror}")
+        try:
+            for f, mode in (("run.py", 0o700), ("tcs.yaml", 0o600)):
+                sfd = os.open(os.path.join(src, f), os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(sfd, "rb") as fh:
+                    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                        sys.exit(f"refusing --deploy: {src}/{f} is not a regular file")
+                    data = fh.read()
+                tmp = f".{f}.deploy-{os.getpid()}"
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=dfd)
+                with os.fdopen(fd, "wb") as out:
+                    out.write(data)
+                os.rename(tmp, f, src_dir_fd=dfd, dst_dir_fd=dfd)
+        finally:
+            os.close(dfd)
+        print(f"deployed {os.path.join(deploy_dir, name)} (keys.json is provisioned separately, never from the checkout)")
     os.close(pfd)
     print("Re-pin after any change to the stub or a timeout: agent-desk -pin <tool dir>, then paste "
           "integrity.run_sha256 into that tool's tcs.yaml and re-deploy.")
