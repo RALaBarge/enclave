@@ -153,7 +153,7 @@ image hash and harness version. Run the checks as the candidate's own account on
    `--no-approve`), the unit not passing `--peers`, and `peers.py` wrapping peer text in its data envelope.
 
 9. It writes nothing to long-term memory automatically except redacted turns.
-   Must: send settled turns to Loom only through the output redactor and fail closed without it; never store raw tool results;
+   Must: send settled turns to Loom only through the output redactor and fail closed without it; store tool results only as untrusted events (never embedded, never recalled; `TODO.md`, "Loom format");
    no automatic recall into new sessions until memgate decides what may be written (`TODO.md`, "Loom"). A turn that carried a
    trigger must not be replayed into every later session.
    Settled by: `REDACTOR` and the `--loom-url` path in `harness/bridge/server.py`; the unit not passing `--loom-url` until

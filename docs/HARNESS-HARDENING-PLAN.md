@@ -160,7 +160,7 @@ model host. The session profile's default allow list stays empty.
 
 ### 7. Loom (F9)
 
-Hold auto-write to memory until memgate exists (`TODO.md`, "Loom"). Never auto-store raw tool results. Keep redaction first and
+Hold auto-write to memory until memgate exists (`TODO.md`, "Loom"). Tool results are stored only as untrusted events, never embedded or recalled (`TODO.md`, "Loom format", 2026-11-24). Keep redaction first and
 fail-closed, as planned.
 
 ### 8. Pin models (F12)
