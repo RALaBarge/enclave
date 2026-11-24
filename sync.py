@@ -165,12 +165,15 @@ if deploy_dir:
     # the open fail instead of redirecting a root write (and chmod) elsewhere.
     # Files are created O_EXCL under a temporary name with their final mode,
     # then renamed over the old one, which replaces a link rather than
-    # following it.
+    # following it. Modes: stubs 0700 (reading one is enough to run it past
+    # its contract), contracts 0640 and directories 0710, so the group the
+    # caller gives the tree (the console's, `chown -R deskbox:sbxconsole`)
+    # can read contracts and stat stubs, and cannot list or read anything else.
     if not hasattr(os, "O_NOFOLLOW"):
         print("--deploy needs a POSIX system", file=sys.stderr)
         sys.exit(2)
     DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    os.makedirs(deploy_dir, mode=0o700, exist_ok=True)
+    os.makedirs(deploy_dir, mode=0o710, exist_ok=True)
     try:
         pfd = os.open(deploy_dir, DIR_FLAGS)
     except OSError as e:
@@ -180,7 +183,7 @@ if deploy_dir:
         dst = os.path.join(deploy_dir, f"{name}-sbx")
         try:
             try:
-                os.mkdir(f"{name}-sbx", 0o700, dir_fd=pfd)
+                os.mkdir(f"{name}-sbx", 0o710, dir_fd=pfd)
             except FileExistsError:
                 pass
             dfd = os.open(f"{name}-sbx", DIR_FLAGS, dir_fd=pfd)
@@ -199,7 +202,7 @@ if deploy_dir:
                         data = fh.read()
                 tmp = f".{f}.deploy-{os.getpid()}"
                 fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             0o700 if f == "run.py" else 0o600, dir_fd=dfd)
+                             0o700 if f == "run.py" else 0o640, dir_fd=dfd)
                 with os.fdopen(fd, "wb") as out:
                     out.write(data)
                 os.rename(tmp, f, src_dir_fd=dfd, dst_dir_fd=dfd)

@@ -37,7 +37,8 @@ class DeployDoesNotFollowLinks(unittest.TestCase):
         r = deploy(self.dest)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(oct(os.stat(os.path.join(self.dest, "greet-sbx", "run.py")).st_mode & 0o777), "0o700")
-        self.assertEqual(oct(os.stat(os.path.join(self.dest, "greet-sbx", "tcs.yaml")).st_mode & 0o777), "0o600")
+        self.assertEqual(oct(os.stat(os.path.join(self.dest, "greet-sbx", "tcs.yaml")).st_mode & 0o777), "0o640")
+        self.assertEqual(oct(os.stat(os.path.join(self.dest, "greet-sbx")).st_mode & 0o777), "0o710")
 
     def test_planted_file_link_is_replaced_not_followed(self):
         self.assertEqual(deploy(self.dest).returncode, 0)

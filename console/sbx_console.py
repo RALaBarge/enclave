@@ -33,10 +33,12 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
+import urllib.request
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -704,17 +706,53 @@ def _sha(path):
         return None
 
 
+PIN_RE = re.compile(r"run_sha256:\s*[\"']?([0-9a-f]{64})")
+MAX_SRC = 256 * 1024
+
+
 def tool_status(t):
+    # The desk's stubs stay readable by the desk only (reading one is enough to run it past its contract); the
+    # console can stat them and read the contracts, which record the pinned stub hash.
     n = t["name"]
     run = os.path.join(SBX_TOOLS, n, "run")
     hdir = os.path.join(HARNESS_TOOLS, f"{n}-sbx")
     d = dict(t)
     d["sbx_run"] = os.path.isfile(run)
-    d["contract"] = os.path.isfile(os.path.join(hdir, "tcs.yaml"))
-    d["stub_sha256"] = _sha(os.path.join(hdir, "run.py"))      # what agent-desk -pin should record
+    contract, _ = _read_text(os.path.join(hdir, "tcs.yaml"))
+    d["contract"] = contract is not None
+    m = PIN_RE.search(contract or "")
+    d["pinned_sha256"] = m.group(1) if m else None
+    d["stub"] = os.path.isfile(os.path.join(hdir, "run.py"))
+    d["stub_sha256"] = _sha(os.path.join(hdir, "run.py"))      # None where only the desk may read it
     d["run_sha256"] = _sha(run)
-    d["ok"] = d["sbx_run"] and d["contract"] and bool(d["stub_sha256"])
+    d["ok"] = d["sbx_run"] and d["contract"] and d["stub"]
     return d
+
+
+def _read_text(path):
+    """-> (text, None) or (None, reason). Never follows a link; long files are cut."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as e:
+        return None, e.strerror
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            return None, "not a regular file"
+        data = f.read(MAX_SRC + 1)
+    return data[:MAX_SRC].decode("utf-8", "replace") + ("\n... (cut at 256 KiB)" if len(data) > MAX_SRC else ""), None
+
+
+def tool_source(name):
+    """The code the sandbox runs for a tool and the contract the desk holds it to. Only these two files: never a
+    tool directory listing (page and fetch keep the gate token beside their run)."""
+    if not any(t["name"] == name for t in parse_tools()):
+        raise Bad("unknown tool")
+    out = {"name": name}
+    for key, path in (("run", os.path.join(SBX_TOOLS, name, "run")),
+                      ("contract", os.path.join(HARNESS_TOOLS, f"{name}-sbx", "tcs.yaml"))):
+        text, err = _read_text(path)
+        out[key] = {"path": path, "text": text, "error": err}
+    return out
 
 
 def tools_list():
@@ -768,34 +806,7 @@ def reset_set(enabled):
     return {"reset_after_job": enabled}
 
 
-def _v_host(v):
-    if v == "localhost":
-        return v
-    net, name = _addr(v, True)
-    if net is not None and net.num_addresses != 1:
-        raise Bad("single host only")
-    return name or str(net.network_address)
-
-
-def _v_int(lo, hi):
-    def f(v):
-        if not re.fullmatch(r"\d{1,9}", str(v)) or not lo <= int(v) <= hi:
-            raise Bad(f"must be an integer {lo}..{hi}")
-        return str(int(v))
-    return f
-
-
-def _v_user(v):
-    if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", str(v)):
-        raise Bad("bad username")
-    return v
-
-
-SETTINGS = {  # broker.env key -> validator. Anything else is refused, never written.
-    "SBX_HOST": _v_host, "SBX_USER": _v_user, "SBX_PORT": _v_int(1, 65535),
-    "SBX_MAX_TIMEOUT": _v_int(1, 120), "SBX_MAX_REQ": _v_int(1024, 16 << 20),
-    "SBX_MAX_OUT": _v_int(1024, 16 << 20),
-}
+SETTINGS = ("SBX_HOST", "SBX_USER", "SBX_PORT", "SBX_MAX_TIMEOUT", "SBX_MAX_REQ", "SBX_MAX_OUT")   # shown, never written
 
 
 def _read_env():
@@ -813,11 +824,10 @@ def _read_env():
 
 
 def get_mode():
-    try:
-        with open(os.path.join(ETC, "console.json"), encoding="utf-8") as f:
-            return "full" if json.load(f).get("mode") == "full" else "lite"
-    except (OSError, ValueError):
-        return "lite"
+    """lite when the broker runs jobs on this host, full when SBX_HOST names a separate box. sbx-mode sets SBX_HOST;
+    the console only reports what the broker will do."""
+    vals, _ = _read_env()
+    return "lite" if vals.get("SBX_HOST", "").strip() in ("", "127.0.0.1", "localhost", "::1") else "full"
 
 
 def settings_get():
@@ -827,18 +837,30 @@ def settings_get():
             "fw_revert_s": REVERT_S}
 
 
-def settings_set(body):
-    # broker.env holds the broker key path, the reset command and the lane
-    # limits. sbx-mode and provisioning own it; the console only reads it.
-    if body.get("broker"):
-        raise Bad("broker settings are managed by sbx-mode and provisioning; this console only reads them")
-    mode = body.get("mode")
-    if mode is not None and mode not in ("lite", "full"):
-        raise Bad("mode must be lite or full")
-    if mode is not None:
-        os.makedirs(ETC, exist_ok=True)
-        _atomic_write(os.path.join(ETC, "console.json"), json.dumps({"mode": mode}) + "\n")
-    return {"saved": True, "restart_required": False, "hint": ""}
+# ------------------------------------------------------------------ activity
+
+DESK_URL = E("SBXC_DESK_URL", "http://127.0.0.1:8080")
+MAX_JOB_FIELD = 8000
+_no_proxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def activity():
+    """The desk's newest jobs, request and result included: what the agent sent and what came back."""
+    try:
+        with _no_proxy.open(DESK_URL + "/jobs", timeout=5) as r:
+            jobs = json.load(r).get("jobs") or []
+    except (OSError, ValueError, AttributeError) as e:
+        return {"jobs": [], "error": f"desk not reachable at {DESK_URL}: {e}"}
+    jobs.sort(key=lambda j: str(j.get("created", "")), reverse=True)
+    out = []
+    for j in jobs[:100]:
+        x = {k: j[k] for k in ("id", "tool", "status", "attempt", "created", "started", "finished", "error") if k in j}
+        for k in ("input", "result"):
+            if k in j:
+                t = json.dumps(j[k], indent=1, ensure_ascii=False)
+                x[k] = t[:MAX_JOB_FIELD] + ("\n... (cut)" if len(t) > MAX_JOB_FIELD else "")
+        out.append(x)
+    return {"jobs": out}
 
 
 # ----------------------------------------------------------------------- http
@@ -855,7 +877,8 @@ ROUTES = {
     ("POST", "/api/tools/toggle"): lambda b: tool_toggle(b.get("name"), bool(b.get("enabled"))),
     ("POST", "/api/tools/timeout"): lambda b: tool_timeout(b.get("name"), b.get("timeout_s")),
     ("GET", "/api/settings"): lambda b: settings_get(),
-    ("POST", "/api/settings"): lambda b: settings_set(b),
+    ("POST", "/api/tools/source"): lambda b: tool_source(b.get("name")),
+    ("GET", "/api/activity"): lambda b: activity(),
     ("POST", "/api/settings/reset"): lambda b: reset_set(b.get("enabled")),
 }
 

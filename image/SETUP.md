@@ -142,7 +142,7 @@ clone). Work in that repo, then move the submodule pointer in Enclave.
    generated at deploy, never committed.
 5. Deploy: `tools/tools.list` goes to `/etc/sbx/tools.list` (harness) and `/opt/sbx/tools.list` (sandbox side), and
    `tools/<name>` to `/opt/sbx/tools/<name>` (without `tcs.yaml`); in full mode `sbx-push-tools` then sends them to the
-   box. Then `sudo python3 sync.py --deploy /opt/deskbox/tools && sudo chown -R deskbox:deskbox /opt/deskbox/tools` — the
+   box. Then `sudo python3 sync.py --deploy /opt/deskbox/tools && sudo chown -R deskbox:sbxconsole /opt/deskbox/tools` — the
    desk only serves what is in that directory, and 0700 on the run scripts is what stops anything but the desk from
    executing them.
 6. Pin the stub: `agent-desk -pin /opt/deskbox/tools/<name>-sbx`, then paste `integrity.run_sha256` into

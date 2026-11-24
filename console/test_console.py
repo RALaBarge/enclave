@@ -1,6 +1,7 @@
 """Run: python3 console/test_console.py   (stdlib unittest; no root needed)"""
 import errno
 import http.client
+import http.server
 import json
 import os
 import sys
@@ -460,20 +461,57 @@ class Tools(unittest.TestCase):
         s = c.tool_status(c.parse_tools()[0])
         self.assertTrue(s["ok"])
         self.assertEqual(len(s["stub_sha256"]), 64)
+        open(os.path.join(c.HARNESS_TOOLS, "greet-sbx", "tcs.yaml"), "w").write("integrity:\n  run_sha256: \"%s\"\n" % ("ab" * 32))
+        os.chmod(os.path.join(c.HARNESS_TOOLS, "greet-sbx", "run.py"), 0)     # as on the core: only the desk reads stubs
+        s = c.tool_status(c.parse_tools()[0])
+        if os.geteuid():
+            self.assertIsNone(s["stub_sha256"])
+        self.assertTrue(s["ok"] and s["stub"])
+        self.assertEqual(s["pinned_sha256"], "ab" * 32)
+
+    def test_source_shows_run_and_contract_only(self):
+        open(c.TOOLLIST, "w").write("page 30 net\n")
+        os.makedirs(os.path.join(c.SBX_TOOLS, "page"), exist_ok=True)
+        open(os.path.join(c.SBX_TOOLS, "page", "run"), "w").write("#!/bin/sh\necho hi\n")
+        open(os.path.join(c.SBX_TOOLS, "page", "gate"), "w").write("http://x:9011 SECRET\n")
+        r = c.tool_source("page")
+        self.assertIn("echo hi", r["run"]["text"])
+        self.assertIsNone(r["contract"]["text"])
+        self.assertTrue(r["contract"]["error"])
+        self.assertNotIn("SECRET", json.dumps(r))
+        os.symlink(os.path.join(c.SBX_TOOLS, "page", "gate"), os.path.join(c.SBX_TOOLS, "page", "run.tmp"))
+        os.replace(os.path.join(c.SBX_TOOLS, "page", "run.tmp"), os.path.join(c.SBX_TOOLS, "page", "run"))
+        self.assertNotIn("SECRET", json.dumps(c.tool_source("page")))       # a link in place of run is not followed
+        for bad in ("../page", "nope", None):
+            with self.assertRaises(c.Bad):
+                c.tool_source(bad)
+
+    def test_activity_lists_the_desks_newest_jobs_and_says_when_it_cannot(self):
+        jobs = {"jobs": [{"id": "j1", "tool": "greet-sbx", "status": "done", "created": "2026-11-24T14:00:00Z",
+                          "input": {"name": "R"}, "result": {"greeting": "x" * 9000}},
+                         {"id": "j2", "tool": "glob-sbx", "status": "failed", "created": "2026-11-24T15:00:00Z", "error": "boom"}]}
+        srv = http.server.HTTPServer(("127.0.0.1", 0), type("H", (http.server.BaseHTTPRequestHandler,), {
+            "do_GET": lambda self: (self.send_response(200), self.end_headers(), self.wfile.write(json.dumps(jobs).encode())),
+            "log_message": lambda *a: None}))
+        threading.Thread(target=srv.handle_request, daemon=True).start()
+        with unittest.mock.patch.object(c, "DESK_URL", "http://127.0.0.1:%d" % srv.server_address[1]):
+            r = c.activity()
+        srv.server_close()
+        self.assertEqual([j["id"] for j in r["jobs"]], ["j2", "j1"])
+        self.assertEqual(r["jobs"][0]["error"], "boom")
+        self.assertIn('"name": "R"', r["jobs"][1]["input"])
+        self.assertTrue(r["jobs"][1]["result"].endswith("(cut)"))
+        with unittest.mock.patch.object(c, "DESK_URL", "http://127.0.0.1:9"):
+            self.assertIn("not reachable", c.activity()["error"])
 
 
 class Settings(unittest.TestCase):
-    def test_mode_is_writable_but_broker_env_is_read_only(self):
-        open(c.BROKER_ENV, "w").write("# keep me\nSBX_HOST=10.77.0.2\nSBX_KEY=/etc/sbx/id_ed25519\n")
-        before = open(c.BROKER_ENV).read()
-        r = c.settings_set({"mode": "full"})
-        self.assertFalse(r["restart_required"])
-        self.assertEqual(open(c.BROKER_ENV).read(), before)                    # the console never wrote broker.env
-        self.assertEqual(c.get_mode(), "full")
-        for body in ({"broker": {"SBX_HOST": "127.0.0.1"}}, {"broker": {"SBX_PORT": "2222"}}):
-            with self.assertRaises(c.Bad, msg=str(body)):
-                c.settings_set(body)
-        self.assertEqual(open(c.BROKER_ENV).read(), before)
+    def test_mode_is_what_the_broker_does_and_nothing_sets_it(self):
+        for host, mode in (("10.77.0.2", "full"), ("127.0.0.1", "lite"), ("localhost", "lite"), ("", "lite")):
+            open(c.BROKER_ENV, "w").write("# keep me\nSBX_HOST=%s\nSBX_KEY=/etc/sbx/id_ed25519\n" % host)
+            self.assertEqual(c.get_mode(), mode, host)
+            self.assertEqual(c.settings_get()["broker"]["SBX_HOST"], host)
+        self.assertNotIn(("POST", "/api/settings"), c.ROUTES)
 
     def test_atomic_write_falls_back_in_place_without_a_writable_directory(self):
         d = tempfile.mkdtemp()
@@ -506,14 +544,6 @@ class Settings(unittest.TestCase):
             for n in os.listdir(d):
                 os.unlink(os.path.join(d, n))
             os.rmdir(d)
-
-    def test_refuses_dangerous(self):
-        for body in ({"broker": {"SBX_KEY": "/etc/shadow"}}, {"broker": {"SBX_RESET_CMD": "rm -rf /"}}, {"broker": {"SBX_RESET_CMD": ""}},
-                     {"broker": {"SBX_HOST": "a b"}}, {"broker": {"SBX_PORT": "0"}},
-                     {"broker": {"SBX_USER": "root; id"}}, {"mode": "weird"}):
-            with self.assertRaises(c.Bad, msg=str(body)):
-                c.settings_set(body)
-
 
     def test_reset_switch_is_a_flag_file_not_broker_env(self):
         open(c.BROKER_ENV, "w").write("SBX_HOST=10.77.0.2\nSBX_RESET_CMD=/usr/local/bin/sbx-reboot-and-wait\n")
@@ -565,7 +595,7 @@ class Http(unittest.TestCase):
             with self.subTest(value):
                 c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
                 try:
-                    c.putrequest("POST", "/api/settings")
+                    c.putrequest("POST", "/api/tools/toggle")
                     c.putheader("Host", "127.0.0.1:%d" % self.port)
                     c.putheader("Authorization", "Bearer tok123")
                     c.putheader("Content-Type", "application/json")
@@ -625,9 +655,9 @@ class Http(unittest.TestCase):
         self.assertEqual(open(c.TOOLLIST).read(), "greet 10\n")
     def test_post_needs_json_type_and_size_cap(self):
         a = {"Authorization": "Bearer tok123"}
-        self.assertEqual(self.req("POST", "/api/settings", "{}", {**a, "Content-Type": "text/plain"})[0], 415)
-        self.assertEqual(self.req("POST", "/api/settings", "x" * 10, {**a, "Content-Type": "application/json", "Content-Length": str(c.MAX_BODY + 1)})[0], 413)
-        self.assertEqual(self.req("POST", "/api/settings", '{"mode":"nope"}', {**a, "Content-Type": "application/json"})[0], 400)
+        self.assertEqual(self.req("POST", "/api/tools/toggle", "{}", {**a, "Content-Type": "text/plain"})[0], 415)
+        self.assertEqual(self.req("POST", "/api/tools/toggle", "x" * 10, {**a, "Content-Type": "application/json", "Content-Length": str(c.MAX_BODY + 1)})[0], 413)
+        self.assertEqual(self.req("POST", "/api/tools/toggle", '{"name":"nope"}', {**a, "Content-Type": "application/json"})[0], 400)
 
     def test_ui_served_without_token(self):
         code, body = self.req("GET", "/")

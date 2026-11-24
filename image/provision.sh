@@ -111,8 +111,10 @@ EOF
 getent group sbxdesk >/dev/null || groupadd -r sbxdesk
 id deskbox &>/dev/null || useradd --system --home /var/lib/deskbox --create-home --shell /usr/sbin/nologin deskbox
 install -d -m 0700 -o deskbox -g deskbox /var/lib/deskbox
-install -d -m 0700 -o deskbox -g deskbox /opt/deskbox
-install -d -m 0700 -o deskbox -g deskbox /opt/deskbox/tools
+# The console's group may read the contracts and stat the stubs (its Tools tab); nothing else under here.
+id sbxconsole &>/dev/null || useradd --system --home /nonexistent --shell /usr/sbin/nologin sbxconsole
+install -d -m 0710 -o deskbox -g sbxconsole /opt/deskbox
+install -d -m 0710 -o deskbox -g sbxconsole /opt/deskbox/tools
 # Built on the build host: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/{agent-desk,tcs-shim,tcs-verify}
 for b in agent-desk tcs-shim tcs-verify; do
   [ -f "$HERE/artifacts/$b" ] || { echo "ERROR: image/artifacts/$b missing (build DeskBox first)" >&2; exit 1; }
@@ -125,7 +127,7 @@ install -m 755 "$HERE/artifacts/tcs-shim" /usr/bin/tcs-shim    # shimmed tools e
 # ship a contract whose stub would need the network, which is what keeps every
 # call on the broker socket.
 python3 "$ROOT/sync.py" --deploy /opt/deskbox/tools
-chown -R deskbox:deskbox /opt/deskbox/tools
+chown -R deskbox:sbxconsole /opt/deskbox/tools
 install -m 644 "$ROOT/harness/systemd/deskbox.service" /etc/systemd/system/
 install -m 755 "$HERE/deskbox-run.sh" /usr/local/bin/deskbox-run
 # The desk runs -strict, and its per-job memory/task limits go through

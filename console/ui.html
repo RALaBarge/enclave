@@ -25,9 +25,15 @@ button:disabled{opacity:.5;cursor:default}
 #toast{position:fixed;bottom:14px;right:14px;max-width:420px;padding:10px 14px;border-radius:8px;background:var(--fg);color:var(--bg);display:none}
 #warn{background:#5a1a12;color:#fff;padding:14px 16px}#warn button{margin-top:8px}
 section{display:none}section.on{display:block}
+.card.attn{border:2px solid var(--warn)}
+.explain{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin:10px 0 0}
+.explain>div{border:1px solid var(--bd);border-radius:6px;padding:8px 10px;background:var(--bg)}
+.explain b{display:block;margin-bottom:2px}
+pre.src{margin:4px 0 10px;max-height:420px;overflow:auto;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:8px;font-size:12px;white-space:pre-wrap;word-break:break-word}
+.jobs{max-height:480px;overflow:auto}tr.job td{cursor:pointer}tr.job td:first-child{white-space:nowrap}tr.job:hover td{background:var(--bg)}
 </style></head><body>
 <div id="warn" hidden>
-  <b>Lite mode is the convenient option, not the locked-down one.</b> This VM limits the damage a misbehaving agent or tool
+  <b>Lite mode is the convenient option, not the locked-down one.</b> The sandbox runs on this machine. A VM limits the damage a misbehaving agent or tool
   can do, but a VM escape lands on the host. The strongest setup puts the sandbox on its own device that knows only the
   core's address; the core is its gateway and decides what the sandbox's traffic may reach (see SETUP.md, Full mode).
   Keep the firewall below in default-deny. Nothing here protects data you give the agent.
@@ -36,20 +42,29 @@ section{display:none}section.on{display:block}
 <div id="banner"><b>Firewall change is live but NOT saved.</b> It reverts in <span id="count">0</span>s unless you confirm.
   <button class="b p" id="confirm">Confirm and save</button> <button class="b" id="revert">Revert now</button></div>
 <header><h1>Enclave Console</h1>
-  <nav role="tablist"><button data-t="fw" aria-selected="true">Firewall</button><button data-t="tools" aria-selected="false">Tools</button><button data-t="set" aria-selected="false">Settings</button></nav>
+  <nav role="tablist"><button data-t="fw" aria-selected="true">Firewall</button><button data-t="tools" aria-selected="false">Tools</button><button data-t="act" aria-selected="false">Activity</button><button data-t="set" aria-selected="false">Settings</button></nav>
   <span class="mut" id="tok-state"></span><button class="b" id="tok-btn">Token</button></header>
 <main>
 <section id="fw" class="on">
-  <div class="card"><h2>Profile <span class="mut">(session: what the agent may reach while it works. build: wider, for installing things)</span></h2>
+  <div class="card"><h2>Profile</h2>
     <div class="row"><span id="prof-active" class="pill mono">?</span>
       <button class="b" id="prof-session">Switch to session</button>
       <select id="prof-for"><option value="1800">30 minutes</option><option value="7200">2 hours</option><option value="0">no time limit</option></select>
       <button class="b" id="prof-build">Switch to build</button></div>
     <div class="row" style="margin-top:10px"><span class="mut">Editing:</span>
       <button class="b" id="view-session">Session rules</button><button class="b" id="view-build">Build rules</button>
-      <span class="mut">Switching and rule edits apply instantly. Build falls back to session when its time is up.</span></div></div>
+      <span class="mut">Switching and rule edits apply instantly.</span></div>
+    <div class="explain">
+      <div><b>session</b>The normal profile: what the sandbox may reach while the agent works. The bridge switches to it before
+        every agent session starts and the agent has no way to widen it. Keep it to what the tools need.</div>
+      <div><b>build</b>A wider list you turn on by hand for a while, for example to let the sandbox install packages.
+        It falls back to session when its time is up, and a new agent session forces session too. Session may not allow
+        anything build does not, so a rule you want in session goes in both.</div>
+      <div><b>Either way</b>Rules here only decide where the <i>sandbox's</i> traffic may go (it arrives on <span class="mono" id="ifaces2">?</span>).
+        The core's own traffic, such as calls to model providers, is not filtered.</div>
+    </div></div>
   <div class="card"><h2>Allow <span class="mut" id="allow-for">(session)</span></h2>
-    <div class="mut" style="margin-bottom:8px">This VM is the sandbox's gateway. Traffic arriving on <b id="ifaces" class="mono">?</b> is forwarded only if it matches an allow rule and no block rule. This VM's own traffic is not restricted. Hostnames are resolved when applied. CDN-backed hosts change IPs, so re-apply if a service stops working.</div>
+    <div class="mut" style="margin-bottom:8px">The core is the sandbox's gateway. Traffic arriving on <b id="ifaces" class="mono">?</b> is forwarded only if it matches an allow rule and no block rule. The core's own traffic is not restricted. Hostnames are resolved when applied. CDN-backed hosts change IPs, so re-apply if a service stops working.</div>
     <table><thead><tr><th>Host / IP / CIDR</th><th>Port</th><th>Proto</th><th>Note</th><th></th></tr></thead><tbody id="allow"></tbody></table>
     <div class="row" style="margin-top:10px"><input id="a-host" placeholder="openrouter.ai" size="22"><input id="a-port" placeholder="443" size="6">
       <select id="a-proto"><option>tcp</option><option>udp</option></select><input id="a-note" placeholder="note" size="20">
@@ -59,9 +74,13 @@ section{display:none}section.on{display:block}
     <div class="row" style="margin-top:10px"><input id="b-host" placeholder="169.254.169.254" size="22"><input id="b-port" placeholder="any port" size="8">
       <select id="b-proto"><option>any</option><option>tcp</option><option>udp</option></select><input id="b-note" placeholder="note" size="20">
       <button class="b" id="b-add">Add</button></div></div>
-  <div class="card"><h2>DNS resolvers <span class="mut">(the sandbox asks this VM; the first one answers)</span></h2><div id="dns" class="row"></div>
+  <div class="card" id="dns-card"><h2>DNS resolvers <span class="mut">(the sandbox asks the core; the first one answers)</span></h2>
+    <div class="mut" id="dns-why" style="margin-bottom:8px"></div><div id="dns" class="row"></div>
     <div class="row" style="margin-top:8px"><input id="d-ip" placeholder="1.1.1.1" size="18"><button class="b" id="d-add">Add</button></div></div>
-  <div class="card"><h2>Management access in <span class="mut">(sources allowed to reach this VM)</span></h2>
+  <div class="card"><h2>Management access to the core <span class="mut">(not the sandbox)</span></h2>
+    <div class="mut" style="margin-bottom:8px">Addresses that may open a connection to the core itself, such as SSH from your LAN. The sandbox box is never
+      reachable from here; only the broker talks to it. Leave this empty if you reach the core through Tailscale
+      (<span class="mono">tailscale serve</span> forwards to its loopback, which these rules do not touch). A change here takes a 60 s confirm, so a mistake cannot lock you out.</div>
     <table><tbody id="mgmt"></tbody></table>
     <div class="row" style="margin-top:8px"><input id="m-cidr" placeholder="192.168.122.0/24" size="20"><input id="m-port" placeholder="22" size="6">
       <button class="b" id="m-add">Add</button></div></div>
@@ -71,13 +90,17 @@ section{display:none}section.on{display:block}
     <div class="mut" id="drops-err"></div><button class="b" id="drops-refresh" style="margin-top:8px">Refresh</button></div>
 </section>
 <section id="tools"><div class="card"><h2>Loaded tools</h2>
-  <table><thead><tr><th>On</th><th>Name</th><th>Timeout (s)</th><th>Flags</th><th>Sandbox tool</th><th>Contract</th><th>Stub sha256 (for agent-desk -pin)</th></tr></thead><tbody id="tl"></tbody></table>
+  <table><thead><tr><th>On</th><th>Name</th><th>Timeout (s)</th><th>Flags</th><th>Sandbox tool</th><th>Contract</th><th>Stub sha256 (pinned in the contract)</th><th></th></tr></thead><tbody id="tl"></tbody></table>
   <p class="mut">Tools are added by hand (sandbox <span class="mono">run</span>, <span class="mono">tcs.yaml</span>, stub via <span class="mono">sync.py</span>), not from this page.
   Disabling comments the tool out of tools.list; the broker reads the list per request. Flags are set only by editing tools.list, never
   here: <span class="mono">net</span> shares the sandbox's network namespace (the Firewall tab still decides what it can reach),
-  <span class="mono">work</span> gives the box's persistent workspace, <span class="mono">keep</span> skips the reboot after the tool. In full mode, deploy the same list to the sandbox box.</p></div></section>
-<section id="set"><div class="card"><h2>Settings</h2><div id="settings"></div>
-  <div class="row" style="margin-top:12px"><button class="b p" id="save">Save</button><span class="mut" id="save-note"></span></div></div></section>
+  <span class="mono">work</span> gives the box's persistent workspace, <span class="mono">keep</span> skips the reboot after the tool. In full mode, deploy the same list to the sandbox box.</p></div>
+  <div class="card" id="src-card" hidden><h2>Code: <span class="mono" id="src-name"></span></h2><div id="src"></div></div></section>
+<section id="act"><div class="card"><h2>Activity <span class="mut">(the desk's newest jobs: what the agent sent, what came back; refreshes every 3 s)</span></h2>
+  <div class="jobs"><table><thead><tr><th>Time</th><th>Tool</th><th>Status</th><th>Took</th><th>Request</th></tr></thead><tbody id="jobs"></tbody></table></div>
+  <div class="mut" id="jobs-err"></div></div>
+  <div class="card" id="job-card" hidden><h2>Job <span class="mono" id="job-id"></span></h2><div id="job"></div></div></section>
+<section id="set"><div class="card"><h2>Settings</h2><div id="settings"></div></div></section>
 </main><div id="toast"></div>
 <script>
 "use strict";
@@ -100,7 +123,7 @@ $("tok-btn").onclick=askToken;
 // ---- firewall
 function markDirty(){dirty=true;$("dirty").textContent="Unsaved edits: not yet applied"}
 function renderPolicy(){
-  $("ifaces").textContent=(policy.sbx_ifaces||[]).join(", ")||"no interface set (nothing is forwarded)";
+  $("ifaces").textContent=$("ifaces2").textContent=(policy.sbx_ifaces||[]).join(", ")||"no interface set (nothing is forwarded)";
   const left=buildLeft>0?" ("+(buildLeft>=3600?Math.round(buildLeft/360)/10+" h":Math.ceil(buildLeft/60)+" min")+" left)":"";
   $("prof-active").textContent="Active: "+policy.active+(policy.active==="build"?(policy.active_until?left:" (no time limit)"):"");
   $("prof-active").className="pill mono"+(policy.active==="build"?" bad":"");
@@ -115,11 +138,13 @@ function renderPolicy(){
   ruleRows(P().block,$("block"),"Nothing blocked.");
   const d=$("dns");d.replaceChildren();
   policy.dns.forEach((ip,i)=>d.append(el("span",{className:"pill mono"},ip+" ",el("a",{href:"#",textContent:"×",onclick:e=>{e.preventDefault();policy.dns.splice(i,1);markDirty();renderPolicy()}}))));
-  if(!policy.dns.length)d.append(el("span",{className:"mut"},"None: the sandbox has no name lookups."));
+  if(!policy.dns.length)d.append(el("span",{className:"warn"},"None set: the sandbox cannot look up any name."));
+  $("dns-card").classList.toggle("attn",!policy.dns.length);
+  $("dns-why").textContent=policy.dns.length?"":"Likely needed: any net tool that connects by host name fails without one. Add your resolver (the router, Pi-hole, or 1.1.1.1), then Apply. The resolver is allowed on port 53 automatically.";
   const m=$("mgmt");m.replaceChildren();
   policy.mgmt.forEach((r,i)=>m.append(el("tr",{},el("td",{className:"mono"},r.cidr),el("td",{},r.proto+"/"+r.port),
     el("td",{},el("button",{className:"b d",textContent:"Remove",onclick:()=>{policy.mgmt.splice(i,1);markDirty();renderPolicy()}})))));
-  if(!policy.mgmt.length)m.append(el("tr",{},el("td",{className:"mut"},"None: only local use of this VM.")));
+  if(!policy.mgmt.length)m.append(el("tr",{},el("td",{className:"mut"},"None: nothing on the network may connect to the core directly.")));
 }
 function showPending(s){
   $("banner").style.display=s.pending?"block":"none";$("count").textContent=s.revert_in_s;
@@ -165,42 +190,80 @@ async function loadTools(){
     const to=el("input",{type:"number",min:1,max:120,value:t.timeout_s,size:4,style:"width:70px",onchange:()=>act(async()=>{await api("/api/tools/timeout",{name:t.name,timeout_s:to.value});toast("Timeout saved")})});
     const fl=[t.network&&"net",t.work&&"work",t.keep&&"keep"].filter(Boolean),net=el("span",{className:t.network?"bad":"mut"},fl.join(" ")||"none");
     const yn=(v,l)=>el("span",{className:v?"ok":"bad"},v?"✓ "+l:"✗ missing");
+    const sha=t.pinned_sha256||t.stub_sha256;
     b.append(el("tr",{},el("td",{},cb),el("td",{className:"mono"},t.name),el("td",{},to),el("td",{},net),el("td",{},yn(t.sbx_run,"present")),el("td",{},yn(t.contract,"present")),
-      el("td",{className:"mono mut"},t.stub_sha256?t.stub_sha256.slice(0,16)+"…":"none")));
+      el("td",{className:"mono mut",title:sha||""},sha?sha.slice(0,16)+"…":(t.stub?"stub present, not pinned":"no stub")),
+      el("td",{},el("button",{className:"b",textContent:"Code",onclick:()=>showSource(t.name)}))));
   });
-  if(!r.tools.length)b.append(el("tr",{},el("td",{colSpan:7,className:"mut"},"tools.list is empty.")));
+  if(!r.tools.length)b.append(el("tr",{},el("td",{colSpan:8,className:"mut"},"tools.list is empty.")));
 }
+// What runs on the sandbox for this tool, and the contract the desk holds every call to.
+async function showSource(name){
+  const r=await act(()=>api("/api/tools/source",{name}));if(!r)return;
+  $("src-name").textContent=name;const s=$("src");s.replaceChildren();
+  for(const [k,label] of [["run","Runs on the sandbox"],["contract","Contract (what the desk allows: inputs, sandbox, network, pinned hash)"]]){
+    const f=r[k];s.append(el("div",{className:"mut"},label+": ",el("span",{className:"mono"},f.path)));
+    s.append(f.text!==null?el("pre",{className:"src"},f.text):el("div",{className:"bad",style:"margin:4px 0 10px"},"cannot read: "+f.error));
+  }
+  $("src-card").hidden=false;$("src-card").scrollIntoView({behavior:"smooth"});
+}
+
+// ---- activity
+const hhmmss=t=>{if(!t)return"";const d=new Date(t);return(d.toDateString()===new Date().toDateString()?"":d.toLocaleDateString()+" ")+d.toLocaleTimeString()};
+const took=j=>j.started&&j.finished?((new Date(j.finished)-new Date(j.started))/1000).toFixed(1)+" s":(j.status==="running"?"…":"");
+let openJob=null;
+async function loadActivity(){
+  const r=await act(()=>api("/api/activity"));if(!r)return;
+  $("jobs-err").textContent=r.error||"";const b=$("jobs");b.replaceChildren();
+  r.jobs.forEach(j=>{const st=j.status==="done"?"ok":j.status==="failed"||j.error?"bad":"mut";
+    const tr=el("tr",{className:"job",onclick:()=>{openJob=j.id;showJob(j)}},el("td",{className:"mono"},hhmmss(j.created)),el("td",{className:"mono"},j.tool||"?"),
+      el("td",{className:st},j.status||"?"),el("td",{},took(j)),el("td",{className:"mono mut"},(j.input||"").replace(/\s+/g," ").slice(0,90)));
+    b.append(tr);if(j.id===openJob)showJob(j)});
+  if(!r.jobs.length)b.append(el("tr",{},el("td",{colSpan:5,className:"mut"},"No jobs yet.")));
+}
+function showJob(j){
+  $("job-id").textContent=j.id+"  "+(j.tool||"");const d=$("job");d.replaceChildren();
+  d.append(el("div",{className:"mut"},"sent "+hhmmss(j.created)+(j.started?", started "+hhmmss(j.started):"")+(j.finished?", back "+hhmmss(j.finished):"")+(j.attempt?", attempt "+j.attempt:"")));
+  d.append(el("div",{className:"mut",style:"margin-top:6px"},"Request"),el("pre",{className:"src"},j.input||"(none)"));
+  if(j.error)d.append(el("div",{className:"bad"},"Error"),el("pre",{className:"src"},j.error));
+  d.append(el("div",{className:"mut"},"Result"),el("pre",{className:"src"},j.result||(j.status==="running"?"(still running)":"(none)")));
+  $("job-card").hidden=false;
+}
+document.addEventListener("click",e=>{if(e.target.closest("tr.job"))$("job-card").scrollIntoView({behavior:"smooth",block:"nearest"})});
+setInterval(()=>{if(document.getElementById("act").classList.contains("on"))loadActivity()},3000);
 
 // ---- settings
 const LABELS={SBX_HOST:"Sandbox host",SBX_USER:"Sandbox user",SBX_PORT:"SSH port",SBX_MAX_TIMEOUT:"Max job timeout (s)",SBX_MAX_REQ:"Max request bytes",SBX_MAX_OUT:"Max output bytes"};
 let cur=null;
 async function loadSettings(){
   cur=await act(()=>api("/api/settings"));if(!cur)return;const s=$("settings");s.replaceChildren();
-  const mode=el("select",{id:"s-mode"},el("option",{value:"lite",textContent:"Lite: sandbox in this VM (bwrap)"}),el("option",{value:"full",textContent:"Full: separate sandbox machine"}));mode.value=cur.mode;
-  s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},"Mode"),mode));
+  const mode=el("span",{className:"pill mono"},cur.mode==="full"?"full: tools run on the separate sandbox box "+cur.broker.SBX_HOST:"lite: tools run on this machine in bwrap");
+  s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},"Mode"),mode,
+    el("span",{className:"mut"},"from SBX_HOST in broker.env; change it with sbx-mode on the core")));
   // Reboot after every job: the command comes from sbx-mode; this only switches the routine reset off and on.
   const has=!!cur.reset_cmd, rb=el("input",{type:"checkbox",id:"s-reset",checked:cur.reset_after_job,disabled:!has});
-  const note=el("span",{className:has&&!cur.reset_after_job?"bad":"mut"},!has?"lite mode: every job already gets a fresh bwrap, nothing to reboot"
+  const note=el("span",{className:has&&!cur.reset_after_job?"bad":"mut"},!has?(cur.mode==="lite"?"lite mode: every job already gets a fresh bwrap, nothing to reboot"
+      :"no reset command (SBX_RESET_CMD is empty): jobs reuse the sandbox box as the last job left it. Each job still runs in a fresh bwrap there.")
     :cur.reset_after_job?"on: "+cur.reset_cmd+" after every job (the next job waits for it)"
     :"off: jobs reuse the sandbox box as the last job left it. A failed reset is still retried.");
   rb.onchange=()=>act(async()=>{await api("/api/settings/reset",{enabled:rb.checked});toast(rb.checked?"Reboot after every job: on":"Reboot after every job: off",!rb.checked);loadSettings()});
   s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},"Reboot sandbox after every job"),rb,note));
   for(const k in LABELS){
-    const inp=el("input",{id:"s-"+k,value:cur.broker[k]||"",size:24,readOnly:true,title:"read-only; sbx-mode and provisioning own broker.env"});
+    const inp=el("input",{id:"s-"+k,value:cur.broker[k]||"",placeholder:"(broker default)",size:24,readOnly:true,title:"read-only; sbx-mode and provisioning own broker.env"});
     s.append(el("div",{className:"row",style:"margin-bottom:8px"},el("label",{style:"width:200px"},LABELS[k]),inp));
   }
   s.append(el("p",{className:"mut"},"Broker settings are read-only here; sbx-mode and provisioning own /etc/sbx/broker.env. Per-tool timeouts are on the Tools tab. Queue and reset waits are fixed (300 s each) so the contracts can be sized for them."));
 }
-$("save").onclick=()=>act(async()=>{const body={};if($("s-mode").value!==cur.mode)body.mode=$("s-mode").value;
-  const r=await api("/api/settings",body);$("save-note").textContent=r.restart_required?"Saved. Run: "+r.hint:"Saved.";loadSettings()});
 
 // ---- shell
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("nav button").forEach(x=>x.setAttribute("aria-selected",x===b));
   document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===b.dataset.t));
-  if(b.dataset.t==="tools")loadTools();if(b.dataset.t==="set")loadSettings();});
-function load(){loadFw();loadDrops()}
-try{if(!localStorage.getItem("sbxc-ack"))$("warn").hidden=false}catch(e){$("warn").hidden=false}
+  if(b.dataset.t==="tools")loadTools();if(b.dataset.t==="set")loadSettings();if(b.dataset.t==="act")loadActivity();});
+// The lite-mode warning applies only when the sandbox really is this machine.
+async function load(){loadFw();loadDrops();const st=await act(()=>api("/api/settings"));
+  let acked=false;try{acked=!!localStorage.getItem("sbxc-ack")}catch(e){}
+  $("warn").hidden=!st||st.mode!=="lite"||acked}
 $("ack").onclick=()=>{try{localStorage.setItem("sbxc-ack","1")}catch(e){}$("warn").hidden=true};
 $("tok-state").textContent="";
 token?load():askToken();
