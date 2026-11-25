@@ -32,6 +32,7 @@ LOOM = "http://127.0.0.1:9741"
 MAX_WINDOW_CHARS = 60_000      # one window sent to the model; the oldest lines are left out first
 MAX_PROPOSALS = 5
 MAX_TEXT = 1000
+TIMEOUT = 120                  # seconds for one whole HTTP exchange, not per socket read
 
 SYSTEM = """You pick what is worth keeping in long-term memory from a finished conversation between Ryan and his AI \
 assistant. Memory is read by future sessions, so each item must be a durable fact, preference, decision or piece of \
@@ -56,13 +57,22 @@ class Fail(Exception):
     pass
 
 
-def _http(url, body=None, headers=None, timeout=120):
+def _http(url, body=None, headers=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET",
                                  headers=dict({"Content-Type": "application/json"}, **(headers or {})))
+    deadline = time.monotonic() + TIMEOUT
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read(16 * 1024 * 1024))
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            out = b""
+            while len(out) < 16 * 1024 * 1024:            # a reply trickled a byte at a time must still end
+                chunk = r.read1(65536)
+                if not chunk:
+                    break
+                out += chunk
+                if time.monotonic() > deadline:
+                    raise Fail("%s: no full reply in %d s" % (urllib.parse.urlsplit(url).netloc, TIMEOUT))
+            return json.loads(out)
     except urllib.error.HTTPError as e:
         raise Fail("%s said %d %s" % (urllib.parse.urlsplit(url).netloc, e.code, e.read(300).decode(errors="replace")))
     except (urllib.error.URLError, OSError, ValueError) as e:
@@ -79,6 +89,8 @@ def render(window):
     for line in reversed(lines):
         size += len(line) + 1
         if size > MAX_WINDOW_CHARS:
+            if not out:
+                out.append(line[:MAX_WINDOW_CHARS])      # one line longer than the window: its start, not nothing
             break
         out.append(line)
     return "\n".join(reversed(out))
@@ -100,6 +112,8 @@ def ask_model(window, existing):
         content = out["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         raise Fail("the model's reply has no content")
+    if not isinstance(content, str):
+        raise Fail("the model's reply has no content")
     return parse(content, {e["seq"] for e in window})
 
 
@@ -116,7 +130,7 @@ def parse(content, seqs):
     for it in items if isinstance(items, list) else []:
         if not isinstance(it, dict) or not isinstance(it.get("text"), str) or not it["text"].strip():
             continue
-        cited = sorted({e for e in it.get("events") or [] if isinstance(e, int) and e in seqs})
+        cited = sorted({e for e in it.get("events") or [] if type(e) is int and e in seqs})   # not bool
         out.append({"text": it["text"].strip()[:MAX_TEXT], "events": cited,
                     "note": ("proposer: " + str(it.get("why") or "")).strip()[:300]})
     return out[:MAX_PROPOSALS]
@@ -179,14 +193,15 @@ class Proposer:
             window = window_of(sid, after)
             if any(e["role"] == "user" for e in window):
                 try:
-                    items = ask_model(window, existing)
+                    for item in ask_model(window, existing):
+                        if item["text"] in existing:      # queued by a run that died before its cursor save
+                            continue
+                        self._push(item)
+                        existing.append(item["text"])
+                        queued += 1
                 except Fail as e:                 # this session waits for the next run; the others go on
                     print("propose: session %s: %s" % (sid, e), file=sys.stderr, flush=True)
                     continue
-                for item in items:
-                    self._push(item)
-                    existing.append(item["text"])
-                    queued += 1
             self.state["cursor"][sid] = last
             self._save()
         return queued
