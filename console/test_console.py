@@ -684,9 +684,7 @@ class Memory(unittest.TestCase):
         self.assertEqual(len(self.seen[-1][3]["reason"]), 500)
         c.memory_retract("p-1", {"not": "a string"})
         self.assertEqual(self.seen[-1][3]["reason"], "retracted in the console")
-        for mid in ("..", "a" * 65, "p-1/../x", "p-1?x=1", ""):
-            if mid == "..":
-                continue                                  # in the id alphabet; Loom answers 404
+        for mid in ("a" * 65, "p-1/../x", "p-1?x=1", ""):
             with self.assertRaises(c.Bad, msg=mid):
                 c.memory_retract(mid)
 

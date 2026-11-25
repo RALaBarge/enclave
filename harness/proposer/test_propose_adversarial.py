@@ -213,12 +213,12 @@ class Forgotten(Base):
 
     def test_one_session_whose_push_loom_refuses_does_not_hold_up_the_others(self):
         """E.g. S was forgotten between reading its window and pushing: Loom answers 400 for that proposal."""
-        self.w.events += [row(10, "user", "the nas is LXC 205", session="T")]
-        self.w.model = lambda prompt: {"memories": [{"text": "from S" if "core" in prompt else "The NAS is LXC 205.",
+        self.w.events += [row(10, "user", "the printer is called inky", session="T")]
+        self.w.model = lambda prompt: {"memories": [{"text": "from S" if "core" in prompt else "The printer is called inky.",
                                                      "events": [2] if "core" in prompt else [10]}]}
         self.w.refuse_text = "from S"
         self.run_once()
-        self.assertEqual(self.texts(), ["The NAS is LXC 205."])
+        self.assertEqual(self.texts(), ["The printer is called inky."])
         with open(self.state) as f:
             self.assertEqual(json.load(f)["cursor"], {"T": 10})     # S waits for the next run
 
