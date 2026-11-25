@@ -917,7 +917,8 @@ def memory_events(seqs):
         raise Bad("those events are too far apart to show together")
     rows = _loom("GET", f"/events?after={max(0, lo - 4)}&limit={hi - lo + 8}")["events"]
     return {"cited": sorted(set(seqs)), "events": [
-        {k: r.get(k) for k in ("seq", "session", "type", "role", "ts", "trust", "text", "forgotten_at")}
+        dict({k: r.get(k) for k in ("seq", "session", "type", "role", "ts", "trust", "forgotten_at")},
+             text=r.get("text") if r.get("trust") == "trusted" else "")     # Loom blanks it; this page never relies on that
         for r in rows]}
 
 
