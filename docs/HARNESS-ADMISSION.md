@@ -193,7 +193,8 @@ whether deployed tools match the repo (`sync.py` checks the repo, deployment is 
   desk's port, the bridge, Loom and Ollama.
 - Secrets stop being one file for one account. `/run/pi-bridge-secrets/secrets.env` is `root:pibridge 0640`. A second account needs its own
   root-written file (a change in `image/sbx-fetch-secrets.sh`) or membership of the group that reads all keys; the second option
-  means a compromise in either harness reads the other's keys.
+  means a compromise in either harness reads the other's keys. The proposer takes the first route without a fetch change:
+  for each run root copies its one key out of `secrets.env` into `/run/loom-propose/key.env` (`harness/systemd/loom-propose.service`).
 - The gate is shared, so the second harness does not get its own. Both call `sbx-session-gate`; the failure mode moves to the
   gate's availability, because a bridge that cannot reach it refuses to start a session.
 - One sandbox, one lane. `SerialLane` in `harness/broker/sbx_broker.py` runs one job at a time, holds the lane through

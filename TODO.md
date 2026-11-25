@@ -28,12 +28,10 @@ October.
 6. **UI against real Pi:** chat is checked against real events (2026-11-24); Tree and Inspector are not. Directories: add
    `GET /dirs` so folders without sessions appear.
 7. **Smoke test gaps (review J):** nothing proves a `-sbx` job itself has no network, and `check_listeners` looks at TCP only.
-8. **Memory, follow-ups** (built and running on the core 2026-11-24, see Decisions "Memory"):
-   push Loom's `events` branch (`LOOM_COMMIT` pins `ad127ba`, which is only local, so a fresh `provision.sh` fails until it
-   is on GitHub); restart pi-bridge when convenient so it runs the new `server.py` (no Loom code) and open sessions get `memq`;
-   label about 50 real windows for `harness/proposer/calibrate.py` (`calibrate.py export SESSION`); drop Loom's old `/log`,
-   message tables, hooks and MCP server (nothing uses them); give the proposer only its own key rather than all of
-   `secrets.env`.
+8. **Memory, follow-ups** (built and running on the core 2026-11-24, see Decisions "Memory"): label about 50 real
+   windows for `harness/proposer/calibrate.py` (`calibrate.py export SESSION`); faster embeddings (the core's CPU has no
+   AVX: about 2.5 minutes for a 300-token entry). Done 2026-11-24: Loom's `/log`, message tables, hooks and MCP server
+   dropped; the proposer gets only its own key; Loom's `events` branch pushed; pi-bridge restarted on the new `server.py`.
 9. **Request inspector raw view:** a recording proxy in the bridge that Pi's provider base URL points at, with `Authorization`
    redacted; also the raw feed for Loom and the fixtures for the Go runner.
 10. **Go runner** (`docs/PI-FEATURES.md` build order), optional: a second engine to test next to Pi, not a replacement.

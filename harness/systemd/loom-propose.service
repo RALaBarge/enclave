@@ -5,11 +5,16 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# Its own account: the memq token (push only matters; it cannot accept) and the model key, read by systemd from
-# the root-written secrets file. It reads only trusted text from Loom; tool output never reaches it.
+# Its own account: the memq token (push only matters; it cannot accept) and its one model key. Root copies just
+# DEEPSEEK_API_KEY out of the bridge's secrets file into this run's own env file (gone when the run ends); systemd
+# reads EnvironmentFile= before each command, so ExecStart sees it. It reads only trusted text from Loom; tool output
+# never reaches it.
 User=loomprop
 SupplementaryGroups=loomq
-EnvironmentFile=-/run/pi-bridge-secrets/secrets.env
+RuntimeDirectory=loom-propose
+RuntimeDirectoryMode=0700
+ExecStartPre=+/bin/sh -c 'umask 077; grep -s "^DEEPSEEK_API_KEY=" /run/pi-bridge-secrets/secrets.env > /run/loom-propose/key.env; chown loomprop /run/loom-propose/key.env'
+EnvironmentFile=-/run/loom-propose/key.env
 ExecStart=/usr/bin/python3 -B /opt/proposer/propose.py --once --idle 30 --state /var/lib/loom-propose/state.json --token-file /etc/loom/memq.token
 StateDirectory=loom-propose
 StateDirectoryMode=0700
