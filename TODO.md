@@ -30,7 +30,10 @@ October.
 7. **Smoke test gaps (review J):** nothing proves a `-sbx` job itself has no network, and `check_listeners` looks at TCP only.
 8. **Memory, follow-ups** (built and running on the core 2026-11-24, see Decisions "Memory"): label about 50 real
    windows for `harness/proposer/calibrate.py` (`calibrate.py export SESSION`); faster embeddings (the core's CPU has no
-   AVX: about 2.5 minutes for a 300-token entry). Done 2026-11-24: Loom's `/log`, message tables, hooks and MCP server
+   AVX: about 2.5 minutes for a 300-token entry). Open from the adversarial tests: an event the embedder refuses
+   blocks Loom's embed queue (xfail; needs telling a refused input from a down embedder); nothing redacts a proposal
+   the agent pushes through memq; a Loom reply past memq's output schema is passed through, not clipped (both
+   expectedFailure in `desk-tools/memq/test_memq_adversarial.py`). Done 2026-11-24: Loom's `/log`, message tables, hooks and MCP server
    dropped; the proposer gets only its own key; Loom's `events` branch pushed; pi-bridge restarted on the new `server.py`.
 9. **Request inspector raw view:** a recording proxy in the bridge that Pi's provider base URL points at, with `Authorization`
    redacted; also the raw feed for Loom and the fixtures for the Go runner.
