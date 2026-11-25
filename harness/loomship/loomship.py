@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -45,6 +46,7 @@ TRUSTED_TYPES = {"session", "model_change", "thinking_level_change"}
 TRUSTED_ROLES = {"user", "assistant", "system"}
 FINAL_STOPS = {"stop", "length"}
 ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+WORD_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")    # Loom's alphabet for type, role, provider
 
 
 def log(msg):
@@ -58,7 +60,7 @@ def redact(value):
     if isinstance(value, list):
         return [redact(v) for v in value]
     if isinstance(value, dict):
-        return {k: redact(v) for k, v in value.items()}
+        return {redact(k): redact(v) for k, v in value.items()}   # keys too: a secret can be a key
     return value
 
 
@@ -69,6 +71,12 @@ def _texts(content):
         return "\n".join(p.get("text", "") for p in content
                          if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str))
     return ""
+
+
+def _word(value) -> str:
+    """Loom refuses the whole batch over one bad word, so anything outside its alphabet becomes empty."""
+    s = str(value or "")
+    return s if WORD_RE.match(s) else ""
 
 
 def safe_id(value) -> str:
@@ -86,9 +94,9 @@ def to_event(entry: dict, session: str) -> dict:
     role = str(msg.get("role") or "")
     trusted = etype in TRUSTED_TYPES or (etype == "message" and role in TRUSTED_ROLES)
     text = ""
-    if trusted and role == "user":
+    if trusted and etype == "message" and role == "user":
         text = _texts(msg.get("content"))
-    elif trusted and role == "assistant" and msg.get("stopReason") in FINAL_STOPS:
+    elif trusted and etype == "message" and role == "assistant" and msg.get("stopReason") in FINAL_STOPS:
         text = _texts(msg.get("content"))
     raw = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
     if len(raw.encode()) > MAX_RAW:
@@ -97,10 +105,10 @@ def to_event(entry: dict, session: str) -> dict:
     return {
         "source": SOURCE, "session": safe_id(session), "id": safe_id(entry.get("id")),
         "parent": safe_id(parent) if parent else None,
-        "type": etype if etype.replace("_", "").isalnum() else "unknown", "role": role if role.isalnum() else "",
+        "type": _word(etype) or "unknown", "role": _word(role),
         "ts": str(entry.get("timestamp") or "")[:128],
         "model": str(msg.get("model") or entry.get("modelId") or "")[:128],
-        "provider": str(msg.get("provider") or entry.get("provider") or "")[:64],
+        "provider": _word(msg.get("provider") or entry.get("provider")),
         "trust": "trusted" if trusted else "untrusted", "redactor": REDACTOR_ID, "raw": raw,
         "text": text.strip()[:MAX_TEXT],
     }
@@ -120,9 +128,16 @@ class Shipper:
         try:
             with open(self.state_path) as f:
                 st = json.load(f)
-            return st if isinstance(st.get("files"), dict) else {"files": {}}
         except FileNotFoundError:
             return {"files": {}}
+        except ValueError:
+            st = None
+        files = st.get("files") if isinstance(st, dict) else None
+        if not isinstance(files, dict):
+            log("state %s unreadable; shipping everything again (Loom drops what it has)" % self.state_path)
+            return {"files": {}}
+        return {"files": {p: r for p, r in files.items() if isinstance(r, dict) and isinstance(r.get("offset"), int)
+                          and r["offset"] >= 0 and isinstance(r.get("session"), (str, type(None)))}}
 
     def _save(self):
         tmp = self.state_path + ".tmp"
@@ -141,14 +156,17 @@ class Shipper:
             "Content-Type": "application/json", "Authorization": "Bearer " + token})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                acks = json.loads(r.read(16 * 1024 * 1024)).get("acks")
-        except (urllib.error.URLError, OSError, ValueError) as e:
+                reply = json.loads(r.read(16 * 1024 * 1024))
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
             detail = e.read(500).decode(errors="replace") if isinstance(e, urllib.error.HTTPError) else ""
             self._fail("Loom refused or unreachable: %s %s" % (e, detail))
             return False
+        acks = reply.get("acks") if isinstance(reply, dict) else None
         want = [(e["session"], e["id"]) for e in events]
-        got = [(a.get("session"), a.get("id")) for a in acks or [] if isinstance(a, dict)]
-        if got != want or not all(isinstance(a.get("seq"), int) and a.get("hash") for a in acks):
+        # seq is the receipt; hash is null for an event whose content was purged after it was forgotten
+        if not isinstance(acks, list) or not all(isinstance(a, dict) for a in acks) or \
+                [(a.get("session"), a.get("id")) for a in acks] != want or \
+                not all(isinstance(a.get("seq"), int) for a in acks):
             self._fail("Loom's acks do not match the batch; cursor kept")
             return False
         if self.failing:
@@ -178,7 +196,9 @@ class Shipper:
         with open(path, "rb") as f:
             f.seek(base)
             data = f.read(READ_LIMIT)
-        end = data.rfind(b"\n")
+            end = data.rfind(b"\n")
+            if end < 0 and len(data) == READ_LIMIT:
+                return self._ship_long_line(f, path, rec, base)
         if end < 0:
             return True                                   # a line Pi is still writing
         events, pos, stopped = [], 0, False               # events: (event, file offset just past its line)
@@ -206,9 +226,9 @@ class Shipper:
                 break
         i = 0
         while i < len(events):
-            batch, size = [], 0
+            batch, size = [], 16
             while i < len(events) and len(batch) < BATCH_EVENTS:
-                n = len(events[i][0]["raw"]) + len(events[i][0]["text"]) + 512
+                n = len(json.dumps(events[i][0], ensure_ascii=False).encode()) + 2    # as sent, escapes included
                 if batch and size + n > BATCH_BYTES:
                     break
                 batch.append(events[i][0])
@@ -219,6 +239,29 @@ class Shipper:
             rec["offset"] = events[i - 1][1]
             self._save()
         return not stopped
+
+    def _ship_long_line(self, f, path, rec, base) -> bool:
+        """A line longer than one read: ship a record of its size (not its content) and move past it."""
+        n = READ_LIMIT
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                return True                               # still being written
+            i = chunk.find(b"\n")
+            if i >= 0:
+                n += i
+                break
+            n += len(chunk)
+        if rec["session"] is None:
+            log("%s does not start with a session header; skipped" % path)
+            rec["offset"] = os.fstat(f.fileno()).st_size
+        else:
+            if not self._post([to_event({"type": "unparsed", "id": "off-%d" % base, "loomship": "cut", "bytes": n},
+                                        rec["session"])]):
+                return False
+            rec["offset"] = base + n + 1
+        self._save()
+        return True
 
     def run_once(self) -> bool:
         ok = True
