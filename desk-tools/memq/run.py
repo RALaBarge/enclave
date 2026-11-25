@@ -50,8 +50,15 @@ def call(method, path, token=None, body=None):
         raise Fail("Loom unreachable: %s" % e)
 
 
+def need(args, key):
+    if not isinstance(args.get(key), str) or not args[key].strip():
+        raise Fail("%s needs %s" % (args.get("op"), key))
+    return args[key]
+
+
 def run(op, args, token, by):
     if op == "push":
+        need(args, "text")
         out = call("POST", "/proposals", token, {"text": args["text"], "by": by, "events": args.get("events") or [],
                                                  "note": args.get("note") or ""})
         return {"op": "push", "id": out["id"], "status": out["status"],
@@ -68,6 +75,7 @@ def run(op, args, token, by):
         out = call("POST", "/proposals/pop", token)
         return {"op": "pop", "applied": out["applied"]}
     if op == "search":
+        need(args, "query")
         out = call("POST", "/memories/search", None, {"query": args["query"], "limit": int(args.get("limit") or 5)})
         return {"op": "search", "memories": [{k: m.get(k) for k in ("id", "text", "distance", "updated_at")}
                                              for m in out["results"]]}
@@ -87,15 +95,22 @@ def read_token(path):
 
 def desk():
     """DeskBox mode: one JSON object in, one out. Failures are reported, not raised, so the agent sees why."""
+    args = None
     try:
-        args = json.load(sys.stdin)
+        try:
+            args = json.load(sys.stdin)
+        except ValueError:
+            args = None
+        if not isinstance(args, dict):
+            raise Fail("the input must be one JSON object")
         op = args.get("op")
         token = read_token(os.path.join(os.environ.get("DESKBOX_TOOL_DIR", os.path.dirname(__file__)), "memq.token")) \
             if op in ("push", "pop") else None
         out = run(op, args, token, "agent")
         out["ok"], out["error"] = True, ""
-    except Fail as e:
-        out = {"op": str(args.get("op", "")) if isinstance(args, dict) else "", "ok": False, "error": str(e)[:300]}
+    except (Fail, KeyError, TypeError, ValueError, AttributeError) as e:   # the rest: a field missing in a reply
+        msg = str(e) if isinstance(e, Fail) else "bad input or Loom reply (%s: %s)" % (type(e).__name__, e)
+        out = {"op": str(args.get("op", ""))[:16] if isinstance(args, dict) else "", "ok": False, "error": msg[:300]}
     json.dump(out, sys.stdout)
     return 0
 
